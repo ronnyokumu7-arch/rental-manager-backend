@@ -21,7 +21,7 @@ def seed_tenant_admin_passwords():
             print("No tenant admin users found.")
             return
 
-        password_hash = get_password_hash(settings.tenant_admin_password)
+        password_hash = get_password_hash(settings.tenant_admin_password[:72])
 
         for user in tenant_admins:
             user.email = normalize_email(user.email)

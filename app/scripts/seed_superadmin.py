@@ -19,7 +19,7 @@ def update_password():
             user = User(
                 full_name="Super Admin",
                 email=email,
-                password_hash=get_password_hash(settings.superadmin_password),
+                password_hash=get_password_hash(settings.superadmin_password[:72]),
                 role=UserRole.super_admin,
                 tenant_id=None,
                 is_active=True,
@@ -36,7 +36,7 @@ def update_password():
         user.tenant_id = None
         user.is_active = True
         user.is_suspended = False
-        user.password_hash = get_password_hash(settings.superadmin_password)
+        user.password_hash = get_password_hash(settings.superadmin_password[:72])
         db.commit()
         print("Password updated successfully.")
     finally:
