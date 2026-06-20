@@ -14,12 +14,13 @@ def update_password():
     db = SessionLocal()
     try:
         email = "admin@superadmin.com"
+        password = settings.superadmin_password[:72]  # ← always use this
         user = db.query(User).filter(User.email == email).first()
         if not user:
             user = User(
                 full_name="Super Admin",
                 email=email,
-                password_hash=get_password_hash("admin_super!"),
+                password_hash=get_password_hash(password),  # ← fixed
                 role=UserRole.super_admin,
                 tenant_id=None,
                 is_active=True,
@@ -29,14 +30,13 @@ def update_password():
             db.commit()
             print("Super admin created successfully.")
             return
-
         user.full_name = user.full_name or "Super Admin"
         user.email = email
         user.role = UserRole.super_admin
         user.tenant_id = None
         user.is_active = True
         user.is_suspended = False
-        user.password_hash = get_password_hash(settings.superadmin_password[:72])
+        user.password_hash = get_password_hash(password)  # ← fixed
         db.commit()
         print("Password updated successfully.")
     finally:
