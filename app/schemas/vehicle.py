@@ -6,7 +6,6 @@ from pydantic import BaseModel, field_validator
 
 from app.models.vehicles import VehicleStatus
 
-
 class VehicleBase(BaseModel):
     make: str
     model: str
@@ -14,12 +13,12 @@ class VehicleBase(BaseModel):
     plate_number: str
     vin: Optional[str] = None
     daily_rate: Decimal
+    current_mileage: int = 0
+    next_service_km: Optional[int] = None
     notes: Optional[str] = None
-
 
 class VehicleCreate(VehicleBase):
     pass
-
 
 class VehicleUpdate(BaseModel):
     make: Optional[str] = None
@@ -29,12 +28,13 @@ class VehicleUpdate(BaseModel):
     vin: Optional[str] = None
     daily_rate: Optional[Decimal] = None
     status: Optional[VehicleStatus] = None
+    current_mileage: Optional[int] = None
+    next_service_km: Optional[int] = None
     insurance_doc: Optional[str] = None
     registration_doc: Optional[str] = None
     inspection_doc: Optional[str] = None
     insurance_expiry: Optional[datetime] = None
     notes: Optional[str] = None
-
 
 class VehicleOut(BaseModel):
     id: int
@@ -46,6 +46,8 @@ class VehicleOut(BaseModel):
     vin: Optional[str] = None
     status: VehicleStatus
     daily_rate: Decimal
+    current_mileage: int
+    next_service_km: Optional[int] = None
     insurance_doc: Optional[str] = None
     registration_doc: Optional[str] = None
     inspection_doc: Optional[str] = None

@@ -13,10 +13,9 @@ class VehicleStatus(str, enum.Enum):
     maintenance = "maintenance"
     retired = "retired"
 
-
 class Vehicle(Base):
     __tablename__ = "vehicles"
-
+    
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     make = Column(String, nullable=False)
@@ -31,6 +30,11 @@ class Vehicle(Base):
         server_default=VehicleStatus.available.value,
     )
     daily_rate = Column(Numeric(10, 2), nullable=False)
+    
+    # NEW FIELDS
+    current_mileage = Column(Integer, nullable=False, default=0, server_default="0")
+    next_service_km = Column(Integer, nullable=True)
+    
     insurance_doc = Column(String, nullable=True)
     registration_doc = Column(String, nullable=True)
     inspection_doc = Column(String, nullable=True)
