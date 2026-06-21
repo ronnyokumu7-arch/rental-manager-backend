@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from jwt.exceptions import InvalidTokenError
+from jwt.exceptions import PyJWTError, ExpiredSignatureError, DecodeError
 from passlib.context import CryptContext
 
 from app.core.config import get_settings
@@ -44,5 +44,5 @@ def create_access_token(subject: str, claims: dict | None = None) -> str:
 def decode_access_token(token: str) -> dict | None:
     try:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-    except InvalidTokenError:
+    except (PyJWTError, ExpiredSignatureError, DecodeError):
         return None
