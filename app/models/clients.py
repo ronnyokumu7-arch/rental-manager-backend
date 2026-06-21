@@ -1,11 +1,10 @@
 import enum
 
-from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from typing import Optional
+from sqlalchemy import Boolean, Column, Date, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-
 from app.db.database import Base
-
 
 class ClientStatus(str, enum.Enum):
     pending = "pending"
@@ -13,10 +12,9 @@ class ClientStatus(str, enum.Enum):
     inactive = "inactive"
     suspended = "suspended"
 
-
 class Client(Base):
     __tablename__ = "clients"
-
+    
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     full_name = Column(String, nullable=False)
@@ -24,6 +22,7 @@ class Client(Base):
     phone = Column(String, nullable=False, index=True)
     id_number = Column(String, nullable=True)
     dl_number = Column(String, nullable=True)
+    dl_expiry = Column(Date, nullable=True)  # ADD THIS
     status = Column(
         Enum(ClientStatus),
         nullable=False,
