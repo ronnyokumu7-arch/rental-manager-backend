@@ -1,8 +1,6 @@
-import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.core.exceptions import http_exception_handler
@@ -17,22 +15,20 @@ from app.scripts.seed_superadmin import update_password
 from app.scripts.seed_tenant_admins import seed_tenant_admin_passwords
 from app.scripts.seed_tenant_policies import seed_policies_for_existing_tenants
 
-# --- TEMPORARY ALEMBIC REPAIR ---
-try:
-    from alembic.config import Config
-    from alembic import command
-    cfg = Config("alembic.ini")
-    command.stamp(cfg, "head")
-    print("✅ Database version stamped to HEAD (Auto-Repair).")
-except Exception as e:
-    print(f"⚠️ Alembic repair skipped: {e}")
-# --------------------------------
+app = FastAPI(title="Rental Manager", version="1.0.0")
 
-settings = get_settings()
+from fastapi.staticfiles import StaticFiles
+import os
 
-# 1. Modern Lifespan Manager
+# Mount the uploads directory for serving files
+if os.path.exists("./uploads"):
+    app.mount("/uploads", StaticFiles(directory="./uploads"), name="uploads")
+
+
+# 1. Modern Lifespan Manager (replaces @app.on_event)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Startup logic
     print("Running seed initialization...")
     try:
         update_password()
@@ -44,9 +40,11 @@ async def lifespan(app: FastAPI):
     
     start_scheduler()
     yield
+    # Shutdown logic
     stop_scheduler()
 
-# 2. Initialize App ONCE
+settings = get_settings()
+
 app = FastAPI(
     title=settings.app_name,
     version="1.0.0",
@@ -54,11 +52,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 3. Mount Static Files (to the correct app instance)
-if os.path.exists("./uploads"):
-    app.mount("/uploads", StaticFiles(directory="./uploads"), name="uploads")
-
-# 4. Middleware
+# 2. Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -67,10 +61,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 5. Global Exception Handler
+# 3. Global Exception Handler
 app.add_exception_handler(HTTPException, http_exception_handler)
 
-# 6. Health Check
+# 4. Health Check
 @app.get("/health", tags=["system"])
 def health_check():
     return {
@@ -78,7 +72,7 @@ def health_check():
         "environment": settings.environment,
     }
 
-# 7. Include Routers
+# 5. Include Routers
 routers = [
     auth, tenants, users, clients, vehicles,
     bookings, subscriptions, invoices, payments,
