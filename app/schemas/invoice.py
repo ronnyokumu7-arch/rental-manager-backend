@@ -1,38 +1,38 @@
 from datetime import datetime
-from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel
-from app.models.invoices import InvoiceStatus
+from app.models.contracts import ContractStatus
 
-class InvoiceCreate(BaseModel):
-    booking_id: Optional[int] = None       # NEW: Link to booking
-    subscription_id: Optional[int] = None  # Keep for super-admin subscription billing
-    amount_due: Decimal
-    currency_code: str = "KES"
-    due_date: datetime
-    notes: Optional[str] = None
-
-class InvoiceUpdate(BaseModel):
-    amount_due: Optional[Decimal] = None
-    currency_code: Optional[str] = None
-    due_date: Optional[datetime] = None
-    notes: Optional[str] = None
-
-class InvoiceOut(BaseModel):
+class ContractOut(BaseModel):
     id: int
+    booking_id: int
     tenant_id: int
-    booking_id: Optional[int] = None       # NEW
-    subscription_id: Optional[int] = None
-    invoice_number: str
-    status: InvoiceStatus
-    amount_due: Decimal
-    amount_paid: Decimal
-    currency_code: str
-    due_date: datetime
-    paid_at: Optional[datetime] = None
+    contract_number: str
+    status: ContractStatus
     pdf_path: Optional[str] = None
-    notes: Optional[str] = None
+    signed_at: Optional[datetime] = None
+    share_token: Optional[str] = None
+    share_token_expires_at: Optional[datetime] = None
+    signed_by_client: bool = False
+    client_signed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+class PublicContractView(BaseModel):
+    """Schema for public contract viewing (no auth required)"""
+    contract_number: str
+    booking_id: int
+    tenant_name: str
+    client_name: str
+    vehicle_make: str
+    vehicle_model: str
+    vehicle_plate: str
+    start_date: str
+    end_date: str
+    total_amount: str
+    currency_code: str
+    status: ContractStatus
+    signed_by_client: bool
+    created_at: datetime
