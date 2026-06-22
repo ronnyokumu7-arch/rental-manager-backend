@@ -349,3 +349,41 @@ def send_password_reset_success(
         "Your password has been reset",
         _base_template("Password Reset Successful", body),
     )
+
+
+# ---------------------------------------------------------------------------
+# Contract emails
+# ---------------------------------------------------------------------------
+
+def send_contract_to_client(
+    to: str,
+    client_name: str,
+    contract_number: str,
+    vehicle: str,
+    start_date: str,
+    end_date: str,
+    total_amount: str,
+    currency: str,
+    contract_url: str,
+):
+    """Send contract signing link to client"""
+    body = f"""
+    <p>Dear {client_name},</p>
+    <p>Your rental contract is ready for review and signature.</p>
+    <table class="detail-table">
+        <tr><td>Contract Number</td><td>{contract_number}</td></tr>
+        <tr><td>Vehicle</td><td>{vehicle}</td></tr>
+        <tr><td>Rental Period</td><td>{start_date} to {end_date}</td></tr>
+        <tr><td>Total Amount</td><td>{currency} {total_amount}</td></tr>
+    </table>
+    <p>Please review the contract and sign it electronically by clicking the button below:</p>
+    <a href="{contract_url}" class="btn">Review & Sign Contract</a>
+    <p style="margin-top: 24px; font-size: 13px; color: #888888;">
+        This link will expire in 30 days. If you have any questions, please contact us directly.
+    </p>
+    """
+    return _send(
+        to, 
+        f"Your Rental Contract - {contract_number}", 
+        _base_template("Contract Ready for Signature", body)
+    )

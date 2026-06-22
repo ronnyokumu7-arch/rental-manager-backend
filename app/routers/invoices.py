@@ -15,7 +15,7 @@ from app.models.vehicles import Vehicle
 from app.schemas.contract import ContractOut, PublicContractView
 from app.services.contracts import create_contract_for_booking
 from app.services.pdf import generate_contract_pdf
-from app.services.email import send_contract_to_client
+from app.services.email import send_invoice_notification
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
 
