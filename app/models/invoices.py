@@ -17,6 +17,8 @@ class Invoice(Base):
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     subscription_id = Column(Integer, ForeignKey("subscriptions.id", ondelete="SET NULL"), nullable=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="SET NULL"), nullable=True, index=True)  # NEW
+    
     invoice_number = Column(String, unique=True, nullable=False)
     status = Column(
         Enum(InvoiceStatus),
@@ -37,4 +39,5 @@ class Invoice(Base):
 
     tenant = relationship("Tenant", back_populates="invoices")
     subscription = relationship("Subscription", back_populates="invoices")
+    booking = relationship("Booking", back_populates="invoices")  # NEW
     payments = relationship("Payment", back_populates="invoice", cascade="all, delete-orphan")
