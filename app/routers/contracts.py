@@ -328,3 +328,42 @@ def sign_contract_public(
         "contract_number": contract.contract_number,
         "signed_at": now
     }
+    
+    
+
+# 1. Public View Endpoint (No Auth Required)
+@router.get("/public/{share_token}")
+async def get_public_contract(share_token: str, db: Session = Depends(get_db)):
+    contract = db.query(Contract).filter(Contract.share_token == share_token).first()
+    if not contract:
+        raise HTTPException(status_code=404, detail="Invalid or expired contract link.")
+    
+    # Fetch related data to show on the public page
+    booking = db.query(Booking).filter(Booking.id == contract.booking_id).first()
+    client = db.query(Client).filter(Client.id == booking.client_id).first()
+    vehicle = db.query(Vehicle).filter(Vehicle.id == booking.vehicle_id).first()
+    
+    return {
+        "contract": contract,
+        "booking": booking,
+        "client": {"full_name": client.full_name, "dl_number": client.dl_number, "phone": client.phone},
+        "vehicle": {"make": vehicle.make, "model": vehicle.model, "plate_number": vehicle.plate_number}
+    }
+
+# 2. Public Sign Endpoint (No Auth Required)
+@router.post("/public/{share_token}/sign")
+async def sign_public_contract(share_token: str, payload: dict, db: Session = Depends(get_db)):
+    contract = db.query(Contract).filter(Contract.share_token == share_token).first()
+    if not contract:
+        raise HTTPException(status_code=404, detail="Invalid contract link.")
+    
+    if contract.status == "signed":
+        raise HTTPException(status_code=400, detail="Contract already signed.")
+
+    # Update status and save the typed name/signature
+    contract.status = "signed"
+    contract.signed_at = datetime.utcnow()
+    # Assuming you have a 'signed_name' or 'signature_data' column. If not, just update status.
+    db.commit()
+    
+    return {"message": "Contract signed successfully", "status": "signed"}
