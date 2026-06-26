@@ -41,6 +41,13 @@ async def lifespan(app: FastAPI):
 
 settings = get_settings()
 
+origins = [
+    "http://localhost:3000",       # Your local Next.js dev server
+    "http://localhost:3001",       # Just in case
+    "https://your-frontend-domain.com", # Your actual production frontend URL (add this later)
+]
+
+
 app = FastAPI(
     title=settings.app_name,
     version="1.0.0",
@@ -51,7 +58,7 @@ app = FastAPI(
 # 2. Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
