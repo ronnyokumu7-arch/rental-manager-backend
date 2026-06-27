@@ -1,38 +1,33 @@
+# app/schemas/invoice.py
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel
-from app.models.contracts import ContractStatus
+from app.models.invoices import InvoiceStatus
 
-class ContractOut(BaseModel):
-    id: int
+class InvoiceCreate(BaseModel):
     booking_id: int
+    due_date: datetime
+    notes: Optional[str] = None
+
+class InvoiceUpdate(BaseModel):
+    notes: Optional[str] = None
+    status: Optional[InvoiceStatus] = None
+
+class InvoiceOut(BaseModel):
+    id: int
     tenant_id: int
-    contract_number: str
-    status: ContractStatus
+    booking_id: Optional[int] = None
+    invoice_number: str
+    status: InvoiceStatus
+    amount_due: Decimal
+    amount_paid: Decimal
+    currency_code: str
+    due_date: datetime
+    paid_at: Optional[datetime] = None
     pdf_path: Optional[str] = None
-    signed_at: Optional[datetime] = None
-    share_token: Optional[str] = None
-    share_token_expires_at: Optional[datetime] = None
-    signed_by_client: bool = False
-    client_signed_at: Optional[datetime] = None
+    notes: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-class PublicContractView(BaseModel):
-    """Schema for public contract viewing (no auth required)"""
-    contract_number: str
-    booking_id: int
-    tenant_name: str
-    client_name: str
-    vehicle_make: str
-    vehicle_model: str
-    vehicle_plate: str
-    start_date: str
-    end_date: str
-    total_amount: str
-    currency_code: str
-    status: ContractStatus
-    signed_by_client: bool
-    created_at: datetime

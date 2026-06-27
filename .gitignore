@@ -6,3 +6,4 @@ __pycache__/
 .pytest_cache/
 echo "venv/" >> .gitignore
 echo ".venv/" >> .gitignore
+storage/contracts/
