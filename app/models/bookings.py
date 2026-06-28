@@ -41,6 +41,7 @@ class Booking(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     share_token = Column(String(36), unique=True, nullable=True, index=True)
+    share_token_expires_at = Column(DateTime(timezone=True), nullable=True)
 
     tenant = relationship("Tenant", back_populates="bookings")
     client = relationship("Client", back_populates="bookings")
