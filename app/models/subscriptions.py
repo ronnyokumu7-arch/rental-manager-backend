@@ -51,4 +51,10 @@ class Subscription(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     tenant = relationship("Tenant", back_populates="subscriptions")
-    invoices = relationship("Invoice", back_populates="subscription", cascade="all, delete-orphan")
+    invoices = relationship(
+    "Invoice", 
+    back_populates="subscription", 
+    cascade="all, delete-orphan",
+    primaryjoin="Subscription.id == Invoice.subscription_id",
+    foreign_keys="[Invoice.subscription_id]"
+)
