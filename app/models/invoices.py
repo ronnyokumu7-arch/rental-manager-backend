@@ -5,7 +5,7 @@ from sqlalchemy import Column, Integer, String, DateTime, DECIMAL, ForeignKey, E
 from sqlalchemy.orm import relationship
 import enum
 
-from app.db.base_class import Base
+from app.db.database import Base
 
 class InvoiceStatus(str, enum.Enum):
     draft = "draft"
