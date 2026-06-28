@@ -387,3 +387,38 @@ def send_contract_to_client(
         f"Your Rental Contract - {contract_number}", 
         _base_template("Contract Ready for Signature", body)
     )
+    
+    
+    # Add this to the bottom of app/services/email.py
+
+def send_invoice_to_client(
+    to: str,
+    client_name: str,
+    invoice_number: str,
+    amount_due: str,
+    currency: str,
+    due_date: str,
+    invoice_url: str = "",
+):
+    """Send invoice notification to a client"""
+    body = f"""
+    
+Dear {client_name},
+A new invoice has been issued for your recent rental.
+| Invoice No.
+|{invoice_number}
+|
+| ---|---|
+| Amount Due
+|{currency} {amount_due}
+|
+| Due Date
+|{due_date}
+|
+Please review the details and arrange payment at your earliest convenience.
+    """
+    return _send(
+        to, 
+        f"Invoice {invoice_number} — Payment Due", 
+        _base_template("Invoice Issued", body)
+    )
