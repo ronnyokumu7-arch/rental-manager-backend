@@ -58,6 +58,8 @@ class BookingOut(BaseModel):
     total_amount: int
     currency_code: str
     status: BookingStatus
+    is_archived: bool = False       # ✅ ADDED
+    archived_at: Optional[datetime] = None  # ✅ ADDED
     created_at: datetime
     updated_at: datetime
 

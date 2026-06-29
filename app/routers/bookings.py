@@ -199,6 +199,42 @@ def restore_booking(booking_id: int, db: Session = Depends(get_db), current_user
     db.refresh(booking)
     return booking
 
+
+# ---------------------------------------------------------------------------
+# Routes — LIST & GET (ADD THESE RIGHT AFTER _get_booking_or_404)
+# ---------------------------------------------------------------------------
+@router.get("/", response_model=list[BookingOut])
+def list_bookings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all active (non-archived) bookings for the current tenant."""
+    return db.query(Booking).filter(
+        Booking.tenant_id == current_user.tenant_id,
+        Booking.is_archived == False,
+    ).order_by(Booking.created_at.desc()).all()
+
+@router.get("/archived", response_model=list[BookingOut])
+def list_archived_bookings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all archived bookings for the current tenant."""
+    return db.query(Booking).filter(
+        Booking.tenant_id == current_user.tenant_id,
+        Booking.is_archived == True,
+    ).order_by(Booking.archived_at.desc()).all()
+
+@router.get("/{booking_id}", response_model=BookingOut)
+def get_booking(
+    booking_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get a single booking by ID."""
+    return _get_booking_or_404(booking_id, current_user.tenant_id, db)
+
+
 @router.delete("/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_booking(booking_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_active_subscription)):
     booking = _get_booking_or_404(booking_id, current_user.tenant_id, db)
