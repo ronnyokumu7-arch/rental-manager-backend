@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import Optional
+from typing import Optional, List
 
 from pydantic_settings import BaseSettings
 
@@ -8,10 +8,12 @@ class Settings(BaseSettings):
     app_name: str = "Rental Manager API"
     environment: str = "development"
     debug: bool = False
+    api_v1_prefix: str = "/api/v1"
+    
     SECRET_KEY: str
     access_token_expire_minutes: int = 10080
     database_url: str
-    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:3002"]
+    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:3002"]
     resend_api_key: str = ""
     from_email: str = "onboarding@resend.dev"
     from_name: str = "Rental Manager"
