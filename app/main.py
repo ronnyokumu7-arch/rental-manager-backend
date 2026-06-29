@@ -44,6 +44,7 @@ settings = get_settings()
 origins = [
     "http://localhost:3000",       # Your local Next.js dev server
     "http://localhost:3001",       # Just in case
+    "https://rental-manager-backend-071n.onrender.com/api/v1", # Your actual production backend URL
     "https://your-frontend-domain.com", # Your actual production frontend URL (add this later)
 ]
 
