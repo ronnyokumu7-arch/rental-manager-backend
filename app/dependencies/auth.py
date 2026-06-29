@@ -1,14 +1,11 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
-
 from app.core.security import decode_access_token
 from app.db.database import get_db
 from app.models.users import User
 
-
 bearer_scheme = HTTPBearer(auto_error=False)
-
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
@@ -29,6 +26,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # ✅ CRITICAL FIX: Removed trailing space from "sub"
     user_id = payload.get("sub")
     if user_id is None:
         raise HTTPException(
