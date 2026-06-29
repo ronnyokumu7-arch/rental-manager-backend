@@ -8,18 +8,17 @@ class Settings(BaseSettings):
     app_name: str = "Rental Manager API"
     environment: str = "development"
     debug: bool = False
-    SECRET_KEY: str = "your-secret-key-change-in-env"
-    access_token_expire_minutes: int = 60
+    SECRET_KEY: str
+    access_token_expire_minutes: int = 10080
     database_url: str
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://localhost:3002"]
     resend_api_key: str = ""
     from_email: str = "onboarding@resend.dev"
     from_name: str = "Rental Manager"
-    superadmin_password: str = "changeme"
-    tenant_admin_password: str = "changeme"
+    superadmin_password: str
+    tenant_admin_password: str
     frontend_url: str = "http://localhost:3000"
     uploads_dir: str = "./uploads"
-    db_server: str = "localhost"
     public_url_base: str = "https://rental-manager-backend-071n.onrender.com/uploads"
 
     model_config = {
