@@ -1,13 +1,12 @@
-# app/schemas/invoice.py
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel
-
 from app.models.invoices import InvoiceStatus
 
 class InvoiceCreate(BaseModel):
     booking_id: int
+    due_date: datetime
     notes: Optional[str] = None
 
 class InvoiceUpdate(BaseModel):
