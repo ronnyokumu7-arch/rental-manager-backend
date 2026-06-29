@@ -1,5 +1,9 @@
 #!/bin/bash
+
+# 1. Run database migrations
 echo "Running database migrations..."
 alembic upgrade head
+
+# 2. Start the app using Gunicorn, binding to the correct host and port
 echo "Starting application..."
-gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+exec gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
