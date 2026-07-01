@@ -9,7 +9,7 @@ from app.core.exceptions import http_exception_handler
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 from app.routers import (
     admin, auth, bookings, clients, contracts,
-    invoices, payments, quotations, reports, subscriptions,
+    invoices, payments, reports, subscriptions,
     tenant_policies, tenant_profile, tenants,
     users, vehicles,
 )
@@ -39,7 +39,8 @@ settings = get_settings()
 origins = [
     "http://localhost:3000",       # Your local Next.js dev server
     "http://localhost:3001",       # Just in case
-    "https://rental-manager-backend-071n.onrender.com",  # ✅ Fixed: Removed /api/v1
+    "https://rental-manager-frontend.versel.app" #Change to live frontend url
+    "https://rental-manager-backend-nskf.onrender.com",  # ✅ Fixed: Removed /api/v1
 ]
 
 app = FastAPI(
@@ -78,10 +79,9 @@ routers = [
     auth, tenants, users, clients, vehicles,
     bookings, subscriptions, invoices, payments,
     tenant_profile, tenant_policies, contracts,
-    admin, reports, quotations  # ✅ Quotations included here ONLY
+    admin, reports
 ]
 
 for router in routers:
     app.include_router(router.router, prefix="/api/v1")
 
-# ✅ REMOVED: Duplicate app.include_router(quotations.router, prefix="/api/v1")
