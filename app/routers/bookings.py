@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.db.database import get_db
@@ -91,11 +91,19 @@ def generate_quote_link(booking_id: int, db: Session = Depends(get_db), current_
 @router.get("/public/{token}")
 def view_public_quote(token: str, db: Session = Depends(get_db)):
     booking = db.query(Booking).filter(Booking.share_token == token).first()
-    if not booking: raise HTTPException(404, "Quotation not found")
-    expiry_limit = booking.start_date.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) > expiry_limit: raise HTTPException(status_code=410, detail="This quotation has expired.")
-    if booking.status != BookingStatus.pending: raise HTTPException(status_code=410, detail="This quotation is no longer valid.")
-
+    if not booking: 
+        raise HTTPException(404, "Quotation not found")
+    
+    # ✅ NEW EXPIRY LOGIC: 7 days from when the quote was sent (or created)
+    sent_at = booking.quotation_sent_at or booking.created_at
+    expiry_limit = sent_at + timedelta(days=7)
+    
+    if datetime.now(timezone.utc) > expiry_limit: 
+        raise HTTPException(status_code=410, detail="This quotation has expired.")
+        
+    if booking.status != BookingStatus.pending: 
+        raise HTTPException(status_code=410, detail="This quotation is no longer valid.")
+        
     client = db.query(Client).filter(Client.id == booking.client_id).first()
     vehicle = db.query(Vehicle).filter(Vehicle.id == booking.vehicle_id).first()
     tenant = db.query(Tenant).filter(Tenant.id == booking.tenant_id).first()
@@ -104,9 +112,12 @@ def view_public_quote(token: str, db: Session = Depends(get_db)):
         "tenant_name": tenant.name if tenant else "Unknown Agency",
         "client_name": client.full_name if client else "Valued Client",
         "vehicle_details": f"{vehicle.make} {vehicle.model} ({vehicle.plate_number})" if vehicle else "Unknown Vehicle",
-        "start_date": str(booking.start_date), "end_date": str(booking.end_date),
-        "pickup_location": booking.pickup_location, "return_location": booking.return_location,
-        "total_amount": str(booking.total_amount), "currency_code": booking.currency_code,
+        "start_date": str(booking.start_date), 
+        "end_date": str(booking.end_date),
+        "pickup_location": booking.pickup_location, 
+        "return_location": booking.return_location,
+        "total_amount": str(booking.total_amount), 
+        "currency_code": booking.currency_code,
         "expires_at": str(expiry_limit),
     }
 
@@ -114,15 +125,24 @@ def view_public_quote(token: str, db: Session = Depends(get_db)):
 @router.post("/public/{token}/accept")
 def accept_public_quote(token: str, db: Session = Depends(get_db)):
     booking = db.query(Booking).filter(Booking.share_token == token).first()
-    if not booking: raise HTTPException(404, "Quotation not found")
-    expiry_limit = booking.start_date.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) > expiry_limit: raise HTTPException(410, "This quotation has expired.")
-    if booking.status != BookingStatus.pending: raise HTTPException(400, "This quotation has already been processed.")
-
+    if not booking: 
+        raise HTTPException(404, "Quotation not found")
+        
+    # ✅ NEW EXPIRY LOGIC: 7 days from when the quote was sent (or created)
+    sent_at = booking.quotation_sent_at or booking.created_at
+    expiry_limit = sent_at + timedelta(days=7)
+    
+    if datetime.now(timezone.utc) > expiry_limit: 
+        raise HTTPException(410, "This quotation has expired.")
+        
+    if booking.status != BookingStatus.pending: 
+        raise HTTPException(400, "This quotation has already been processed.")
+        
     booking.status = BookingStatus.confirmed
     create_contract_for_booking(booking, db)
     create_invoice_for_booking(booking, db)
     db.commit()
+    
     return {"message": "Quotation accepted successfully. Booking confirmed."}
 
 # 6. ACTIVATE, COMPLETE, CANCEL, NO-SHOW, ARCHIVE, RESTORE, DELETE

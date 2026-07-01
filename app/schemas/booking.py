@@ -58,9 +58,13 @@ class BookingOut(BaseModel):
     total_amount: int
     currency_code: str
     status: BookingStatus
-    is_archived: bool = False       # ✅ ADDED
-    archived_at: Optional[datetime] = None  # ✅ ADDED
+    is_archived: bool = False
+    archived_at: Optional[datetime] = None
+    
+    # ✅ ADD THESE TWO LINES
+    share_token: Optional[str] = None
+    quotation_sent_at: Optional[datetime] = None
+    
     created_at: datetime
     updated_at: datetime
-
     model_config = {"from_attributes": True}
