@@ -1,0 +1,100 @@
+"""
+Authenticated file-serving endpoint.
+Replaces public StaticFiles for sensitive tenant uploads (IDs, DLs, contracts).
+"""
+import mimetypes
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import get_settings
+from app.core.limiter import limiter
+from app.db.database import get_db
+from app.dependencies.auth import get_current_user
+from app.models.users import User, UserRole
+
+router = APIRouter(prefix="/files", tags=["files"])
+settings = get_settings()
+
+
+def _get_upload_dir() -> Path:
+    """Returns the configured upload directory."""
+    upload_dir = Path(settings.uploads_dir).resolve()
+    return upload_dir
+
+
+@router.get("/tenant_{tenant_id}/{category}/{filename}")
+@limiter.limit("120/minute")
+async def serve_secure_file(
+    request: Request,
+    tenant_id: int,
+    category: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Serve a file ONLY if the authenticated user has access to the tenant that owns it.
+    
+    Access rules:
+    - Super admins: can access any tenant's files
+    - Tenant users: can ONLY access their own tenant's files
+    - Unauthenticated: blocked (enforced by get_current_user dependency)
+    """
+    # ✅ MULTI-TENANCY ENFORCEMENT
+    if current_user.role != UserRole.super_admin:
+        if current_user.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to files from this tenant"
+            )
+    
+    # ✅ VALIDATE CATEGORY (prevent arbitrary folder access)
+    valid_categories = {"avatar", "compliance", "contract", "misc"}
+    if category not in valid_categories:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file category"
+        )
+    
+    # ✅ PREVENT PATH TRAVERSAL IN FILENAME
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid filename"
+        )
+    
+    # Build and resolve the absolute path
+    upload_dir = _get_upload_dir()
+    file_path = (upload_dir / f"tenant_{tenant_id}" / category / filename).resolve()
+    
+    # ✅ FINAL SAFETY CHECK: Ensure resolved path is strictly inside upload_dir
+    try:
+        file_path.relative_to(upload_dir)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: invalid file path"
+        )
+    
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found"
+        )
+    
+    # Determine content type safely
+    content_type, _ = mimetypes.guess_type(str(file_path))
+    if not content_type:
+        content_type = "application/octet-stream"
+    
+    return FileResponse(
+        path=str(file_path),
+        media_type=content_type,
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+        }
+    )

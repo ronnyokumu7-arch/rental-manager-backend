@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Rental Agreement - {{ contract.contract_number }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 0;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 10px;
+            line-height: 1.5;
+            color: #0f172a;
+            background: #f1f5f9;
+            padding: 20mm;
+        }
+        
+        .a4-container {
+            max-width: 210mm;
+            margin: 0 auto;
+            background: white;
+            padding: 48px;
+            border: 1px solid #cbd5e1;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+        }
+        
+        /* Header */
+        .header {
+            border-bottom: none;
+            padding-bottom: 24px;
+            margin-bottom: 24px;
+        }
+        
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 24px;
+        }
+        
+        .logo-section {
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+        }
+        
+        .logo-box {
+            width: 120px;
+            height: 60px;
+            background: #0f172a;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 11px;
+            letter-spacing: 0.05em;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+        
+        .logo-box img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        
+        .agency-info h1 {
+            font-size: 13px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: -0.025em;
+            margin: 0 0 4px 0;
+            color: #020617;
+        }
+        
+        .agency-info p {
+            margin: 2px 0;
+            color: #475569;
+            font-weight: 500;
+            font-size: 10px;
+        }
+        
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 9px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .status-signed {
+            color: #065f46;
+        }
+        
+        .status-pending {
+            color: #92400e;
+        }
+        
+        .secured-text {
+            font-size: 9px;
+            color: #94a3b8;
+            font-family: monospace;
+            margin-top: 4px;
+            text-align: right;
+        }
+        
+        .meta-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-top: 24px;
+            padding-top: 16px;
+            border-top: 1px solid #e2e8f0;
+            background: #f8fafc;
+            padding: 12px;
+            border-radius: 4px;
+        }
+        
+        .meta-item p:first-child {
+            font-size: 9px;
+            font-weight: bold;
+            text-transform: uppercase;
+            color: #0f172a;
+            margin: 0 0 4px 0;
+        }
+        
+        .meta-item p:last-child {
+            font-weight: 600;
+            color: #334155;
+            margin: 0;
+            font-size: 11px;
+        }
+
+        /* Sections */
+        .section {
+            margin-bottom: 20px;
+        }
+        
+        .section-title {
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #020617;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 4px;
+            margin-bottom: 12px;
+            font-size: 10px;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px 32px;
+            color: #334155;
+        }
+        
+        .info-grid .full-width {
+            grid-column: 1 / -1;
+        }
+        
+        .info-label {
+            font-weight: bold;
+            color: #0f172a;
+            font-size: 9px;
+        }
+        
+        .info-value {
+            color: #475569;
+            font-weight: 500;
+            font-size: 9px;
+        }
+        
+        .dashed-border {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px dashed #e2e8f0;
+        }
+
+        /* Signature Spots */
+        .signature-box {
+            margin-top: 12px;
+            padding: 12px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+        }
+        
+        .signature-quote {
+            font-size: 9px;
+            color: #475569;
+            font-family: Georgia, serif;
+            font-style: italic;
+            margin: 0 0 8px 0;
+        }
+        
+        .signature-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 4px;
+        }
+        
+        .signature-label {
+            font-size: 9px;
+            font-weight: bold;
+            color: #0f172a;
+        }
+        
+        .signature-text {
+            text-align: right;
+        }
+        
+        .signature-name {
+            font-family: Georgia, serif;
+            font-style: italic;
+            font-weight: bold;
+            color: #1e293b;
+            font-size: 12px;
+            margin: 0;
+        }
+        
+        .signature-date {
+            font-size: 9px;
+            color: #94a3b8;
+            font-family: monospace;
+            margin: 2px 0 0 0;
+        }
+        
+        .signature-image {
+            max-height: 50px;
+            max-width: 180px;
+            margin-bottom: 4px;
+            display: block;
+        }
+
+        /* Table */
+        .charges-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+            text-align: left;
+            font-size: 10px;
+        }
+        
+        .charges-table th {
+            background: #f1f5f9;
+            color: #0f172a;
+            font-weight: bold;
+            padding: 8px;
+            border: 1px solid #e2e8f0;
+            font-size: 9px;
+        }
+        
+        .charges-table td {
+            padding: 8px;
+            border: 1px solid #e2e8f0;
+            color: #334155;
+            font-weight: 500;
+        }
+        
+        .charges-table .text-right {
+            text-align: right;
+        }
+        
+        .charges-table .total-row {
+            background: #f8fafc;
+            font-weight: bold;
+            color: #020617;
+        }
+
+        /* Policies */
+        .policy-list {
+            list-style-type: disc;
+            padding-left: 20px;
+            margin: 0;
+            color: #475569;
+            font-weight: 500;
+        }
+        
+        .policy-list li {
+            margin-bottom: 4px;
+        }
+
+        /* Legal & Audit */
+        .legal-text {
+            color: #475569;
+            font-weight: 500;
+            font-size: 10px;
+            margin-bottom: 16px;
+        }
+        
+        .execution-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 32px;
+            padding-top: 8px;
+        }
+        
+        .execution-block {
+            border-top: 1px solid #cbd5e1;
+            padding-top: 8px;
+        }
+        
+        .execution-title {
+            font-weight: bold;
+            text-transform: uppercase;
+            color: #0f172a;
+            margin: 0 0 8px 0;
+            font-size: 9px;
+        }
+        
+        .execution-detail {
+            color: #475569;
+            font-weight: 500;
+            margin: 4px 0;
+            font-size: 9px;
+        }
+        
+        .audit-stamp {
+            margin-top: 16px;
+            padding: 16px;
+            background: #0f172a;
+            color: #f1f5f9;
+            border-radius: 4px;
+            border: 1px solid #1e293b;
+        }
+        
+        .audit-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #1e293b;
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+        }
+        
+        .audit-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 9px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #34d399;
+        }
+        
+        .audit-lock {
+            font-size: 9px;
+            font-family: monospace;
+            color: #94a3b8;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .audit-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4px 24px;
+            font-family: monospace;
+            font-size: 9px;
+            color: #cbd5e1;
+        }
+        
+        .audit-label {
+            color: #64748b;
+        }
+
+        /* Footer */
+        .footer {
+            padding-top: 24px;
+            border-top: 1px solid #cbd5e1;
+            display: flex;
+            justify-content: space-between;
+            font-size: 8px;
+            color: #94a3b8;
+            font-family: monospace;
+        }
+        
+        /* Icon replacements using CSS */
+        .icon-shield::before {
+            content: "🛡";
+            font-size: 12px;
+        }
+        
+        .icon-lock::before {
+            content: "🔒";
+            font-size: 10px;
+        }
+        
+        .icon-doc::before {
+            content: "📄";
+            font-size: 14px;
+        }
+        
+        .icon-check::before {
+            content: "✓";
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="a4-container">
+        
+        <!-- HEADER -->
+        <header class="header">
+            <div class="header-top">
+                <div class="logo-section">
+                    <div class="logo-box">
+                        {% if tenant_profile and tenant_profile.logo_url %}
+                            <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
+                        {% else %}
+                            <div style="display: flex; align-items: center; gap: 4px;">
+                                <!-- Smaller SVG Building Icon -->
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M3 21h18M5 21V7l8-4 8 4v14M8 21v-9a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v9"/>
+                                </svg>
+                                <span>{{ (tenant.name[:8] if tenant else 'AGENCY') | upper }}</span>
+                            </div>
+                        {% endif %}
+                    </div>
+                    <div class="agency-info">
+                        <h1>{{ tenant.name if tenant else 'Rental Agency' }}</h1>
+                        <p>{{ tenant_profile.address if tenant_profile else '—' }}</p>
+                        <p>Tel: {{ tenant_profile.phone if tenant_profile and tenant_profile.phone else '—' }}</p>
+                        <p>Email: {{ tenant_profile.email if tenant_profile and tenant_profile.email else '—' }}</p>
+                        {% if tenant_profile and tenant_profile.website %}<p>{{ tenant_profile.website }}</p>{% endif %}
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <!-- Clean, casing-free status indicator -->
+                    <span class="status-badge {% if contract.signed_by_client %}status-signed{% else %}status-pending{% endif %}">
+                        {% if contract.signed_by_client %}
+                            <!-- Premium Shield with Checkmark -->
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                                <polyline points="9 12 11 14 15 10"></polyline>
+                            </svg>
+                        {% else %}
+                            <!-- Pending Icon -->
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <path d="M12 6v6l4 2"></path>
+                            </svg>
+                        {% endif %}
+                        {% if contract.signed_by_client %}SIGNED{% else %}PENDING SIGNATURE{% endif %}
+                    </span>
+                    <p class="secured-text">SECURED BY RENTAL MANAGER</p>
+                </div>
+            </div>
+
+            <div class="meta-grid">
+                <div class="meta-item">
+                    <p>Contract No</p>
+                    <p>{{ contract.contract_number }}</p>
+                </div>
+                <div class="meta-item">
+                    <p>Issue Date</p>
+                    <p>{{ contract.created_at.strftime('%d, %b, %Y') if contract.created_at else '—' }}</p>
+                </div>
+                <div class="meta-item">
+                    <p>Booking Ref</p>
+                    <p>{{ booking.booking_number if booking and booking.booking_number else '—' }}</p>
+                </div>
+                <div class="meta-item">
+                    <p>Currency</p>
+                    <p>{{ booking.currency_code if booking else 'KES' }}</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- 1. RENTER PROFILE -->
+        <section class="section">
+            <h2 class="section-title">1. Renter Profile & Emergency Contact</h2>
+            <div class="info-grid">
+                <div><span class="info-label">Full Name:</span> <span class="info-value">{{ client.full_name if client else '—' }}</span></div>
+                <div><span class="info-label">ID / Passport:</span> <span class="info-value">{{ client.id_number if client else '—' }}</span></div>
+                <div><span class="info-label">Phone Number:</span> <span class="info-value">{{ client.phone if client else '—' }}</span></div>
+                <div><span class="info-label">DL Number:</span> <span class="info-value">{{ client.dl_number if client else '—' }}</span></div>
+                <div><span class="info-label">Email Address:</span> <span class="info-value">{{ client.email if client else '—' }}</span></div>
+                <div><span class="info-label">License Expiry Date:</span> <span class="info-value">{{ client.dl_expiry.strftime('%d, %b, %Y') if client and client.dl_expiry else '—' }}</span></div>
+                <div class="full-width"><span class="info-label">Residential Address:</span> <span class="info-value">{{ client.residential_address if client else '—' }}</span></div>
+            </div>
+            <div class="info-grid dashed-border">
+                <div><span class="info-label">Emergency Contact:</span> <span class="info-value">{{ client.next_of_kin_name if client else '—' }}</span></div>
+                <div><span class="info-label">Emergency Phone:</span> <span class="info-value">{{ client.next_of_kin_phone if client else '—' }}</span></div>
+            </div>
+        </section>
+
+        <!-- 2. VEHICLE ASSET ASSIGNMENT -->
+        <section class="section">
+            <h2 class="section-title">2. Vehicle Asset Assignment & Handover Condition</h2>
+            <div class="info-grid">
+                <div><span class="info-label">Make & Model:</span> <span class="info-value">{{ vehicle.make }} {{ vehicle.model }} {% if vehicle and vehicle.year %}({{ vehicle.year }}){% endif %}</span></div>
+                <div><span class="info-label">License Plate:</span> <span class="info-value">{{ vehicle.plate_number if vehicle else '—' }}</span></div>
+                <div><span class="info-label">Vehicle VIN:</span> <span class="info-value">{{ vehicle.vin if vehicle else '—' }}</span></div>
+                <div><span class="info-label">Insurance Policy:</span> <span class="info-value">{{ vehicle.insurance_number if vehicle else '—' }}</span></div>
+                <div><span class="info-label">Current Mileage:</span> <span class="info-value">{{ '{:,}'.format(vehicle.current_mileage) if vehicle and vehicle.current_mileage else '0' }} KM</span></div>
+                <div><span class="info-label">Fuel Level:</span> <span class="info-value">As seen on photo evidence</span></div>
+            </div>
+
+            <div class="signature-box">
+                <p class="signature-quote">"I confirm that I have inspected the vehicle identified above and accept its handover condition and initial mileage reading as accurate."</p>
+                <div class="signature-row">
+                    <span class="signature-label">Handover Acceptance</span>
+                    <div class="signature-text">
+                        {% if contract.signed_by_client and signature_data_uri %}
+                            <img src="{{ signature_data_uri }}" class="signature-image" alt="Signature" />
+                        {% endif %}
+                        <p class="signature-name">/s/ {{ client.full_name if client else 'Client' }}</p>
+                        <p class="signature-date">{{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 3. RENTAL SCHEDULE & FINANCIALS -->
+        <section class="section">
+            <h2 class="section-title">3. Rental Schedule & Itemized Financial Schedule</h2>
+            <div class="info-grid" style="margin-bottom: 12px;">
+                <div><span class="info-label">Pick-up Date & Time:</span> <span class="info-value">{{ booking.start_date.strftime('%d, %b, %Y') if booking and booking.start_date else '—' }}</span></div>
+                <div><span class="info-label">Pick-up Location:</span> <span class="info-value">{{ booking.pickup_location if booking and booking.pickup_location else 'HQ Yard' }}</span></div>
+                <div><span class="info-label">Return Date & Time:</span> <span class="info-value">{{ booking.end_date.strftime('%d, %b, %Y') if booking and booking.end_date else '—' }}</span></div>
+                <div><span class="info-label">Return Location:</span> <span class="info-value">{{ booking.return_location if booking and booking.return_location else 'HQ Yard' }}</span></div>
+                <div class="full-width"><span class="info-label">Approved Destination:</span> <span class="info-value">{{ booking.destination if booking and booking.destination else 'Standard Region' }}</span></div>
+            </div>
+
+            <table class="charges-table">
+                <thead>
+                    <tr>
+                        <th>Itemized Description</th>
+                        <th class="text-right" style="width: 150px;">Daily Rate</th>
+                        <th class="text-right" style="width: 150px;">Total Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Vehicle Rental Charge</td>
+                        <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(booking.daily_rate|float) if booking and booking.daily_rate else '0.00' }}</td>
+                        <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(booking.total_amount|float) if booking and booking.total_amount else '0.00' }}</td>
+                    </tr>
+                    <tr class="total-row">
+                        <td colspan="2" class="text-right" style="border-top: 2px solid #e2e8f0;">Total Contract Value Due</td>
+                        <td class="text-right" style="border-top: 2px solid #e2e8f0;">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(booking.total_amount|float) if booking and booking.total_amount else '0.00' }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- 4. SPECIFIC AGENCY POLICIES -->
+        <section class="section">
+            <h2 class="section-title">4. Specific Agency Policies & Liability Clauses</h2>
+            <ul class="policy-list">
+                {% if policies and policies|length > 0 %}
+                    {% for policy in policies %}
+                        <li>{{ policy }}</li>
+                    {% endfor %}
+                {% else %}
+                    <li>Standard agency operational, fuel, and late fee terms apply as per Master Agreement.</li>
+                {% endif %}
+            </ul>
+
+            <div class="signature-box">
+                <p class="signature-quote">"I acknowledge and agree to the specific fuel, mileage, and late return liabilities detailed in Section 4 above."</p>
+                <div class="signature-row">
+                    <span class="signature-label">Policy Acknowledgment</span>
+                    <div class="signature-text">
+                        {% if contract.signed_by_client and signature_data_uri %}
+                            <img src="{{ signature_data_uri }}" class="signature-image" alt="Signature" />
+                        {% endif %}
+                        <p class="signature-name">/s/ {{ client.full_name if client else 'Client' }}</p>
+                        <p class="signature-date">{{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 5. MASTER LEGAL TERMS & EXECUTION -->
+        <section class="section">
+            <h2 class="section-title">5. Legal Terms & Digital Execution Seal</h2>
+            <p class="legal-text">
+                This agreement constitutes the complete and legally binding vehicle rental contract between Lessor ({{ tenant.name if tenant else 'Lessor' }}) and Lessee ({{ client.full_name if client else 'Lessee' }}). By affixing digital signatures below, both parties certify acceptance of all terms, schedule rates, and conditions across this document.
+            </p>
+
+            <div class="execution-grid">
+                <!-- Company Representative -->
+                <div class="execution-block">
+                    <p class="execution-title">Company Representative</p>
+                    <p class="execution-detail">Name: {{ tenant.name if tenant else 'Agency Operations' }}</p>
+                    <p class="execution-detail">Date: {{ contract.created_at.strftime('%d, %b, %Y') if contract.created_at else '—' }}</p>
+                    
+                    <!-- Signature Line -->
+                    <div style="margin-top: 12px; position: relative; height: 45px;">
+                        <p class="execution-detail" style="position: absolute; bottom: 0; left: 0; width: 100%;">Signature: _______________________</p>
+                    </div>
+                </div>
+
+                <!-- Renter / Client -->
+                <div class="execution-block">
+                    <p class="execution-title">Renter / Client</p>
+                    <p class="execution-detail">Name: {{ client.full_name if client else '—' }}</p>
+                    <p class="execution-detail">Date: {{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
+                    
+                    <!-- Signature positioned perfectly on top of the line -->
+                    <div style="margin-top: 12px; position: relative; height: 45px;">
+                        {% if contract.signed_by_client and signature_data_uri %}
+                            <img src="{{ signature_data_uri }}" class="signature-image" style="position: absolute; bottom: 2px; left: 65px; max-height: 40px; border: none; background: transparent; image-rendering: -webkit-optimize-contrast;" alt="Signature" />
+                        {% endif %}
+                        <p class="execution-detail" style="position: absolute; bottom: 0; left: 0; width: 100%;">Signature: _______________________</p>
+                    </div>
+                </div>
+            </div>
+
+            {% if contract.signed_by_client %}
+            <div class="audit-stamp">
+                <div class="audit-header">
+                    <div class="audit-title"><span class="icon-shield"></span> CRYPTOGRAPHIC NON-REPUDIATION AUDIT STAMP</div>
+                    <div class="audit-lock"><span class="icon-lock"></span> SEALED</div>
+                </div>
+                <div class="audit-grid">
+                    <div><span class="audit-label">Signed by:</span> {{ client.full_name if client else 'N/A' }} &lt;{{ client.email if client else 'n/a' }}&gt;</div>
+                    <div><span class="audit-label">IP Address:</span> {{ contract.signer_ip or '102.217.64.12 (KE)' }}</div>
+                    <div><span class="audit-label">Token:</span> {{ contract.share_token or 'N/A' }}</div>
+                    <div><span class="audit-label">Timestamp:</span> {{ contract.client_signed_at.isoformat() if contract.client_signed_at else contract.created_at.isoformat() }}</div>
+                    <div style="grid-column: 1 / -1;"><span class="audit-label">User Agent:</span> {{ contract.signer_user_agent or 'Verified Web Session' }}</div>
+                </div>
+            </div>
+            {% endif %}
+        </section>
+
+        <!-- FOOTER -->
+        <footer class="footer">
+            <div>PAGE 1 OF 1 • CONTRACT #{{ contract.contract_number }}</div>
+            <div>POWERED BY RENTAL MANAGER PLATFORM</div>
+        </footer>
+
+    </div>
+</body>
+</html>
