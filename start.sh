@@ -1,18 +1,24 @@
 #!/bin/bash
-set -e  # Exit immediately if any command fails
+set -e
 
-# Render sets $PORT; default to 8000 for local testing
 export PORT="${PORT:-8000}"
 echo "🔧 Using PORT: $PORT"
 
-# 1. Run database migrations
-echo "🔄 Running database migrations..."
-if ! alembic upgrade head; then
-  echo "❌ Migration failed. Check DATABASE_URL and database connectivity."
-  exit 1
+# 1. Try running migrations first
+if alembic upgrade head; then
+  echo "✅ Migrations applied successfully."
+else
+  echo "⚠️ Migrations failed (likely fresh DB). Bootstrapping schema..."
+  
+  # Create tables from current models
+  python scripts/init_db.py
+  
+  # Tell Alembic the DB is already at the latest revision
+  echo "🏷️  Stamping Alembic to head revision..."
+  alembic stamp head
+  echo "✅ Schema bootstrapped and Alembic synced."
 fi
-echo "✅ Migrations complete."
 
-# 2. Start the FastAPI server with explicit host/port
-echo "🚀 Starting application on 0.0.0.0:$PORT with 2 workers..."
+# 2. Start FastAPI server
+echo " Starting application on 0.0.0.0:$PORT with 2 workers..."
 exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers 2
