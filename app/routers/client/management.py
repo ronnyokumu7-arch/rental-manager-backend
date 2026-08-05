@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +12,7 @@ from app.models.users import User
 from app.models.clients import Client
 from app.models.bookings import Booking, BookingStatus
 from app.schemas.client import ClientCreate, ClientOut, ClientUpdate
-from app.schemas.pagination import PaginatedResponse, paginate_items
+from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.services.cache import get_cached_client_list, set_cached_client_list, invalidate_client_cache
 from app.services.client_tasks import ClientTaskService
 from ._helpers import get_authorized_client_async
@@ -91,7 +91,7 @@ async def list_clients(
     # Check cache first
     cached = await get_cached_client_list(scope.tenant_id, archived=False)
     if cached is not None:
-        return cached
+        return paginate_cached_items(cached, page=page, page_size=page_size)
     
     # Cache miss: fetch from DB
     stmt = select(Client).where(Client.is_archived == False)
@@ -124,7 +124,7 @@ async def list_archived_clients(
     # Check cache first
     cached = await get_cached_client_list(scope.tenant_id, archived=True)
     if cached is not None:
-        return cached
+        return paginate_cached_items(cached, page=page, page_size=page_size)
     
     # Cache miss: fetch from DB
     stmt = select(Client).where(Client.is_archived == True)

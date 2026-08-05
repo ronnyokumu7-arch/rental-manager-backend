@@ -2,7 +2,7 @@ import secrets
 from datetime import datetime, timezone, timedelta
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +18,7 @@ from app.models.role_template import RoleTemplate
 from app.models.tenants import Tenant
 from app.core.permissions import ALL_PERMISSION_KEYS
 from app.schemas.user import UserOut, UserUpdate, SuperAdminUserCreate, SuperAdminUserUpdate
-from app.schemas.pagination import PaginatedResponse, paginate_items
+from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.services.email import send_welcome_email
 from app.services.cache import get_cached_user_list, set_cached_user_list, invalidate_user_cache
 from app.services.activity_log import ActivityLogService
@@ -99,7 +99,7 @@ async def list_users(
         is_suspended=is_suspended
     )
     if cached is not None:
-        return cached
+        return paginate_cached_items(cached, page=page, page_size=page_size)
 
     # ✅ 2. Cache miss: Query DB
     stmt = select(User)
@@ -231,9 +231,36 @@ async def update_user(
         
     await db.refresh(user)
 
-    # ✅ Invalidate cache and log the update
+    # ✅ Invalidate user cache
     if user.tenant_id:
         await invalidate_user_cache(user.tenant_id)
+    
+    # ✅ CRITICAL: Sync tenant admin snapshot if this user is the tenant owner
+    # This ensures the super admin portal sees updated admin details immediately
+    if user.tenant_id and user.role == UserRole.tenant_admin:
+        tenant_stmt = select(Tenant).where(
+            Tenant.id == user.tenant_id,
+            Tenant.owner_id == user.id
+        )
+        tenant = (await db.execute(tenant_stmt)).scalars().first()
+        
+        if tenant:
+            # Sync only the fields that were actually updated
+            sync_needed = False
+            if "full_name" in safe_update_data:
+                tenant.admin_name = user.full_name
+                sync_needed = True
+            if "email" in safe_update_data:
+                tenant.admin_email = user.email
+                sync_needed = True
+            if "phone_number" in safe_update_data:
+                tenant.admin_phone = user.phone_number
+                sync_needed = True
+            
+            # Only commit and invalidate if we actually changed something
+            if sync_needed:
+                await db.commit()
+                await invalidate_tenant_cache(user.tenant_id)
         
     await ActivityLogService.log(
         db=db, tenant_id=user.tenant_id or 0, user_id=current_user.id,

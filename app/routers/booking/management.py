@@ -15,7 +15,7 @@ from app.models.clients import Client, ClientStatus
 from app.models.users import User
 from app.models.vehicles import Vehicle, VehicleStatus
 from app.schemas.booking import BookingCreate, BookingOut, BookingUpdate
-from app.schemas.pagination import PaginatedResponse, paginate_items
+from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.services.cache import get_cached_booking_list, set_cached_booking_list, invalidate_booking_cache
 from app.services.booking_tasks import BookingTaskService
 from app.services.number_generator import generate_booking_number  # ✅ NEW: Centralized number generator
@@ -51,7 +51,7 @@ async def list_bookings(
         client_id=client_id
     )
     if cached is not None:
-        return cached
+        return paginate_cached_items(cached, page=page, page_size=page_size)
     
     # Cache miss: fetch from DB
     stmt = select(Booking).options(
@@ -96,7 +96,7 @@ async def list_archived_bookings(
     # Check cache first
     cached = await get_cached_booking_list(scope.tenant_id, archived=True)
     if cached is not None:
-        return cached
+        return paginate_cached_items(cached, page=page, page_size=page_size)
     
     # Cache miss: fetch from DB
     stmt = select(Booking).options(

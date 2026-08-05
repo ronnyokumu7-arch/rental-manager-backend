@@ -50,17 +50,19 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    redis_client = None
+    
     try:
         # 1. Initialize Redis cache
-        redis = aioredis.from_url(
+        redis_client = aioredis.from_url(
             settings.redis_url, 
             encoding="utf-8", 
             decode_responses=True
         )
-        FastAPICache.init(RedisBackend(redis), expire=300)
+        FastAPICache.init(RedisBackend(redis_client), expire=300)
         
     except Exception as e:
-        print(f"Initialization warning: {e}")
+        print(f"⚠️ Redis initialization warning: {e}")
 
     # ✅ 2. Pre-warm the headless browser for instant PDF generation
     try:
@@ -70,10 +72,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Browser pre-warm warning: {e}")
 
+    # ✅ 3. Start background scheduler
     start_scheduler()
+    
+    # Yield control to the application
     yield
     
-    # ✅ 3. Clean up the headless browser on shutdown
+    # ─── SHUTDOWN PHASE ─────────────────────────────────────────────────────
+    print("🔄 Shutting down application gracefully...")
+    
+    # Stop scheduler
+    stop_scheduler()
+    
+    # Close browser pool
     try:
         from app.services.browser_pool import browser_pool
         await browser_pool.close()
@@ -81,38 +92,42 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Browser shutdown warning: {e}")
         
-    stop_scheduler()
+    # Close Redis connection to prevent Docker/Render connection leaks
+    if redis_client:
+        try:
+            await redis_client.close()
+            print("✅ Redis connection closed.")
+        except Exception as e:
+            print(f"⚠️ Redis shutdown warning: {e}")
 
 app = FastAPI(
     title=settings.app_name,
     version="1.0.0",
     debug=settings.debug,
     lifespan=lifespan,
-    # ✅ FastAPI natively handles trailing slashes correctly. No redirect hacks needed.
 )
 
 # 2. Register the Rate Limiter globally
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ✅ CLEANUP: Removed redundant manual os.getenv("CORS_ORIGINS") parsing.
-# We now rely entirely on the robust, validated settings.cors_origins from app/core/config.py
+# ✅ CORS Middleware
+# ⚠️ IMPORTANT: Ensure settings.cors_origins returns a LIST of strings, 
+# not a comma-separated string. FastAPI's CORSMiddleware requires a list.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,  # ✅ Uses the pre-validated list from Settings
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ❌ REMOVED: Public StaticFiles mounts for /uploads and /contracts.
-# Serving tenant files (IDs, DLs, contracts) publicly is a critical security risk.
-# All file access is now routed through the authenticated /api/v1/files/ endpoint.
-
 app.add_exception_handler(HTTPException, http_exception_handler)
 
 @app.get("/health", tags=["system"])
 def health_check():
+    # Render's health check only needs a 200 OK response.
+    # Keep this lightweight to avoid blocking the event loop.
     return {
         "status": "ok",
         "environment": settings.environment,
@@ -152,7 +167,7 @@ routers = [
     system,
     user_preferences,
     vault,
-    files,  # ✅ NEW: Add authenticated files router to the list
+    files,
 ]
 
 # ✅ CORRECT: Extracts the .router attribute from each module

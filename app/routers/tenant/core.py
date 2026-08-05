@@ -17,6 +17,7 @@ from app.models.tenants import Tenant, SubscriptionStatus as TenantSubscriptionS
 from app.models.tenant_profile import TenantProfile
 from app.models.users import User, UserRole
 from app.models.subscriptions import Subscription, SubscriptionStatus, PlanType, BillingCycle
+from app.schemas.pagination import PaginatedResponse, paginate_items
 from app.schemas.tenant import TenantCreate, TenantUpdate, TenantOut
 from app.core.security import get_password_hash
 from app.services.cache import get_cached_tenant_list, set_cached_tenant_list, invalidate_tenant_cache

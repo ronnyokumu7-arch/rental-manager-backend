@@ -10,7 +10,7 @@ from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
 from app.models.users import User, UserRole
 from app.models.task import Task, TaskStatus
-from app.schemas.pagination import PaginatedResponse, paginate_items
+from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.schemas.task import TaskOut
 from app.services.cache import get_cached_task_list, set_cached_task_list
 
@@ -38,7 +38,7 @@ async def get_my_tasks(
         category=category
     )
     if cached is not None:
-        return paginate_items(cached, total=len(cached), page=page, page_size=page_size)
+        return paginate_cached_items(cached, page=page, page_size=page_size)
 
     # ✅ 2. Cache miss: Query DB
     stmt = select(Task).where(Task.is_archived == False)
@@ -72,7 +72,7 @@ async def get_my_tasks(
         tasks=tasks
     )
     
-    return tasks
+    return paginate_items(tasks, total=len(tasks), page=page, page_size=page_size)
 
 
 @router.get("/user/{user_id}", response_model=PaginatedResponse[TaskOut])
@@ -93,7 +93,7 @@ async def get_user_tasks(
         category=None
     )
     if cached is not None:
-        return paginate_items(cached, total=len(cached), page=page, page_size=page_size)
+        return paginate_cached_items(cached, page=page, page_size=page_size)
 
     # ✅ 2. Cache miss: Query DB
     tenant_filter = Task.tenant_id == current_user.tenant_id if current_user.tenant_id else True
@@ -116,7 +116,7 @@ async def get_user_tasks(
         tasks=tasks
     )
     
-    return tasks
+    return paginate_items(tasks, total=len(tasks), page=page, page_size=page_size)
 
 
 @router.get("/unassigned", response_model=PaginatedResponse[TaskOut])
@@ -136,7 +136,7 @@ async def get_unassigned_tasks(
         category=None
     )
     if cached is not None:
-        return cached
+        return paginate_cached_items(cached, page=page, page_size=page_size)
 
     # ✅ 2. Cache miss: Query DB
     tenant_filter = Task.tenant_id == current_user.tenant_id if current_user.tenant_id else True
@@ -160,4 +160,4 @@ async def get_unassigned_tasks(
         tasks=tasks
     )
     
-    return tasks
+    return paginate_items(tasks, total=len(tasks), page=page, page_size=page_size)

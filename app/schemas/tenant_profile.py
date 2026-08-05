@@ -17,7 +17,9 @@ class TenantProfileBase(BaseModel):
     kra_pin: Optional[str] = Field(None, max_length=20, alias="tax_number", description="KRA PIN for tax invoicing in Kenya")
     
     # Branding & Contracts
-    logo_url: Optional[str] = Field(None, max_length=500, description="URL to company logo")
+    # ✅ FIX: Removed 500-char cap. Logos are stored as compressed data-URLs
+    # (base64), which exceed 500 chars. 1M chars (~750KB) is a sane abuse guard.
+    logo_url: Optional[str] = Field(None, max_length=1_000_000, description="URL or data-URL of company logo")
     
     # ✅ FIX: Make optional so frontend doesn't have to send it (backend auto-generates it)
     contract_prefix: Optional[str] = Field(None, max_length=10, description="Auto-generated prefix e.g. T0001")
@@ -47,7 +49,8 @@ class TenantProfileUpdate(BaseModel):
     email: Optional[str] = Field(None, max_length=255)
     website: Optional[str] = Field(None, max_length=255)
     kra_pin: Optional[str] = Field(None, max_length=20, alias="tax_number")
-    logo_url: Optional[str] = Field(None, max_length=500)
+    # ✅ FIX: Same as above — allow compressed data-URL logos
+    logo_url: Optional[str] = Field(None, max_length=1_000_000)
     contract_prefix: Optional[str] = Field(None, max_length=10)
     contract_terms: Optional[str] = Field(None, alias="contract_footer")
 

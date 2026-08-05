@@ -31,7 +31,9 @@ class TenantProfile(Base, AuditMixin):
     tax_number = Column(String(20), nullable=True)
     
     # Branding & Contracts
-    logo_url = Column(String(500), nullable=True)
+    # ✅ FIX: String(500) → Text. Logos are stored as compressed data-URLs (base64),
+    # which exceed 500 chars. TEXT has no length limit in PostgreSQL.
+    logo_url = Column(Text, nullable=True)
     contract_prefix = Column(String(10), nullable=False, default="T0000")
     contract_footer = Column(Text, nullable=True)
     

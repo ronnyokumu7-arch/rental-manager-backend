@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -13,6 +13,7 @@ from app.core.limiter import limiter   # 🚨 Rate limiter
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
 from app.models.payments import PaymentVerification, VerificationStatus
+from app.services.cache import invalidate_subscription_cache
 from app.models.subscriptions import Subscription, PlanType, BillingCycle, SubscriptionStatus
 from app.models.tenants import Tenant
 from app.models.users import User, UserRole
@@ -176,7 +177,11 @@ async def review_payment_verification(
     if payload.status == VerificationStatus.rejected:
         verification.rejection_reason = payload.rejection_reason
     elif payload.status == VerificationStatus.approved:
-        # 1. Update Tenant plan & billing cycle
+        # ✅ Compute expiry once so both Tenant and Subscription stay in sync
+        duration_days = 365 if verification.target_billing_cycle == "annual" else 30
+        ends_at = now + timedelta(days=duration_days)
+
+        # 1. Update Tenant plan, billing cycle AND subscription state
         tenant_stmt = select(Tenant).where(Tenant.id == verification.tenant_id)
         tenant = (await db.execute(tenant_stmt)).scalars().first()
         
@@ -185,11 +190,14 @@ async def review_payment_verification(
                 tenant.plan = verification.target_plan
             if hasattr(tenant, "billing_cycle"):
                 tenant.billing_cycle = verification.target_billing_cycle
+            # ✅ CRITICAL FIX: Sync tenant-level state so the tenant portal
+            # unblocks immediately (mirrors superadmin_manual_provision).
+            tenant.subscription_status = SubscriptionStatus.active
+            tenant.subscription_ends_at = ends_at
+            tenant.grace_period_ends_at = ends_at + timedelta(days=7)
+            tenant.trial_ends_at = None
 
         # 2. Activate or update active subscription
-        duration_days = 365 if verification.target_billing_cycle == "annual" else 30
-        ends_at = now + timedelta(days=duration_days)
-
         sub_stmt = select(Subscription).where(
             Subscription.tenant_id == verification.tenant_id
         ).order_by(Subscription.created_at.desc())
@@ -220,4 +228,9 @@ async def review_payment_verification(
 
     await db.commit()
     await db.refresh(verification)
+
+    # ✅ CRITICAL FIX: Wipe the Redis subscription cache so the tenant portal
+    # instantly reflects the new status instead of serving stale data.
+    await invalidate_subscription_cache(verification.tenant_id)
+
     return verification
