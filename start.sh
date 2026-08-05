@@ -1,15 +1,18 @@
 #!/bin/bash
-set -e
+set -e  # Exit immediately if any command fails
 
-# Default to 8000 if Render doesn't provide $PORT
-export PORT=${PORT:-8000}
+# Render sets $PORT; default to 8000 for local testing
+export PORT="${PORT:-8000}"
+echo "🔧 Using PORT: $PORT"
 
 # 1. Run database migrations
 echo "🔄 Running database migrations..."
-alembic upgrade head
+if ! alembic upgrade head; then
+  echo "❌ Migration failed. Check DATABASE_URL and database connectivity."
+  exit 1
+fi
 echo "✅ Migrations complete."
 
-# 2. Start the FastAPI server
-# Note: Using uvicorn directly (not Gunicorn). 2 workers is ideal for I/O-bound async apps.
-echo "🚀 Starting application on port $PORT with 2 workers..."
+# 2. Start the FastAPI server with explicit host/port
+echo "🚀 Starting application on 0.0.0.0:$PORT with 2 workers..."
 exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers 2
