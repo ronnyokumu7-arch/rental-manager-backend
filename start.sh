@@ -21,4 +21,4 @@ fi
 
 # 2. Start FastAPI server
 echo " Starting application on 0.0.0.0:$PORT with 2 workers..."
-exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers 2
+exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT" --workers 1
