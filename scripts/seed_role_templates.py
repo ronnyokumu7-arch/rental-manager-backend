@@ -3,6 +3,7 @@ Seed default role templates for common job titles.
 Run this after deploying to populate the permissions matrix.
 
 Usage:
+    export DATABASE_URL="postgresql+asyncpg://..."
     python scripts/seed_role_templates.py
 """
 import sys
@@ -12,16 +13,35 @@ import asyncio
 # Ensure the root directory is in the path so 'app' can be imported
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select
-from app.db.database import AsyncSessionLocal
+
 from app.core.permissions import ALL_PERMISSION_KEYS
 
 # ✅ CRITICAL FIX: Import the models package once so SQLAlchemy registers all ORM classes
-# before any mapper configuration needs to resolve string-based relationships.
 import app.models  # noqa: F401
 
 from app.models.role_template import RoleTemplate
 from app.models.tenants import Tenant
+
+# --- STANDALONE DATABASE SETUP ---
+# This script creates its own engine to avoid dependency on app.core.config
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    print(" ERROR: DATABASE_URL environment variable is not set.")
+    print("   Run: export DATABASE_URL='postgresql+asyncpg://...'")
+    sys.exit(1)
+
+# Debug: Show which DB we are connecting to
+if "localhost" in DATABASE_URL or "127.0.0.1" in DATABASE_URL:
+    print(f"⚠️  CONNECTING TO LOCAL DB: {DATABASE_URL[:60]}...")
+else:
+    print(f"✅ CONNECTING TO REMOTE DB: {DATABASE_URL[:60]}...")
+
+engine = create_async_engine(DATABASE_URL)
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+# ---------------------------------
 
 # Default role templates with sensible permission sets
 DEFAULT_ROLE_TEMPLATES = {
@@ -176,7 +196,7 @@ DEFAULT_ROLE_TEMPLATES = {
 
 async def seed_role_templates(tenant_id: int):
     """Create default role templates for a tenant."""
-    print(f"Seeding role templates for tenant {tenant_id}...")
+    print(f"\n📋 Seeding role templates for tenant {tenant_id}...")
     
     async with AsyncSessionLocal() as db:
         try:
@@ -194,11 +214,12 @@ async def seed_role_templates(tenant_id: int):
                     template = RoleTemplate(
                         tenant_id=tenant_id,
                         job_title=job_title,
+                        description=template_data.get("description", ""),
                         permissions=template_data["permissions"],
                     )
                     db.add(template)
                     created_count += 1
-                    print(f"  ✓ Created template: {job_title}")
+                    print(f"  ✓ Created: {job_title}")
                 else:
                     print(f"  - Skipped (exists): {job_title}")
             
@@ -206,7 +227,7 @@ async def seed_role_templates(tenant_id: int):
             print(f"✅ Seeded {created_count} role templates for tenant {tenant_id}")
             
         except Exception as e:
-            print(f" Error seeding role templates: {e}")
+            print(f"❌ Error seeding role templates: {e}")
             await db.rollback()
 
 
@@ -219,13 +240,16 @@ async def main():
         tenants = tenants_result.scalars().all()
         
         if not tenants:
-            print(" No tenants found. Create a tenant first.")
+            print("\n️  No tenants found in database.")
+            print("💡 Create a tenant first via the super admin portal.")
             return
         
-        print(f"Found {len(tenants)} tenant(s)")
+        print(f"\n📊 Found {len(tenants)} tenant(s)")
         
         for tenant in tenants:
             await seed_role_templates(tenant.id)
+        
+        print("\n🎉 Role template seeding complete!")
 
 
 if __name__ == "__main__":

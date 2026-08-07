@@ -8,16 +8,24 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from app.db.database import AsyncSessionLocal
 from app.core.security import get_password_hash
 from app.models.users import User, UserRole
-from app.core.config import get_settings
+from app.core.config import get_settings  # ← Updated to accept _env_file param
 from sqlalchemy import select
 
 # ✅ FIX: Import the models package once so SQLAlchemy registers all ORM classes
-# before any mapper configuration needs to resolve string-based relationships.
 import app.models  # noqa: F401
 
-settings = get_settings()
+# 🔧 KEY CHANGE: Ignore .env files, use ONLY system environment variables
+# This ensures we seed the Render DB (via export DATABASE_URL=...), not local
+settings = get_settings(_env_file=None)
 
 async def seed_superadmin():
+    # 🔍 DEBUG: Log which database we're connecting to
+    db_url = settings.database_url
+    if "localhost" in db_url or "127.0.0.1" in db_url:
+        print(f"⚠️  CONNECTING TO LOCAL DB: {db_url[:60]}...")
+    else:
+        print(f"✅ CONNECTING TO REMOTE DB: {db_url[:60]}...")
+    
     # 'async with' handles opening and closing the connection automatically
     async with AsyncSessionLocal() as db:
         try:

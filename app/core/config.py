@@ -82,6 +82,19 @@ class Settings(BaseSettings):
         if not isinstance(v, str) or not v.strip():
             raise ValueError(f"URL field must be a non-empty string, got: {type(v)}")
         return v.strip()
+
+    # ✅ NEW: RENDER DEPLOYMENT FIX
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def enforce_asyncpg_driver(cls, v: str) -> str:
+        """
+        Render provides bare 'postgresql://' URLs which default to the missing psycopg2.
+        We force it to use 'postgresql+asyncpg://' for the main async app.
+        Alembic's env.py will then safely swap '+asyncpg' to '+psycopg' for sync migrations.
+        """
+        if v.startswith("postgresql://"):
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
     
     @field_validator("SECRET_KEY", "ENCRYPTION_KEY")
     @classmethod
@@ -130,17 +143,8 @@ class Settings(BaseSettings):
 
 
 @lru_cache
-def get_settings() -> Settings:
+def get_settings(_env_file: str | None = ".env") -> Settings:
     """
     Returns a cached instance of Settings.
-    This ensures the .env file is only read once per application lifecycle,
-    improving performance and preventing memory leaks.
-    
-    ⚠️ In production (Render), all required fields must be set as Environment Variables
-    in the Render Dashboard:
-      - SECRET_KEY (min 32 chars, use: python -c "import secrets; print(secrets.token_urlsafe(32))")
-      - ENCRYPTION_KEY (44-char base64, use: python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
-      - DATABASE_URL (from Render PostgreSQL "Internal Database URL", prefix with postgresql+asyncpg://)
-      - superadmin_password (set a strong, unique password)
     """
-    return Settings()
+    return Settings(_env_file=_env_file)
