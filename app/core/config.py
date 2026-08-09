@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     # APP IDENTIFICATION
     # ─────────────────────────────────────────────────────────────────────────
-    app_name: str = "Rental Manager API"
+    app_name: str = "Rental Garage API"
     environment: str = "development"
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     resend_api_key: str = ""
     from_email: str = "onboarding@resend.dev"
-    from_name: str = "Rental Manager"
+    from_name: str = "Rental Garage"
     
     # ─────────────────────────────────────────────────────────────────────────
     # URLS & PATHS (Optional - defaults for local dev)

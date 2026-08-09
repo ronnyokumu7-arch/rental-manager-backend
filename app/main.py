@@ -140,7 +140,7 @@ def health_check():
 @app.get("/")
 def root():
     return {
-        "message": "Rental Manager API is running",
+        "message": "Rental Garage API is running",
         "docs": "/docs",
         "health": "/health"
     }

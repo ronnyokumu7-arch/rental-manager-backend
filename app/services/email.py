@@ -67,7 +67,7 @@ def _base_template(title: str, body: str, footer: str = "") -> str:
     <body>
     <div class="container">
         <div class="header">
-            <h1>Rental Manager</h1>
+            <h1>Rental Garage</h1>
             <p>Vehicle Rental Management Platform</p>
         </div>
         <div class="body">
@@ -75,7 +75,7 @@ def _base_template(title: str, body: str, footer: str = "") -> str:
             {body}
         </div>
         <div class="footer">
-            {footer or "This is an automated message from Rental Manager. Please do not reply to this email."}
+            {footer or "This is an automated message from Rental Garage. Please do not reply to this email."}
         </div>
     </div>
     </body>
@@ -178,7 +178,7 @@ async def send_invoice_notification(
 ):
     body = f"""
     <p>Dear {company_name},</p>
-    <p>A new invoice has been issued for your Rental Manager subscription.</p>
+    <p>A new invoice has been issued for your Rental Garage subscription.</p>
     <table class="detail-table">
         <tr><td>Invoice No.</td><td>{invoice_number}</td></tr>
         <tr><td>Amount due</td><td>{currency} {amount_due}</td></tr>
@@ -214,7 +214,7 @@ async def send_trial_ending_warning(
     body = f"""
     <p>Dear {company_name},</p>
     <p>Your free trial ends in <strong>{days_left} day(s)</strong> on <strong>{trial_ends_at}</strong>.</p>
-    <p>To continue using Rental Manager without interruption, please choose a plan and settle your invoice before the trial ends.</p>
+    <p>To continue using Rental Garage without interruption, please choose a plan and settle your invoice before the trial ends.</p>
     <table class="detail-table">
         <tr><td>Days remaining</td><td>{days_left}</td></tr>
         <tr><td>Trial ends</td><td>{trial_ends_at}</td></tr>
@@ -229,7 +229,7 @@ async def send_subscription_past_due(
 ):
     body = f"""
     <p>Dear {company_name},</p>
-    <p>Your Rental Manager subscription is <span class="badge badge-amber">Past Due</span>.</p>
+    <p>Your Rental Garage subscription is <span class="badge badge-amber">Past Due</span>.</p>
     <p>You have until <strong>{grace_period_ends_at}</strong> to settle your invoice before your account is suspended.</p>
     <p>During this grace period you can still view your data but cannot add new clients, vehicles, or bookings.</p>
     <p>Please log in to your portal and pay your outstanding invoice to restore full access.</p>
@@ -242,7 +242,7 @@ async def send_subscription_suspended(
 ):
     body = f"""
     <p>Dear {company_name},</p>
-    <p>Your Rental Manager account has been <span class="badge badge-red">Suspended</span> due to non-payment.</p>
+    <p>Your Rental Garage account has been <span class="badge badge-red">Suspended</span> due to non-payment.</p>
     <p>You can still log in and view your existing data, but you cannot add or modify records until your invoice is settled.</p>
     <p>Please contact support or log in to pay your outstanding invoice to reactivate your account.</p>
     """
@@ -258,7 +258,7 @@ async def send_welcome_email(
 ):
     body = f"""
     <p>Dear {full_name},</p>
-    <p>Welcome to Rental Manager! Your account has been created.</p>
+    <p>Welcome to Rental Garage! Your account has been created.</p>
     <table class="detail-table">
         <tr><td>Email</td><td>{to}</td></tr>
         <tr><td>Role</td><td>{role.replace("_", " ").title()}</td></tr>
@@ -266,7 +266,7 @@ async def send_welcome_email(
     </table>
     <p>Please log in and change your password immediately.</p>
     """
-    return await _send(to, "Welcome to Rental Manager", _base_template("Welcome!", body))
+    return await _send(to, "Welcome to Rental Garage", _base_template("Welcome!", body))
 
 
 async def send_password_changed(
@@ -274,7 +274,7 @@ async def send_password_changed(
 ):
     body = f"""
     <p>Dear {full_name},</p>
-    <p>Your Rental Manager password was recently changed.</p>
+    <p>Your Rental Garage password was recently changed.</p>
     <p>If you did not make this change, please contact your administrator immediately.</p>
     """
     return await _send(to, "Password Changed", _base_template("Password Changed", body))
@@ -285,7 +285,7 @@ async def send_password_reset_email(
 ):
     body = f"""
     <p>Dear {full_name},</p>
-    <p>We received a request to reset your Rental Manager password.</p>
+    <p>We received a request to reset your Rental Garage password.</p>
     <p>Click the button below to set a new password. This link expires in <strong>15 minutes</strong>.</p>
     <a href="{reset_link}" class="btn">Reset my password</a>
     <p style="margin-top: 24px; font-size: 13px; color: #888888;">
@@ -299,7 +299,7 @@ async def send_password_reset_email(
     """
     return await _send(
         to,
-        "Reset your Rental Manager password",
+        "Reset your Rental Garage password",
         _base_template("Password Reset Request", body),
     )
 
@@ -309,7 +309,7 @@ async def send_password_reset_success(
 ):
     body = f"""
     <p>Dear {full_name},</p>
-    <p>Your Rental Manager password has been successfully reset.</p>
+    <p>Your Rental Garage password has been successfully reset.</p>
     <p>If you did not make this change, please contact your administrator immediately.</p>
     """
     return await _send(
@@ -327,7 +327,7 @@ async def send_verification_email(
     """
     body = f"""
     <p>Dear {full_name},</p>
-    <p>Welcome to Rental Manager! To complete your account setup and ensure the security of your data, please verify your email address.</p>
+    <p>Welcome to Rental Garage! To complete your account setup and ensure the security of your data, please verify your email address.</p>
     <p>Click the button below to verify your account. This link will expire in <strong>24 hours</strong>.</p>
     <a href="{verification_link}" class="btn">Verify My Account</a>
     <p style="margin-top: 24px; font-size: 13px; color: #888888;">
@@ -340,7 +340,7 @@ async def send_verification_email(
     """
     return await _send(
         to,
-        "Verify Your Rental Manager Account",
+        "Verify Your Rental Garage Account",
         _base_template("Account Verification", body),
     )
 

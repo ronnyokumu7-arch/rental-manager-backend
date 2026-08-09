@@ -114,7 +114,7 @@ async def send_verification(
     if payload.channel == "email":
         return {"message": f"Verification email sent successfully to {user.email}."}
     else:
-        shareable_message = f"Hello {user.full_name}, please verify your phone number for Rental Manager by clicking this secure link: {verification_link}"
+        shareable_message = f"Hello {user.full_name}, please verify your phone number for Rental Garage by clicking this secure link: {verification_link}"
         return {
             "message": "Phone verification link generated successfully.",
             "verification_link": verification_link,

@@ -1,4 +1,4 @@
-# Rental Manager Backend
+# Rental Garage Backend
 
 A comprehensive FastAPI-based backend application for managing vehicle rental operations, including tenant management, bookings, contracts, payments, invoices, and subscription handling.
 
@@ -21,7 +21,7 @@ A comprehensive FastAPI-based backend application for managing vehicle rental op
 
 ## 🎯 Overview
 
-Rental Manager Backend is a production-ready REST API designed to manage multi-tenant vehicle rental businesses. It provides complete functionality for:
+Rental Garage Backend is a production-ready REST API designed to manage multi-tenant vehicle rental businesses. It provides complete functionality for:
 
 - **Tenant Management**: Support for multiple independent rental businesses
 - **Client Management**: Track clients with contact info, driver's licenses, and communication history
@@ -203,7 +203,7 @@ Create a `.env` file with the following variables:
 
 ```env
 # Application
-APP_NAME="Rental Manager API"
+APP_NAME="Rental Garage API"
 ENVIRONMENT="development"
 DEBUG=True
 SECRET_KEY="your-secret-key-generate-with-openssl-rand-hex-32"
@@ -223,7 +223,7 @@ FRONTEND_URL="http://localhost:3002"
 # Email (Resend API)
 RESEND_API_KEY="your-resend-api-key"
 FROM_EMAIL="noreply@yourdomain.com"
-FROM_NAME="Rental Manager"
+FROM_NAME="Rental Garage"
 ```
 
 **Generating a SECRET_KEY:**

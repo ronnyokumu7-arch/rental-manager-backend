@@ -109,7 +109,7 @@ async def send_user_reset_link(
     if payload.send_to_phone and user.phone_number:
         send_sms_otp(
             phone=user.phone_number,
-            message="Password reset requested for your Rental Manager account. Please check your email for instructions.",
+            message="Password reset requested for your Rental Garage account. Please check your email for instructions.",
         )
 
     # ✅ Log the admin action for audit purposes
