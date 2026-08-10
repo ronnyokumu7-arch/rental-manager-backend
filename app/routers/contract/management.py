@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status  # ✅ FIXED: added Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -68,7 +68,12 @@ async def get_contract(
         selectinload(Contract.booking).selectinload(Booking.client)
     ).where(Contract.id == contract.id)
     result = await db.execute(stmt)
-    return result.scalars().unique().first()
+    contract = result.scalars().unique().first()
+
+    # ✅ FIXED: guard against race-condition deletion → clean 404 instead of 500
+    if not contract:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found")
+    return contract
 
 
 @router.get("/{contract_id}/pdf")
@@ -83,6 +88,7 @@ async def download_contract_pdf(
     
     pdf_bytes = await generate_contract_pdf(contract, db)
     
+    # ✅ FIXED: Response is now imported above (was NameError → 500 before)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
