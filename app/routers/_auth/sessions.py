@@ -75,6 +75,8 @@ async def list_my_sessions(
         description="Pass your current refresh token to mark it as 'is_current' in the response",
     ),
     include_revoked: bool = Query(False, description="Include revoked/expired sessions"),
+    page: int = Query(1, ge=1),                      # ✅ FIXED: was missing
+    page_size: int = Query(50, ge=1, le=200),        # ✅ FIXED: was missing
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
