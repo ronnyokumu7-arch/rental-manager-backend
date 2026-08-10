@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional # ✅ Added Any
 
 from pydantic import BaseModel, computed_field, Field, field_validator
 
@@ -60,7 +60,11 @@ class InvoiceOut(BaseModel):
     discount_amount: Decimal
     discount_reason: Optional[str] = None
 
-    booking: Optional["BookingOut"] = Field(default=None, exclude=True)
+    # ✅ FIXED: Was Optional["BookingOut"]. Typing it as BookingOut forced deep
+    # nested validation, which read booking.vehicle (not eager-loaded) and
+    # crashed with MissingGreenlet on async sessions. The field is exclude=True
+    # and only feeds the computed fields below, so Any is correct and safe.
+    booking: Optional[Any] = Field(default=None, exclude=True)
 
     @computed_field
     @property
@@ -103,6 +107,5 @@ class PublicInvoiceView(BaseModel):
     booking_number: Optional[str] = None
     remaining_balance: Decimal
 
-
-from app.schemas.booking import BookingOut
-InvoiceOut.model_rebuild()
+# ✅ DELETED: The bottom import of BookingOut and model_rebuild() 
+# are no longer needed and remove the circular dependency risk.

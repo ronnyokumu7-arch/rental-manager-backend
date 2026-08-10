@@ -116,6 +116,13 @@ async def create_invoice(
         notes=payload.notes,
     )
     
+    # ✅ FIXED: Re-fetch with eager loading so InvoiceOut computed fields don't crash
+    stmt = select(Invoice).options(
+        selectinload(Invoice.booking).selectinload(Booking.client)
+    ).where(Invoice.id == invoice.id)
+    result = await db.execute(stmt)
+    invoice = result.scalars().unique().first()
+
     # ✅ Invalidate cache
     await invalidate_invoice_cache(current_user.tenant_id)
     return invoice
@@ -154,7 +161,13 @@ async def update_invoice(
         setattr(invoice, field, value)
 
     await db.commit()
-    await db.refresh(invoice)
+    
+    # ✅ FIXED: Re-fetch with eager loading so InvoiceOut computed fields don't crash
+    stmt = select(Invoice).options(
+        selectinload(Invoice.booking).selectinload(Booking.client)
+    ).where(Invoice.id == invoice.id)
+    result = await db.execute(stmt)
+    invoice = result.scalars().unique().first()
     
     # ✅ Invalidate cache
     await invalidate_invoice_cache(current_user.tenant_id)
@@ -194,7 +207,13 @@ async def void_invoice(
 
     invoice.status = InvoiceStatus.void
     await db.commit()
-    await db.refresh(invoice)
+    
+    # ✅ FIXED: Re-fetch with eager loading so InvoiceOut computed fields don't crash
+    stmt = select(Invoice).options(
+        selectinload(Invoice.booking).selectinload(Booking.client)
+    ).where(Invoice.id == invoice.id)
+    result = await db.execute(stmt)
+    invoice = result.scalars().unique().first()
     
     # ✅ Invalidate both invoice and subscription caches (voiding affects financial health)
     await invalidate_invoice_cache(current_user.tenant_id)
@@ -210,12 +229,15 @@ async def download_invoice_pdf(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    stmt = select(Invoice).where(
+    # ✅ FIXED: Added eager loading in case generate_invoice_pdf accesses booking/client
+    stmt = select(Invoice).options(
+        selectinload(Invoice.booking).selectinload(Booking.client)
+    ).where(
         Invoice.id == invoice_id,
         Invoice.tenant_id == current_user.tenant_id
     )
     result = await db.execute(stmt)
-    invoice = result.scalars().first()
+    invoice = result.scalars().unique().first()
     
     if not invoice:
         raise HTTPException(

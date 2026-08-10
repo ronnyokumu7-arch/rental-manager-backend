@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional  # ✅ Added Any
 
 from pydantic import BaseModel, computed_field, Field, field_validator, model_validator
 
@@ -42,8 +42,11 @@ class PaymentOut(BaseModel):
     notes: Optional[str] = None
     created_at: datetime
 
-    # ✅ Type-safe invoice relationship (excluded from serialization)
-    invoice: Optional["InvoiceOut"] = Field(default=None, exclude=True)
+    # ✅ FIXED: Was Optional["InvoiceOut"]. Typing it as InvoiceOut forced deep
+    # nested validation, which read invoice.booking.client (not eager-loaded) and
+    # crashed with MissingGreenlet on async sessions. The field is exclude=True
+    # and only feeds the computed fields below, so Any is correct and safe.
+    invoice: Optional[Any] = Field(default=None, exclude=True)
 
     @computed_field
     @property
@@ -140,7 +143,5 @@ class PaymentVerificationOut(BaseModel):
 
     model_config = {"from_attributes": True}
 
-
-# Forward reference for type hint
-from app.schemas.invoice import InvoiceOut
-PaymentOut.model_rebuild()
+# ✅ DELETED: The bottom import of InvoiceOut and model_rebuild() 
+# are no longer needed and remove the circular dependency risk.
