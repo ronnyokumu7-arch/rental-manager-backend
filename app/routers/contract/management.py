@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status  # ✅ FIXED: added Response
+import os  # ✅ ADDED: needed for the stored-PDF fast path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -85,10 +87,17 @@ async def download_contract_pdf(
     current_user: User = Depends(get_current_user),
 ):
     contract = await get_authorized_contract_async(contract_id, current_user, db)
-    
-    pdf_bytes = await generate_contract_pdf(contract, db)
-    
-    # ✅ FIXED: Response is now imported above (was NameError → 500 before)
+
+    # ✅ FAST PATH: The PDF was already rendered to disk at creation time.
+    # Serve it directly — no Chromium/browser pool, no 15s hang.
+    pdf_bytes = None
+    if contract.pdf_path and os.path.exists(contract.pdf_path):
+        with open(contract.pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+    else:
+        # Only regenerate if the stored file is missing (e.g., after a Render redeploy)
+        pdf_bytes = await generate_contract_pdf(contract, db)
+
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
