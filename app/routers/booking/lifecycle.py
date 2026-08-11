@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload  # ✅ ADDED
 
 from app.db.database import get_db
 from app.core.limiter import limiter
@@ -14,6 +15,19 @@ from app.services.cache import invalidate_booking_cache, invalidate_vehicle_cach
 from ._helpers import get_authorized_booking_async
 
 router = APIRouter()
+
+
+async def _reload_booking(db: AsyncSession, booking_id: int):
+    """
+    ✅ FIXED: Re-fetch with eager loading after commit so BookingOut
+    serialization (nested client/vehicle) can't trigger MissingGreenlet.
+    """
+    stmt = select(Booking).options(
+        selectinload(Booking.client),
+        selectinload(Booking.vehicle)
+    ).where(Booking.id == booking_id)
+    result = await db.execute(stmt)
+    return result.scalars().unique().first()
 
 
 @router.post("/{booking_id}/confirm", response_model=BookingOut)
@@ -35,9 +49,8 @@ async def confirm_booking(
     booking.status = BookingStatus.confirmed
     
     await db.commit()
-    await db.refresh(booking)
+    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
     
-    # ✅ Invalidate cache
     await invalidate_booking_cache(current_user.tenant_id)
     
     return booking
@@ -59,7 +72,6 @@ async def activate_booking(
             detail="Only confirmed bookings can be activated."
         )
         
-    # ✅ Validate client belongs to tenant and is active
     client_stmt = select(Client).where(
         Client.id == booking.client_id,
         Client.tenant_id == current_user.tenant_id
@@ -79,7 +91,6 @@ async def activate_booking(
             detail="Client must be active to activate a booking."
         )
         
-    # ✅ Validate vehicle belongs to tenant and is available
     vehicle_stmt = select(Vehicle).where(
         Vehicle.id == booking.vehicle_id,
         Vehicle.tenant_id == current_user.tenant_id
@@ -103,9 +114,8 @@ async def activate_booking(
     vehicle.status = VehicleStatus.rented
     
     await db.commit()
-    await db.refresh(booking)
+    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
     
-    # ✅ Invalidate both booking and vehicle caches
     await invalidate_booking_cache(current_user.tenant_id)
     await invalidate_vehicle_cache(current_user.tenant_id)
     
@@ -128,7 +138,6 @@ async def complete_booking(
             detail="Only active bookings can be completed."
         )
         
-    # ✅ Validate vehicle belongs to tenant
     vehicle_stmt = select(Vehicle).where(
         Vehicle.id == booking.vehicle_id,
         Vehicle.tenant_id == current_user.tenant_id
@@ -146,9 +155,8 @@ async def complete_booking(
     vehicle.status = VehicleStatus.awaiting_mileage
     
     await db.commit()
-    await db.refresh(booking)
+    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
     
-    # ✅ Invalidate both booking and vehicle caches
     await invalidate_booking_cache(current_user.tenant_id)
     await invalidate_vehicle_cache(current_user.tenant_id)
     
@@ -171,7 +179,6 @@ async def cancel_booking(
             detail=f"Cannot cancel a {booking.status.value} booking."
         )
         
-    # ✅ Validate vehicle belongs to tenant
     vehicle_stmt = select(Vehicle).where(
         Vehicle.id == booking.vehicle_id,
         Vehicle.tenant_id == current_user.tenant_id
@@ -185,16 +192,14 @@ async def cancel_booking(
             detail="Vehicle not found."
         )
     
-    # If booking was active, free up the vehicle
     if booking.status == BookingStatus.active:
         vehicle.status = VehicleStatus.available 
         
     booking.status = BookingStatus.cancelled
     
     await db.commit()
-    await db.refresh(booking)
+    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
     
-    # ✅ Invalidate both booking and vehicle caches
     await invalidate_booking_cache(current_user.tenant_id)
     await invalidate_vehicle_cache(current_user.tenant_id)
     
@@ -220,9 +225,8 @@ async def no_show_booking(
     booking.status = BookingStatus.no_show
     
     await db.commit()
-    await db.refresh(booking)
+    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
     
-    # ✅ Invalidate cache
     await invalidate_booking_cache(current_user.tenant_id)
     
     return booking
