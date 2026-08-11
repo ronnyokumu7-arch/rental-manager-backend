@@ -3,6 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install system dependencies required by your stack (psycopg2, cryptography, weasyprint, etc.)
+# ✅ ADDED: chromium + fonts so pyppeteer can launch a real browser on Render.
 # NOTE: libgdk-pixbuf-xlib-2.0-0 replaces libgdk-pixbuf2.0-0 in Debian Trixie+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -14,6 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgdk-pixbuf-xlib-2.0-0 \
     shared-mime-info \
     libmagic1 \
+    chromium \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for Docker layer caching
