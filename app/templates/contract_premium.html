@@ -549,7 +549,7 @@
                 <tbody>
                     <tr>
                         <td>Vehicle Rental Charge</td>
-                        <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(booking.daily_rate|float) if booking and booking.daily_rate else '0.00' }}</td>
+                        <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(daily_rate|float) }}</td>
                         <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(booking.total_amount|float) if booking and booking.total_amount else '0.00' }}</td>
                     </tr>
                     <tr class="total-row">

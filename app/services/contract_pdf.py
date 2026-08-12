@@ -66,6 +66,18 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "LATE RETURNS: Returns over 2 hours late are treated as a new rental day (daily rates apply)."
     ]
 
+        # ✅ FIXED: Daily rate = the specific vehicle's 1-day rate (source of truth).
+    # Rental days are inclusive of pickup AND return day (Aug 13 → Aug 14 = 2 days),
+    # so Total = daily_rate × days (6500 × 2 = 13000).
+    daily_rate = 0
+    if vehicle and vehicle.daily_rate:
+        daily_rate = vehicle.daily_rate            # ✅ the vehicle's actual 1-day rate
+    elif booking and booking.daily_rate:
+        daily_rate = booking.daily_rate            # stored snapshot, if vehicle rate missing
+    elif booking and booking.total_amount and booking.start_date and booking.end_date:
+        days = (booking.end_date - booking.start_date).days + 1
+        daily_rate = booking.total_amount / days   # last-resort derivation (13000 / 2 = 6500)
+
     # 3. PREPARE CONTEXT FOR JINJA2 TEMPLATE
     context = {
         "contract": contract,
@@ -76,6 +88,7 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "tenant_profile": tenant_profile,
         "signature_data_uri": signature_data_uri,
         "policies": default_policies,
+        "daily_rate": daily_rate,  # ✅ NEW: Explicit daily rate for template
     }
 
     # 4. RENDER HTML
@@ -84,7 +97,6 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
 
     # 5. OPTIMIZED PDF GENERATION WITH BROWSER POOL
     try:
-        # This will now automatically restart Chrome if the previous one died
         browser = await browser_pool.get_browser()
         page = await browser.newPage()
         await page.setContent(html_content)

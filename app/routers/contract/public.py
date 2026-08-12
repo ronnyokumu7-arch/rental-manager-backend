@@ -127,11 +127,17 @@ async def sign_contract_public(
     with open(filepath, "wb") as f:
         f.write(image_bytes)
         
-    contract.signature_image_path = filepath
+        contract.signature_image_path = filepath
     contract.signed_by_client = True
     contract.client_signed_at = now
     contract.status = ContractStatus.signed
-    
+
+    # ✅ FIXED: Invalidate the stored (pre-signature) PDF.
+    # The tenant download endpoint serves contract.pdf_path when it exists,
+    # and that file was rendered BEFORE the client signed. Clearing it forces
+    # a fresh render (with the signature) on the next download.
+    contract.pdf_path = None
+
     await db.commit()
     await db.refresh(contract)
 
