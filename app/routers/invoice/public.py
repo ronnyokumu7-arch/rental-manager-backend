@@ -97,6 +97,8 @@ async def view_invoice_public(
         tenant_email=profile.email if profile else None,
         tenant_phone=profile.phone if profile else None,
         vehicle_description=f"{vehicle.make} {vehicle.model} ({vehicle.plate_number})" if vehicle else "N/A",
+        vehicle_name=f"{vehicle.make} {vehicle.model}" if vehicle else None,
+        vehicle_plate=vehicle.plate_number if vehicle else None,
         booking_start_date=str(booking.start_date) if booking else None,
         booking_end_date=str(booking.end_date) if booking else None,
         payment_details=payment_details,

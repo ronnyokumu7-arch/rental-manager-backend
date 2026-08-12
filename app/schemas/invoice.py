@@ -119,6 +119,8 @@ class PublicInvoiceView(BaseModel):
     client_phone: Optional[str] = None
     tenant_name: Optional[str] = None
     vehicle_description: Optional[str] = None
+    vehicle_name: Optional[str] = None
+    vehicle_plate: Optional[str] = None
     booking_number: Optional[str] = None
     booking_start_date: Optional[str] = None
     booking_end_date: Optional[str] = None
