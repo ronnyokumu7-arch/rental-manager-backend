@@ -1,3 +1,4 @@
+# app/routers/invoices/public.py
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -11,8 +12,9 @@ from app.models.bookings import Booking
 from app.models.clients import Client
 from app.models.invoices import Invoice, InvoiceStatus
 from app.models.tenants import Tenant
+from app.models.tenant_profile import TenantProfile
 from app.models.vehicles import Vehicle
-from app.schemas.invoice import PublicInvoiceView
+from app.schemas.invoice import PublicInvoiceView, PublicPaymentDetails
 from app.services.invoice_pdf import generate_invoice_pdf
 
 # ✅ No prefix here! The hub file provides the "/invoices" prefix.
@@ -30,7 +32,7 @@ async def view_invoice_public(
     stmt = select(Invoice).options(
         selectinload(Invoice.booking).selectinload(Booking.client),
         selectinload(Invoice.booking).selectinload(Booking.vehicle),
-        selectinload(Invoice.tenant)
+        selectinload(Invoice.tenant).selectinload(Tenant.profile)  # ✅ NEW: Fetch tenant profile
     ).where(Invoice.share_token == token)
     
     result = await db.execute(stmt)
@@ -58,6 +60,22 @@ async def view_invoice_public(
     client = booking.client if booking else None
     vehicle = booking.vehicle if booking else None
     tenant = invoice.tenant
+    profile = tenant.profile if tenant else None
+
+    # ✅ Build dynamic payment details (never fabricates missing fields)
+    payment_details = None
+    if profile:
+        payment_details = PublicPaymentDetails(
+            mpesa_paybill=profile.mpesa_paybill,
+            mpesa_paybill_account=profile.mpesa_paybill_account,
+            mpesa_till=profile.mpesa_till,
+            mpesa_pochi=profile.mpesa_pochi,
+            mpesa_number=profile.mpesa_number,
+            airtel_number=profile.airtel_number,
+            bank_name=profile.bank_name,
+            bank_account=profile.bank_account,
+            bank_account_name=profile.bank_account_name or profile.company_name,
+        )
 
     return PublicInvoiceView(
         id=invoice.id,
@@ -75,9 +93,13 @@ async def view_invoice_public(
         client_name=client.full_name if client else "Valued Client",
         client_phone=client.phone if client else None,
         tenant_name=tenant.name if tenant else "Unknown Agency",
+        tenant_logo_url=profile.logo_url if profile else None,
+        tenant_email=profile.email if profile else None,
+        tenant_phone=profile.phone if profile else None,
         vehicle_description=f"{vehicle.make} {vehicle.model} ({vehicle.plate_number})" if vehicle else "N/A",
         booking_start_date=str(booking.start_date) if booking else None,
         booking_end_date=str(booking.end_date) if booking else None,
+        payment_details=payment_details,
     )
 
 

@@ -17,14 +17,21 @@ class TenantProfileBase(BaseModel):
     kra_pin: Optional[str] = Field(None, max_length=20, alias="tax_number", description="KRA PIN for tax invoicing in Kenya")
     
     # Branding & Contracts
-    # ✅ FIX: Removed 500-char cap. Logos are stored as compressed data-URLs
-    # (base64), which exceed 500 chars. 1M chars (~750KB) is a sane abuse guard.
     logo_url: Optional[str] = Field(None, max_length=1_000_000, description="URL or data-URL of company logo")
-    
-    # ✅ FIX: Make optional so frontend doesn't have to send it (backend auto-generates it)
     contract_prefix: Optional[str] = Field(None, max_length=10, description="Auto-generated prefix e.g. T0001")
-    
     contract_terms: Optional[str] = Field(None, alias="contract_footer", description="Default boilerplate terms for rental agreements")
+
+    # ✅ NEW: Payment Methods (M-Pesa, Airtel Money & Bank).
+    # Aliases allow frontend to send either the Python field name or the alias.
+    mpesa_paybill: Optional[str] = Field(None, max_length=10, alias="paybill_number", description="M-Pesa PayBill business number")
+    mpesa_paybill_account: Optional[str] = Field(None, max_length=50, alias="paybill_account", description="Account clients quote on PayBill; public invoice defaults to the invoice number when unset")
+    mpesa_till: Optional[str] = Field(None, max_length=10, alias="till_number", description="M-Pesa Buy Goods Till number")
+    mpesa_pochi: Optional[str] = Field(None, max_length=10, alias="pochi_number", description="M-Pesa Pochi la Biashara number")
+    mpesa_number: Optional[str] = Field(None, max_length=20, alias="send_money_number", description="M-Pesa phone number for the Send Money option")
+    airtel_number: Optional[str] = Field(None, max_length=20, description="Airtel Money phone number")
+    bank_name: Optional[str] = Field(None, max_length=100, description="Bank for EFT/RTGS transfers")
+    bank_account: Optional[str] = Field(None, max_length=34, alias="bank_account_number", description="Bank account number")
+    bank_account_name: Optional[str] = Field(None, max_length=150, description="Bank account name; falls back to company_name when unset")
 
     @field_validator("kra_pin", mode="before")
     @classmethod
@@ -35,7 +42,7 @@ class TenantProfileBase(BaseModel):
         return v
 
     class Config:
-        populate_by_name = True # Allows both 'kra_pin' and 'tax_number' to work
+        populate_by_name = True # Allows both field name and alias to work
 
 class TenantProfileCreate(TenantProfileBase):
     """Used internally by create_tenant route."""
@@ -49,10 +56,20 @@ class TenantProfileUpdate(BaseModel):
     email: Optional[str] = Field(None, max_length=255)
     website: Optional[str] = Field(None, max_length=255)
     kra_pin: Optional[str] = Field(None, max_length=20, alias="tax_number")
-    # ✅ FIX: Same as above — allow compressed data-URL logos
     logo_url: Optional[str] = Field(None, max_length=1_000_000)
     contract_prefix: Optional[str] = Field(None, max_length=10)
     contract_terms: Optional[str] = Field(None, alias="contract_footer")
+
+    # ✅ NEW: Payment Methods with aliases
+    mpesa_paybill: Optional[str] = Field(None, max_length=10, alias="paybill_number")
+    mpesa_paybill_account: Optional[str] = Field(None, max_length=50, alias="paybill_account")
+    mpesa_till: Optional[str] = Field(None, max_length=10, alias="till_number")
+    mpesa_pochi: Optional[str] = Field(None, max_length=10, alias="pochi_number")
+    mpesa_number: Optional[str] = Field(None, max_length=20, alias="send_money_number")
+    airtel_number: Optional[str] = Field(None, max_length=20)
+    bank_name: Optional[str] = Field(None, max_length=100)
+    bank_account: Optional[str] = Field(None, max_length=34, alias="bank_account_number")
+    bank_account_name: Optional[str] = Field(None, max_length=150)
 
     @field_validator("kra_pin", mode="before")
     @classmethod

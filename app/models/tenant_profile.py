@@ -19,7 +19,6 @@ class TenantProfile(Base, AuditMixin):
     )
     
     # Identity & Contact (Mirrors Tenant base fields for contract/invoice generation)
-    # ✅ FIX: Removed `index=True` here. The explicit Index in __table_args__ handles it.
     company_name = Column(String(150), nullable=False)
     address = Column(Text, nullable=True)
     phone = Column(String(30), nullable=True)
@@ -27,36 +26,34 @@ class TenantProfile(Base, AuditMixin):
     website = Column(String(255), nullable=True)
     
     # Compliance & Taxation
-    # ✅ FIX: Removed `index=True` here to rely on the composite index below (cleaner and avoids conflicts)
     tax_number = Column(String(20), nullable=True)
     
     # Branding & Contracts
-    # ✅ FIX: String(500) → Text. Logos are stored as compressed data-URLs (base64),
-    # which exceed 500 chars. TEXT has no length limit in PostgreSQL.
     logo_url = Column(Text, nullable=True)
     contract_prefix = Column(String(10), nullable=False, default="T0000")
     contract_footer = Column(Text, nullable=True)
-    
+
+    # ✅ NEW: Payment Methods (M-Pesa, Airtel Money & Bank).
+    # All nullable — the public invoice renders ONLY configured channels
+    # and never fabricates payment details (no platform fallbacks).
+    mpesa_paybill = Column(String(10), nullable=True)          # PayBill business number
+    mpesa_paybill_account = Column(String(50), nullable=True)  # Account quoted on PayBill
+    mpesa_till = Column(String(10), nullable=True)             # Buy Goods Till
+    mpesa_pochi = Column(String(10), nullable=True)            # Pochi la Biashara
+    mpesa_number = Column(String(20), nullable=True)           # Send Money phone
+    airtel_number = Column(String(20), nullable=True)          # Airtel Money phone
+    bank_name = Column(String(100), nullable=True)             # EFT/RTGS bank
+    bank_account = Column(String(34), nullable=True)           # Bank account number
+    bank_account_name = Column(String(150), nullable=True)     # Falls back to company_name
+
     # ✅ Timestamps removed: created_at and updated_at are now provided by AuditMixin
 
     # Relationships
-    # ✅ Added foreign_keys to resolve any potential ambiguity with AuditMixin.created_by
     tenant = relationship("Tenant", back_populates="profile", foreign_keys=[tenant_id])
 
     # ✅ OPTIMIZED INDEXES:
     __table_args__ = (
-        # 1. Single Profile Lookup (MOST IMPORTANT - already covered by unique index on tenant_id)
-        # Query: WHERE tenant_id = ?
-        # Used in: get_profile, create_profile, update_profile
-        
-        # 2. Super Admin Tenant Search (CRITICAL for list_tenants endpoint)
-        # Query: JOIN tenant_profiles ON tenant_id = tenants.id WHERE tax_number ILIKE ?
-        # The composite index handles this efficiently
         Index('ix_tenant_profiles_tenant_tax', 'tenant_id', 'tax_number'),
-        
-        # 3. Company Name Search (for future search enhancements)
-        # Query: WHERE company_name ILIKE ?
-        # This explicit index replaces the need for index=True on the column
         Index('ix_tenant_profiles_company_name', 'company_name'),
     )
 
