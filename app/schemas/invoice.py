@@ -6,6 +6,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, computed_field, Field, field_validator
 
 from app.models.invoices import InvoiceStatus
+from app.models.payments import PaymentMethod
 
 
 class InvoiceCreate(BaseModel):
@@ -111,6 +112,21 @@ class PublicPaymentDetails(BaseModel):
     bank_account: Optional[str] = None
     bank_account_name: Optional[str] = None
 
+
+class PublicPaymentCreate(BaseModel):
+    """Client self-reported payment on the public portal."""
+    amount: Decimal = Field(..., gt=0, decimal_places=2)
+    method: PaymentMethod = Field(..., description="mpesa | manual | bank | airtel_money")
+    reference: Optional[str] = Field(default=None, max_length=100)
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("reference")
+    @classmethod
+    def require_reference_for_mobile_money(cls, v, info):
+        method = info.data.get("method")
+        if method in (PaymentMethod.mpesa, PaymentMethod.airtel_money) and not (v and v.strip()):
+            raise ValueError("Transaction reference is required for M-Pesa and Airtel Money payments")
+        return
 
 class PublicInvoiceView(BaseModel):
     """

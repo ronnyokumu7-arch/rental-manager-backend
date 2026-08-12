@@ -1,5 +1,6 @@
-# app/routers/invoices/public.py
+# app/routers/invoice/public.py
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
@@ -9,52 +10,28 @@ from sqlalchemy.orm import selectinload
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.models.bookings import Booking
-from app.models.clients import Client
 from app.models.invoices import Invoice, InvoiceStatus
+from app.models.payments import Payment, PaymentStatus
 from app.models.tenants import Tenant
-from app.models.tenant_profile import TenantProfile
 from app.models.vehicles import Vehicle
-from app.schemas.invoice import PublicInvoiceView, PublicPaymentDetails
+from app.schemas.invoice import PublicInvoiceView, PublicPaymentDetails, PublicPaymentCreate
+from app.services.cache import invalidate_invoice_cache, invalidate_subscription_cache
 from app.services.invoice_pdf import generate_invoice_pdf
 
 # ✅ No prefix here! The hub file provides the "/invoices" prefix.
 router = APIRouter()
 
 
-@router.get("/public/{token}", response_model=PublicInvoiceView)
-@limiter.limit("30/minute")
-async def view_invoice_public(
-    request: Request,
-    token: str, 
-    db: AsyncSession = Depends(get_db)
-):
-    # ✅ Optimized: Fetch all related data in a single query using selectinload
+async def _build_public_view(db: AsyncSession, invoice_id: int) -> PublicInvoiceView:
+    """✅ Single source of truth for the public invoice JSON shape."""
     stmt = select(Invoice).options(
         selectinload(Invoice.booking).selectinload(Booking.client),
         selectinload(Invoice.booking).selectinload(Booking.vehicle),
-        selectinload(Invoice.tenant).selectinload(Tenant.profile)  # ✅ NEW: Fetch tenant profile
-    ).where(Invoice.share_token == token)
-    
+        selectinload(Invoice.tenant).selectinload(Tenant.profile)
+    ).where(Invoice.id == invoice_id)
+
     result = await db.execute(stmt)
     invoice = result.scalars().unique().first()
-    
-    if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice not found"
-        )
-    
-    if invoice.share_token_expires_at and invoice.share_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="This invoice link has expired"
-        )
-    
-    if invoice.status == InvoiceStatus.void:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This invoice has been voided"
-        )
 
     booking = invoice.booking
     client = booking.client if booking else None
@@ -62,7 +39,6 @@ async def view_invoice_public(
     tenant = invoice.tenant
     profile = tenant.profile if tenant else None
 
-    # ✅ Build dynamic payment details (never fabricates missing fields)
     payment_details = None
     if profile:
         payment_details = PublicPaymentDetails(
@@ -105,38 +81,124 @@ async def view_invoice_public(
     )
 
 
-@router.get("/public/{token}/pdf")
-@limiter.limit("15/minute")
-async def download_invoice_pdf_public(
+@router.get("/public/{token}", response_model=PublicInvoiceView)
+@limiter.limit("30/minute")
+async def view_invoice_public(
     request: Request,
-    token: str, 
+    token: str,
     db: AsyncSession = Depends(get_db)
 ):
     stmt = select(Invoice).where(Invoice.share_token == token)
     result = await db.execute(stmt)
     invoice = result.scalars().first()
-    
+
     if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice not found"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
     if invoice.share_token_expires_at and invoice.share_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="This invoice link has expired"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invoice link has expired")
+
     if invoice.status == InvoiceStatus.void:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This invoice has been voided")
+
+    return await _build_public_view(db, invoice.id)
+
+
+@router.post("/public/{token}/pay", response_model=PublicInvoiceView)
+@limiter.limit("10/minute")  # 🚨 STRICT: Public financial self-reporting
+async def record_payment_public(
+    request: Request,
+    token: str,
+    payload: PublicPaymentCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    ✅ NEW: Client self-reported payment on the public portal.
+    Mirrors the authenticated record-payment business rules exactly,
+    with recorded_by=None. Admins can void fake payments via the
+    existing void flow, which reverses the invoice balance.
+    """
+    stmt = select(Invoice).where(Invoice.share_token == token)
+    result = await db.execute(stmt)
+    invoice = result.scalars().first()
+
+    if not invoice:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    if invoice.share_token_expires_at and invoice.share_token_expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invoice link has expired")
+
+    if invoice.status == InvoiceStatus.void:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot record payment against a void invoice")
+
+    if invoice.status == InvoiceStatus.paid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invoice is already fully paid")
+
+    remaining = (invoice.amount_due or Decimal("0")) - (invoice.amount_paid or Decimal("0"))
+    if payload.amount > remaining:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This invoice has been voided"
+            detail=f"Amount exceeds remaining balance of {remaining} {invoice.currency_code}"
         )
 
-    # ✅ Await the async PDF generation
+    now = datetime.now(timezone.utc)
+
+    db_payment = Payment(
+        invoice_id=invoice.id,
+        tenant_id=invoice.tenant_id,
+        amount=payload.amount,
+        currency_code=invoice.currency_code,  # ✅ Forced from invoice — client can't pick currency
+        method=payload.method,
+        reference=payload.reference,
+        status=PaymentStatus.completed,
+        paid_at=now,
+        recorded_by=None,  # ✅ Self-reported (no authenticated user)
+        notes=payload.notes or "Self-reported by client via public payment portal",
+    )
+    db.add(db_payment)
+
+    new_paid = (invoice.amount_paid or Decimal("0")) + payload.amount
+    invoice.amount_paid = new_paid
+
+    if new_paid >= (invoice.amount_due or Decimal("0")):
+        invoice.status = InvoiceStatus.paid
+        invoice.paid_at = now
+    elif new_paid > Decimal("0"):
+        invoice.status = InvoiceStatus.partially_paid
+
+    await db.commit()
+    await db.refresh(db_payment)
+
+    # ✅ Same cache discipline as the authenticated endpoint
+    await invalidate_subscription_cache(invoice.tenant_id)
+    await invalidate_invoice_cache(invoice.tenant_id)
+
+    # ✅ Return the refreshed public view so the page updates instantly
+    return await _build_public_view(db, invoice.id)
+
+
+@router.get("/public/{token}/pdf")
+@limiter.limit("15/minute")
+async def download_invoice_pdf_public(
+    request: Request,
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    stmt = select(Invoice).where(Invoice.share_token == token)
+    result = await db.execute(stmt)
+    invoice = result.scalars().first()
+
+    if not invoice:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
+
+    if invoice.share_token_expires_at and invoice.share_token_expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invoice link has expired")
+
+    if invoice.status == InvoiceStatus.void:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This invoice has been voided")
+
     pdf_bytes = await generate_invoice_pdf(invoice, db)
-    
+
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
