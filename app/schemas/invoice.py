@@ -1,6 +1,7 @@
+# app/schemas/invoice.py
 from datetime import datetime, date
 from decimal import Decimal
-from typing import Any, Optional # ✅ Added Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, computed_field, Field, field_validator
 
@@ -95,6 +96,22 @@ class InvoiceOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PublicPaymentDetails(BaseModel):
+    """
+    Nested object carrying ONLY the payment methods the tenant has configured
+    in their TenantProfile. Never fabricates missing fields — strict policy.
+    """
+    mpesa_paybill: Optional[str] = None
+    mpesa_paybill_account: Optional[str] = None
+    mpesa_till: Optional[str] = None
+    mpesa_pochi: Optional[str] = None
+    mpesa_number: Optional[str] = None
+    airtel_number: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account: Optional[str] = None
+    bank_account_name: Optional[str] = None
+
+
 class PublicInvoiceView(BaseModel):
     """
     ✅ CLEAN CONTRACT: Declares EVERY field the public router returns.
@@ -118,12 +135,24 @@ class PublicInvoiceView(BaseModel):
     client_name: Optional[str] = None
     client_phone: Optional[str] = None
     tenant_name: Optional[str] = None
+    
+    # Vehicle (split for clean rendering)
     vehicle_description: Optional[str] = None
     vehicle_name: Optional[str] = None
     vehicle_plate: Optional[str] = None
+    
+    # Booking reference
     booking_number: Optional[str] = None
     booking_start_date: Optional[str] = None
     booking_end_date: Optional[str] = None
+    
+    # ✅ NEW: Header Identity (from TenantProfile)
+    tenant_logo_url: Optional[str] = None
+    tenant_email: Optional[str] = None
+    tenant_phone: Optional[str] = None
+    
+    # ✅ NEW: Dynamic Payment Channels (from TenantProfile)
+    payment_details: Optional[PublicPaymentDetails] = None
 
 # ✅ DELETED: The bottom import of BookingOut and model_rebuild() 
 # are no longer needed and remove the circular dependency risk.
