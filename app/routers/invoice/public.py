@@ -73,6 +73,7 @@ async def view_invoice_public(
         discount_amount=invoice.discount_amount or 0,
         discount_reason=invoice.discount_reason,
         client_name=client.full_name if client else "Valued Client",
+        client_phone=client.phone if client else None,
         tenant_name=tenant.name if tenant else "Unknown Agency",
         vehicle_description=f"{vehicle.make} {vehicle.model} ({vehicle.plate_number})" if vehicle else "N/A",
         booking_start_date=str(booking.start_date) if booking else None,

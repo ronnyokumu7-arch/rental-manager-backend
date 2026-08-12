@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 from typing import Any, Optional # ✅ Added Any
 
@@ -96,16 +96,32 @@ class InvoiceOut(BaseModel):
 
 
 class PublicInvoiceView(BaseModel):
+    """
+    ✅ CLEAN CONTRACT: Declares EVERY field the public router returns.
+    Previously undeclared fields were silently dropped by Pydantic
+    (extra='ignore'), which caused NaN balance, N/A vehicle, and
+    "Invalid Date" on the public invoice page.
+    """
+    id: int
     invoice_number: str
     status: InvoiceStatus
     amount_due: Decimal
+    amount_paid: Decimal
+    remaining_balance: Decimal
     currency_code: str
     due_date: datetime
     paid_at: Optional[datetime] = None
+    created_at: datetime
+    discount_amount: Decimal
+    discount_reason: Optional[str] = None
     notes: Optional[str] = None
     client_name: Optional[str] = None
+    client_phone: Optional[str] = None
+    tenant_name: Optional[str] = None
+    vehicle_description: Optional[str] = None
     booking_number: Optional[str] = None
-    remaining_balance: Decimal
+    booking_start_date: Optional[str] = None
+    booking_end_date: Optional[str] = None
 
 # ✅ DELETED: The bottom import of BookingOut and model_rebuild() 
 # are no longer needed and remove the circular dependency risk.
