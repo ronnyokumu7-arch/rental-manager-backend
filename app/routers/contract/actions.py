@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status  # ✅ +BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,7 +17,7 @@ from app.models.users import User
 from app.models.vehicles import Vehicle
 from app.schemas.contract import ContractOut
 from app.services.cache import invalidate_contract_cache
-from app.services.contracts import create_contract_for_booking
+from app.services.contracts import create_contract_for_booking, render_and_store_contract_pdf  # ✅ +render_and_store_contract_pdf
 from app.services.email import send_contract_to_client
 from ._helpers import get_authorized_contract_async
 
@@ -53,6 +53,7 @@ async def void_contract(
 async def regenerate_contract(
     request: Request,
     booking_id: int,
+    background_tasks: BackgroundTasks,  # ✅ NEW: run PDF render after response
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
@@ -79,8 +80,13 @@ async def regenerate_contract(
         await db.delete(existing)
         await db.commit()
         
+    # ✅ FAST: creates + commits the row only — returns in milliseconds
     new_contract = await create_contract_for_booking(booking, db)
     await invalidate_contract_cache(current_user.tenant_id)
+
+    # ✅ SLOW: Chromium PDF render now happens AFTER the response is sent
+    background_tasks.add_task(render_and_store_contract_pdf, new_contract.id)
+
     return new_contract
 
 
