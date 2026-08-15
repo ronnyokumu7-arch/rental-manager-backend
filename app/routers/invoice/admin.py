@@ -278,6 +278,10 @@ async def generate_invoice_share_link(
     invoice.share_token = str(uuid.uuid4())
     invoice.share_token_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
 
+    # ✅ FIXED: Flip status from draft to sent (mirrors contracts behavior)
+    if invoice.status == InvoiceStatus.draft:
+        invoice.status = InvoiceStatus.sent
+
     await db.commit()
     await db.refresh(invoice)
     
