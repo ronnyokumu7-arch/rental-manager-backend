@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import uuid
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status  # ✅ +BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,7 +17,7 @@ from app.models.users import User
 from app.models.vehicles import Vehicle
 from app.schemas.contract import ContractOut
 from app.services.cache import invalidate_contract_cache
-from app.services.contracts import create_contract_for_booking, render_and_store_contract_pdf  # ✅ +render_and_store_contract_pdf
+from app.services.contracts import create_contract_for_booking, render_and_store_contract_pdf
 from app.services.email import send_contract_to_client
 from ._helpers import get_authorized_contract_async
 
@@ -42,7 +42,13 @@ async def void_contract(
         
     contract.status = ContractStatus.void
     await db.commit()
-    await db.refresh(contract)
+    
+    # ✅ FIXED: Re-fetch with eager loading so ContractOut serialization can't crash
+    stmt = select(Contract).options(
+        selectinload(Contract.booking).selectinload(Booking.client)
+    ).where(Contract.id == contract.id)
+    result = await db.execute(stmt)
+    contract = result.scalars().unique().first()
     
     await invalidate_contract_cache(current_user.tenant_id)
     return contract
@@ -53,7 +59,7 @@ async def void_contract(
 async def regenerate_contract(
     request: Request,
     booking_id: int,
-    background_tasks: BackgroundTasks,  # ✅ NEW: run PDF render after response
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
@@ -82,9 +88,17 @@ async def regenerate_contract(
         
     # ✅ FAST: creates + commits the row only — returns in milliseconds
     new_contract = await create_contract_for_booking(booking, db)
+
+    # ✅ FIXED: Re-fetch with eager loading so ContractOut serialization can't crash
+    stmt = select(Contract).options(
+        selectinload(Contract.booking).selectinload(Booking.client)
+    ).where(Contract.id == new_contract.id)
+    result = await db.execute(stmt)
+    new_contract = result.scalars().unique().first()
+
     await invalidate_contract_cache(current_user.tenant_id)
 
-    # ✅ SLOW: Chromium PDF render now happens AFTER the response is sent
+    # ✅ SLOW: Chromium PDF render happens AFTER the response is sent
     background_tasks.add_task(render_and_store_contract_pdf, new_contract.id)
 
     return new_contract

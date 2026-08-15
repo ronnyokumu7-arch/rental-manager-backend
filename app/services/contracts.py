@@ -1,6 +1,8 @@
+# app/services/contracts.py
 import os
-import asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.contracts import Contract, ContractStatus
 from app.models.bookings import Booking
@@ -14,14 +16,7 @@ def _ensure_dir():
 
 
 async def create_contract_for_booking(booking: Booking, db: AsyncSession) -> Contract:
-    """✅ FAST PATH: create + commit the contract row and return immediately.
-
-    PDF rendering (Chromium) is deliberately NOT awaited here — it can take
-    30–90s on a cold Render instance and blocks the HTTP response, causing
-    frontend timeouts while the backend "eventually" finishes.
-    The PDF is rendered in the background (render_and_store_contract_pdf)
-    and/or on demand by the download endpoint's existing fallback.
-    """
+    """Create contract row instantly - NO PDF generation."""
     _ensure_dir()
 
     contract_number = await generate_contract_number(db, booking.tenant_id)
@@ -39,22 +34,26 @@ async def create_contract_for_booking(booking: Booking, db: AsyncSession) -> Con
 
 
 async def render_and_store_contract_pdf(contract_id: int) -> None:
-    """✅ BACKGROUND WORKER: renders the PDF using its OWN db session.
-
-    Safe to run after the response is sent (BackgroundTasks / create_task)
-    because it never touches the request-scoped session.
-    Idempotent: skips if the PDF already exists on disk.
-    """
-    # ✅ CORRECTED: uses AsyncSessionLocal from your database.py
+    """Background PDF renderer - uses its own DB session."""
     from app.db.database import AsyncSessionLocal
     from app.services.contract_pdf import generate_contract_pdf
 
     async with AsyncSessionLocal() as db:
-        contract = await db.get(Contract, contract_id)
+        # ✅ FIXED: Eager-load booking/client/vehicle — generate_contract_pdf needs them.
+        # Without this, async lazy-loading raises MissingGreenlet and the render dies silently.
+        stmt = select(Contract).options(
+            selectinload(Contract.booking).selectinload(Booking.client),
+            selectinload(Contract.booking).selectinload(Booking.vehicle),
+        ).where(Contract.id == contract_id)
+        result = await db.execute(stmt)
+        contract = result.scalars().unique().first()
+
         if not contract:
             return
+
+        # Skip if already rendered
         if contract.pdf_path and os.path.exists(contract.pdf_path):
-            return  # already rendered
+            return
 
         try:
             _ensure_dir()
@@ -68,14 +67,44 @@ async def render_and_store_contract_pdf(contract_id: int) -> None:
             print(f"✅ Contract PDF generated (background): {filepath}")
         except Exception as e:
             await db.rollback()
-            # Not fatal: the download endpoint regenerates on demand.
-            print(f"❌ BACKGROUND PDF GENERATION FAILED (will retry on download): {e}")
+            print(f"❌ Background PDF generation failed: {e}")
 
 
-def schedule_contract_pdf_render(contract_id: int) -> None:
-    """Fire-and-forget helper for call sites that can't use BackgroundTasks."""
-    try:
-        asyncio.get_running_loop()
-        asyncio.create_task(render_and_store_contract_pdf(contract_id))
-    except RuntimeError:
-        pass  # no running loop — download endpoint will render on demand
+async def regenerate_contract_for_booking(
+    booking_id: int,
+    tenant_id: int,
+    db: AsyncSession
+) -> Contract:
+    """Delete existing contract (any status) and create a new one."""
+    # ✅ FIXED: `select` is now imported (was NameError before)
+    existing_stmt = select(Contract).where(
+        Contract.booking_id == booking_id,
+        Contract.tenant_id == tenant_id
+    )
+    existing_result = await db.execute(existing_stmt)
+    existing = existing_result.scalars().first()
+
+    if existing:
+        # Delete the old PDF file if it exists
+        if existing.pdf_path and os.path.exists(existing.pdf_path):
+            try:
+                os.remove(existing.pdf_path)
+            except OSError:
+                pass
+
+        await db.delete(existing)
+        await db.commit()
+
+    # Fetch the booking
+    booking_stmt = select(Booking).where(
+        Booking.id == booking_id,
+        Booking.tenant_id == tenant_id
+    )
+    booking_result = await db.execute(booking_stmt)
+    booking = booking_result.scalars().first()
+
+    if not booking:
+        raise ValueError(f"Booking {booking_id} not found")
+
+    # Create new contract
+    return await create_contract_for_booking(booking, db)
