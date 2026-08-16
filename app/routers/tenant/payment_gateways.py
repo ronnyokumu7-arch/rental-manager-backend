@@ -1,7 +1,7 @@
 # app/routers/tenants/payment_gateways.py (or wherever this file is named)
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
@@ -75,6 +75,18 @@ def _decrypt_and_mask_credentials(gateway_type: str, config: object) -> dict:
     return data
 
 
+def _filter_to_model_columns(ModelClass, data: dict) -> dict:
+    """
+    ✅ SAFETY: Keep only keys that map to real columns on the model.
+    The frontend sends extra UI-level fields (e.g., `environment`, `is_active`)
+    that not every gateway model persists. Passing unknown kwargs to a
+    SQLAlchemy model raises TypeError and 500s the request. This guard makes
+    creation resilient across ALL gateway types.
+    """
+    valid_columns = set(sa_inspect(ModelClass).columns.keys())
+    return {key: value for key, value in data.items() if key in valid_columns}
+
+
 async def _verify_tenant_access(tenant_id: int, current_user: User):
     """
     Verify that the current user has access to the specified tenant.
@@ -106,23 +118,24 @@ async def list_gateways(
     tenant_stmt = select(Tenant).where(Tenant.id == tenant_id)
     tenant = (await db.execute(tenant_stmt)).scalars().first()
     
-    if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
-
-    gateways = []
-    for gw_type, model_class in GATEWAY_MODELS.items():
         if gw_type == "bank":
             # Bank accounts can have multiple configs
             stmt = select(BankAccountConfig).where(BankAccountConfig.tenant_id == tenant_id)
             configs = (await db.execute(stmt)).scalars().all()
             for c in configs:
-                gateways.append({**_decrypt_and_mask_credentials(gw_type, c), "type": gw_type})
+                data = {**_decrypt_and_mask_credentials(gw_type, c), "type": gw_type}
+                data.setdefault("is_active", True)      # ✅ UI default if model doesn't persist it
+                data.setdefault("environment", "sandbox")
+                gateways.append(data)
         else:
             # Other gateways have single config per tenant
             stmt = select(model_class).where(model_class.tenant_id == tenant_id)
             config = (await db.execute(stmt)).scalars().first()
             if config:
-                gateways.append({**_decrypt_and_mask_credentials(gw_type, config), "type": gw_type})
+                data = {**_decrypt_and_mask_credentials(gw_type, config), "type": gw_type}
+                data.setdefault("is_active", True)
+                data.setdefault("environment", "sandbox")
+                gateways.append(data)
 
     return {"gateways": gateways}
 
@@ -166,9 +179,11 @@ async def create_gateway(
 
     # Encrypt sensitive fields before saving
     encrypted_payload = _encrypt_gateway_data(gateway_type, payload)
-    
-    # Create new config
-    config_data = {"tenant_id": tenant_id, **encrypted_payload}
+
+    # ✅ FIXED: Filter payload to only real model columns (prevents TypeError 500s)
+    config_data = _filter_to_model_columns(
+        ModelClass, {"tenant_id": tenant_id, **encrypted_payload}
+    )
     new_config = ModelClass(**config_data)
     db.add(new_config)
     
