@@ -15,7 +15,7 @@ from app.models.commission import CommissionEvent, CommissionStatus
 from app.models.users import User, UserRole
 from app.schemas.commission import CommissionEventOut, CommissionSummaryOut
 
-router = APIRouter()
+router = APIRouter(prefix="/commission")
 
 # ✅ PLATFORM TIMEZONE: the commission day rolls over at 00:00H East Africa Time
 PLATFORM_TZ = ZoneInfo("Africa/Nairobi")
