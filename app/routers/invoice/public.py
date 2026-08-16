@@ -79,8 +79,8 @@ async def _build_public_view(db: AsyncSession, invoice_id: int) -> PublicInvoice
             
             # Bank fields (aligned with new model columns)
             bank_name=bank_config.bank_name if bank_config else None,
-            account_number=bank_config.account_number if bank_config else None,
-            account_name=bank_config.account_name if bank_config else None,
+            bank_account_number=bank_config.account_number if bank_config else None,  # ✅ RENAMED
+            bank_account_name=bank_config.account_name if bank_config else None,
             branch_code=bank_config.branch_code if bank_config else None,
             swift_code=bank_config.swift_code if bank_config else None,
             currency=bank_config.currency if bank_config else None,

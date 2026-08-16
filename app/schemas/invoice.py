@@ -115,6 +115,8 @@ class PublicPaymentDetails(BaseModel):
 
     # ── Bank Transfer (from BankAccountConfig) ──────────────────────
     bank_name: Optional[str] = None
+    bank_account_number: Optional[str] = None  # ✅ ADDED: distinct from M-Pesa account_number
+    bank_account_name: Optional[str] = None    # ✅ ADDED
     branch_code: Optional[str] = None
     swift_code: Optional[str] = None
     currency: Optional[str] = None
