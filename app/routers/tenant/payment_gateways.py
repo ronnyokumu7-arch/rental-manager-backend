@@ -1,5 +1,3 @@
-# app/routers/tenants/payment_gateways.py (or wherever this file is named)
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -118,13 +116,19 @@ async def list_gateways(
     tenant_stmt = select(Tenant).where(Tenant.id == tenant_id)
     tenant = (await db.execute(tenant_stmt)).scalars().first()
     
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    gateways = []
+    for gw_type, model_class in GATEWAY_MODELS.items():
         if gw_type == "bank":
             # Bank accounts can have multiple configs
             stmt = select(BankAccountConfig).where(BankAccountConfig.tenant_id == tenant_id)
             configs = (await db.execute(stmt)).scalars().all()
             for c in configs:
                 data = {**_decrypt_and_mask_credentials(gw_type, c), "type": gw_type}
-                data.setdefault("is_active", True)      # ✅ UI default if model doesn't persist it
+                # ✅ UI defaults if model doesn't persist these columns
+                data.setdefault("is_active", True)
                 data.setdefault("environment", "sandbox")
                 gateways.append(data)
         else:
@@ -179,7 +183,7 @@ async def create_gateway(
 
     # Encrypt sensitive fields before saving
     encrypted_payload = _encrypt_gateway_data(gateway_type, payload)
-
+    
     # ✅ FIXED: Filter payload to only real model columns (prevents TypeError 500s)
     config_data = _filter_to_model_columns(
         ModelClass, {"tenant_id": tenant_id, **encrypted_payload}
