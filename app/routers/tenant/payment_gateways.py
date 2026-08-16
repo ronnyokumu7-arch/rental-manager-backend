@@ -244,6 +244,57 @@ async def update_gateway(
     return {**_decrypt_and_mask_credentials(gateway_type, config), "type": gateway_type}
 
 
+@router.delete("/{tenant_id}/payment-gateways/{gateway_type}/{config_id}")
+@limiter.limit("10/minute")
+async def delete_gateway(
+    request: Request,
+    tenant_id: int,
+    gateway_type: str,
+    config_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a payment gateway configuration for a tenant."""
+    await _verify_tenant_access(tenant_id, current_user)
+
+    if gateway_type not in GATEWAY_MODELS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid gateway type",
+        )
+
+    ModelClass = GATEWAY_MODELS[gateway_type]
+    stmt = select(ModelClass).where(
+        ModelClass.id == config_id,
+        ModelClass.tenant_id == tenant_id,
+    )
+    config = (await db.execute(stmt)).scalars().first()
+
+    if not config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Gateway config not found",
+        )
+
+    await db.delete(config)
+    await db.commit()
+
+    # ✅ Invalidate tenant cache and log the gateway deletion
+    await invalidate_tenant_cache()
+    await ActivityLogService.log(
+        db=db,
+        tenant_id=tenant_id,
+        user_id=current_user.id,
+        action=f"delete_{gateway_type}_gateway",
+        target_type="payment_gateway",
+        target_id=config_id,
+        details={"gateway_type": gateway_type},
+    )
+    await db.commit()  # Commit the activity log flush
+
+    return {"message": f"{gateway_type} gateway configuration deleted successfully."}
+
+
 @router.post("/{tenant_id}/payment-gateways/{gateway_type}/test")
 @limiter.limit("10/minute")
 async def test_gateway_connection(
