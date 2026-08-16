@@ -100,17 +100,27 @@ class InvoiceOut(BaseModel):
 class PublicPaymentDetails(BaseModel):
     """
     Nested object carrying ONLY the payment methods the tenant has configured
-    in their TenantProfile. Never fabricates missing fields — strict policy.
+    in their dedicated gateway tables (MpesaConfig, BankAccountConfig, etc.).
+    Never fabricates missing fields — strict policy.
     """
-    mpesa_paybill: Optional[str] = None
-    mpesa_paybill_account: Optional[str] = None
-    mpesa_till: Optional[str] = None
-    mpesa_pochi: Optional[str] = None
-    mpesa_number: Optional[str] = None
+    # ── M-Pesa (from MpesaConfig) ───────────────────────────────────
+    method_type: Optional[str] = None        # "paybill" | "till" | "pochi"
+    business_shortcode: Optional[str] = None # Paybill number
+    till_number: Optional[str] = None        # Till or Pochi number
+    account_number: Optional[str] = None     # Paybill account reference
+    account_name: Optional[str] = None       # Display name for clients
+
+    # ── Airtel Money (from AirtelMoneyConfig) ───────────────────────
     airtel_number: Optional[str] = None
+
+    # ── Bank Transfer (from BankAccountConfig) ──────────────────────
     bank_name: Optional[str] = None
-    bank_account: Optional[str] = None
-    bank_account_name: Optional[str] = None
+    branch_code: Optional[str] = None
+    swift_code: Optional[str] = None
+    currency: Optional[str] = None
+
+    # ── Fallback (from TenantProfile) ───────────────────────────────
+    tenant_phone: Optional[str] = None       # Used for "Send Money" fallback
 
 
 class PublicPaymentCreate(BaseModel):
@@ -126,7 +136,8 @@ class PublicPaymentCreate(BaseModel):
         method = info.data.get("method")
         if method in (PaymentMethod.mpesa, PaymentMethod.airtel_money) and not (v and v.strip()):
             raise ValueError("Transaction reference is required for M-Pesa and Airtel Money payments")
-        return
+        return v  # ✅ FIXED: Must return the validated value in Pydantic v2
+
 
 class PublicInvoiceView(BaseModel):
     """
@@ -162,12 +173,12 @@ class PublicInvoiceView(BaseModel):
     booking_start_date: Optional[str] = None
     booking_end_date: Optional[str] = None
     
-    # ✅ NEW: Header Identity (from TenantProfile)
+    # ✅ Header Identity (from TenantProfile)
     tenant_logo_url: Optional[str] = None
     tenant_email: Optional[str] = None
     tenant_phone: Optional[str] = None
     
-    # ✅ NEW: Dynamic Payment Channels (from TenantProfile)
+    # ✅ Dynamic Payment Channels (from Gateway Config Tables)
     payment_details: Optional[PublicPaymentDetails] = None
 
 # ✅ DELETED: The bottom import of BookingOut and model_rebuild() 

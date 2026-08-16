@@ -1,4 +1,3 @@
-# app/routers/invoice/public.py
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -14,11 +13,13 @@ from app.models.invoices import Invoice, InvoiceStatus
 from app.models.payments import Payment, PaymentStatus
 from app.models.tenants import Tenant
 from app.models.vehicles import Vehicle
+from app.models.payment_gateways.mpesa import MpesaConfig
+from app.models.payment_gateways.bank import BankAccountConfig
+from app.models.payment_gateways.airtel import AirtelMoneyConfig
 from app.schemas.invoice import PublicInvoiceView, PublicPaymentDetails, PublicPaymentCreate
 from app.services.cache import invalidate_invoice_cache, invalidate_subscription_cache
 from app.services.invoice_pdf import generate_invoice_pdf
 
-# ✅ No prefix here! The hub file provides the "/invoices" prefix.
 router = APIRouter()
 
 
@@ -39,18 +40,53 @@ async def _build_public_view(db: AsyncSession, invoice_id: int) -> PublicInvoice
     tenant = invoice.tenant
     profile = tenant.profile if tenant else None
 
+    # ✅ NEW: Query the gateway config tables instead of TenantProfile
     payment_details = None
-    if profile:
+    
+    # Fetch M-Pesa config (if exists)
+    mpesa_stmt = select(MpesaConfig).where(
+        MpesaConfig.tenant_id == tenant.id,
+        MpesaConfig.is_active == True
+    )
+    mpesa_config = (await db.execute(mpesa_stmt)).scalars().first()
+    
+    # Fetch Bank config (if exists, primary first)
+    bank_stmt = select(BankAccountConfig).where(
+        BankAccountConfig.tenant_id == tenant.id,
+        BankAccountConfig.is_primary == True
+    )
+    bank_config = (await db.execute(bank_stmt)).scalars().first()
+    
+    # Fetch Airtel config (if exists)
+    airtel_stmt = select(AirtelMoneyConfig).where(
+        AirtelMoneyConfig.tenant_id == tenant.id,
+        AirtelMoneyConfig.is_active == True
+    )
+    airtel_config = (await db.execute(airtel_stmt)).scalars().first()
+    
+    # Build payment_details from the configs
+    if mpesa_config or bank_config or airtel_config:
         payment_details = PublicPaymentDetails(
-            mpesa_paybill=profile.mpesa_paybill,
-            mpesa_paybill_account=profile.mpesa_paybill_account,
-            mpesa_till=profile.mpesa_till,
-            mpesa_pochi=profile.mpesa_pochi,
-            mpesa_number=profile.mpesa_number,
-            airtel_number=profile.airtel_number,
-            bank_name=profile.bank_name,
-            bank_account=profile.bank_account,
-            bank_account_name=profile.bank_account_name or profile.company_name,
+            # M-Pesa fields (aligned with new model columns)
+            method_type=mpesa_config.method_type if mpesa_config else None,
+            business_shortcode=mpesa_config.business_shortcode if mpesa_config else None,
+            till_number=mpesa_config.till_number if mpesa_config else None,
+            account_number=mpesa_config.account_number if mpesa_config else None,
+            account_name=mpesa_config.account_name if mpesa_config else None,
+            
+            # Airtel fields
+            airtel_number=airtel_config.phone_number if airtel_config else None,
+            
+            # Bank fields (aligned with new model columns)
+            bank_name=bank_config.bank_name if bank_config else None,
+            account_number=bank_config.account_number if bank_config else None,
+            account_name=bank_config.account_name if bank_config else None,
+            branch_code=bank_config.branch_code if bank_config else None,
+            swift_code=bank_config.swift_code if bank_config else None,
+            currency=bank_config.currency if bank_config else None,
+            
+            # Fallback: tenant profile phone for "Send Money"
+            tenant_phone=profile.phone if profile else None,
         )
 
     return PublicInvoiceView(
@@ -105,19 +141,14 @@ async def view_invoice_public(
 
 
 @router.post("/public/{token}/pay", response_model=PublicInvoiceView)
-@limiter.limit("10/minute")  # 🚨 STRICT: Public financial self-reporting
+@limiter.limit("10/minute")
 async def record_payment_public(
     request: Request,
     token: str,
     payload: PublicPaymentCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    ✅ NEW: Client self-reported payment on the public portal.
-    Mirrors the authenticated record-payment business rules exactly,
-    with recorded_by=None. Admins can void fake payments via the
-    existing void flow, which reverses the invoice balance.
-    """
+    """✅ Client self-reported payment on the public portal."""
     stmt = select(Invoice).where(Invoice.share_token == token)
     result = await db.execute(stmt)
     invoice = result.scalars().first()
@@ -147,12 +178,12 @@ async def record_payment_public(
         invoice_id=invoice.id,
         tenant_id=invoice.tenant_id,
         amount=payload.amount,
-        currency_code=invoice.currency_code,  # ✅ Forced from invoice — client can't pick currency
+        currency_code=invoice.currency_code,
         method=payload.method,
         reference=payload.reference,
         status=PaymentStatus.completed,
         paid_at=now,
-        recorded_by=None,  # ✅ Self-reported (no authenticated user)
+        recorded_by=None,
         notes=payload.notes or "Self-reported by client via public payment portal",
     )
     db.add(db_payment)
@@ -169,11 +200,9 @@ async def record_payment_public(
     await db.commit()
     await db.refresh(db_payment)
 
-    # ✅ Same cache discipline as the authenticated endpoint
     await invalidate_subscription_cache(invoice.tenant_id)
     await invalidate_invoice_cache(invoice.tenant_id)
 
-    # ✅ Return the refreshed public view so the page updates instantly
     return await _build_public_view(db, invoice.id)
 
 
