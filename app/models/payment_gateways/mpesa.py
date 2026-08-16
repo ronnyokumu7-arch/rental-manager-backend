@@ -21,11 +21,20 @@ class MpesaConfig(Base, AuditMixin):
         index=True,
     )
 
-    business_shortcode = Column(String(20), nullable=False)
-    till_number = Column(String(20), nullable=True)
-    consumer_key = Column(String(255), nullable=False)
-    consumer_secret = Column(String(255), nullable=False)
-    passkey = Column(String(255), nullable=False)
+    # ── MANUAL PAYMENT DETAILS (what clients see on invoices) ─────────────
+    # ✅ NEW: Which method the tenant configured: "paybill" | "till" | "pochi"
+    method_type = Column(String(20), nullable=False, default="paybill")
+    business_shortcode = Column(String(20), nullable=True)  # Paybill number
+    till_number = Column(String(20), nullable=True)         # Till / Pochi number
+    account_number = Column(String(100), nullable=True)     # Account reference (Paybill)
+    account_name = Column(String(150), nullable=True)       # Display name for clients
+
+    # ── DARAJA API CREDENTIALS (optional for now — automated STK Push later) ──
+    # ✅ CHANGED: nullable=True so tenants can configure manual-only payments
+    consumer_key = Column(String(255), nullable=True)
+    consumer_secret = Column(String(255), nullable=True)
+    passkey = Column(String(255), nullable=True)
+
     environment = Column(
         Enum(MpesaEnvironment),
         nullable=False,
