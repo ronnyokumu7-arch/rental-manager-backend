@@ -25,6 +25,7 @@ from app.routers import (
     auth,
     bookings,
     clients,
+    commission,
     contracts,
     files,             # ✅ NEW: Authenticated file-serving router
     financials,
@@ -150,6 +151,7 @@ routers = [
     tenants,
     users,
     clients,
+    commission,
     vehicles,
     bookings,
     subscriptions,

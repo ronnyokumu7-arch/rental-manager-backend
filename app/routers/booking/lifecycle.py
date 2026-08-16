@@ -1,13 +1,17 @@
+from datetime import datetime, timezone
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload  # ✅ ADDED
+from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.subscription import require_active_subscription
 from app.models.bookings import Booking, BookingStatus
 from app.models.clients import Client, ClientStatus
+from app.models.commission import CommissionEvent, CommissionStatus
 from app.models.users import User
 from app.models.vehicles import Vehicle, VehicleStatus
 from app.schemas.booking import BookingOut
@@ -49,7 +53,7 @@ async def confirm_booking(
     booking.status = BookingStatus.confirmed
     
     await db.commit()
-    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
+    booking = await _reload_booking(db, booking.id)
     
     await invalidate_booking_cache(current_user.tenant_id)
     
@@ -113,8 +117,21 @@ async def activate_booking(
     booking.status = BookingStatus.active
     vehicle.status = VehicleStatus.rented
     
+    # ✅ PAYG COMMISSION TRIGGER: Trip started = KES 150 owed to platform
+    # Amount is snapshotted (150 hardcoded for now; later from platform settings)
+    # booking_id is unique → this trip can NEVER be double-charged
+    commission_event = CommissionEvent(
+        tenant_id=current_user.tenant_id,
+        booking_id=booking.id,
+        amount=Decimal("150.00"),
+        currency_code="KES",
+        status=CommissionStatus.unpaid,
+        created_by=current_user.id,
+    )
+    db.add(commission_event)
+    
     await db.commit()
-    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
+    booking = await _reload_booking(db, booking.id)
     
     await invalidate_booking_cache(current_user.tenant_id)
     await invalidate_vehicle_cache(current_user.tenant_id)
@@ -155,7 +172,7 @@ async def complete_booking(
     vehicle.status = VehicleStatus.awaiting_mileage
     
     await db.commit()
-    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
+    booking = await _reload_booking(db, booking.id)
     
     await invalidate_booking_cache(current_user.tenant_id)
     await invalidate_vehicle_cache(current_user.tenant_id)
@@ -198,7 +215,7 @@ async def cancel_booking(
     booking.status = BookingStatus.cancelled
     
     await db.commit()
-    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
+    booking = await _reload_booking(db, booking.id)
     
     await invalidate_booking_cache(current_user.tenant_id)
     await invalidate_vehicle_cache(current_user.tenant_id)
@@ -225,7 +242,7 @@ async def no_show_booking(
     booking.status = BookingStatus.no_show
     
     await db.commit()
-    booking = await _reload_booking(db, booking.id)  # ✅ FIXED
+    booking = await _reload_booking(db, booking.id)
     
     await invalidate_booking_cache(current_user.tenant_id)
     
