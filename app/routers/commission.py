@@ -1,5 +1,5 @@
 # app/routers/commission.py
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -12,15 +12,24 @@ from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.commission import CommissionEvent, CommissionStatus
+from app.models.commission_payment import CommissionPayment, CommissionPaymentStatus
+from app.models.platform_settings import PlatformSettings
 from app.models.users import User, UserRole
 from app.schemas.commission import CommissionEventOut, CommissionSummaryOut
+from app.schemas.commission_payment import (
+    CommissionPaymentCreate,
+    CommissionPaymentInfoOut,
+    CommissionPaymentOut,
+    CommissionPaymentRejectIn,
+    CommissionPaymentVerifyResult,
+)
 
 router = APIRouter(prefix="/commission")
 
 # ✅ PLATFORM TIMEZONE: the commission day rolls over at 00:00H East Africa Time
 PLATFORM_TZ = ZoneInfo("Africa/Nairobi")
 
-# TODO: move to platform settings (super-admin configurable)
+# Fallback if the singleton row is ever missing (should never happen — seeded)
 DEFAULT_GRACE_DAYS = 3
 
 
@@ -45,6 +54,13 @@ def _resolve_tenant(current_user: User, tenant_id: Optional[int]) -> int:
             detail="No tenant context for this account.",
         )
     return current_user.tenant_id
+
+
+async def _get_settings(db: AsyncSession) -> Optional[PlatformSettings]:
+    """Fetch the platform settings singleton (id=1)."""
+    return (
+        await db.execute(select(PlatformSettings).where(PlatformSettings.id == 1))
+    ).scalars().first()
 
 
 @router.get("/summary", response_model=CommissionSummaryOut)
@@ -92,7 +108,10 @@ async def commission_summary(
     )
     oldest_unpaid_at = (await db.execute(stmt_old)).scalar_one_or_none()
 
-    grace_days = DEFAULT_GRACE_DAYS
+    # ✅ Grace days now come from PlatformSettings (super-admin configurable)
+    settings = await _get_settings(db)
+    grace_days = settings.grace_period_days if settings else DEFAULT_GRACE_DAYS
+
     days_until_lock: Optional[int] = None
     soft_locked = False
 
@@ -137,3 +156,254 @@ async def commission_events(
     )
     events = (await db.execute(stmt)).scalars().all()
     return events
+
+
+# ---------------------------------------------------------------------------
+# PAYMENT COLLECTION (tenant pays the platform)
+# ---------------------------------------------------------------------------
+
+@router.get("/payment-info", response_model=CommissionPaymentInfoOut)
+@limiter.limit("30/minute")
+async def commission_payment_info(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),  # ✅ Reads stay open when soft-locked
+):
+    """✅ Everything the /commission/pay page needs: what's owed + your Paybill triple."""
+    if current_user.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant context for this account.",
+        )
+    target = current_user.tenant_id
+
+    # Total currently owed (all unpaid events, including today's)
+    stmt_owed = select(
+        func.count(CommissionEvent.id),
+        func.coalesce(func.sum(CommissionEvent.amount), 0),
+    ).where(
+        CommissionEvent.tenant_id == target,
+        CommissionEvent.status == CommissionStatus.unpaid,
+    )
+    owed_count, owed_total = (await db.execute(stmt_owed)).one()
+
+    # Platform payment details (singleton row)
+    settings = await _get_settings(db)
+
+    # Latest submission awaiting verification (if any)
+    pending = (
+        await db.execute(
+            select(CommissionPayment)
+            .where(
+                CommissionPayment.tenant_id == target,
+                CommissionPayment.status == CommissionPaymentStatus.pending,
+            )
+            .order_by(CommissionPayment.created_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+
+    # ✅ M-PESA PAYBILL TRIPLE — exactly as entered/confirmed on the phone
+    return CommissionPaymentInfoOut(
+        outstanding_balance=Decimal(owed_total),
+        outstanding_count=int(owed_count),
+        paybill_number=settings.platform_paybill if settings else None,
+        account_number=settings.platform_account_number if settings else None,
+        account_name=settings.platform_account_name if settings else None,
+        platform_phone=settings.platform_phone if settings else None,
+        platform_email=settings.platform_email if settings else None,
+        pending_payment=pending,
+    )
+
+
+@router.post("/payments", response_model=CommissionPaymentOut, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
+async def submit_commission_payment(
+    request: Request,
+    payload: CommissionPaymentCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """✅ Tenant self-reports a commission payment (M-Pesa code) → awaits your verification."""
+    if current_user.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant context for this account.",
+        )
+
+    # ✅ One pending submission at a time (no spam / duplicate verification work)
+    existing = (
+        await db.execute(
+            select(CommissionPayment).where(
+                CommissionPayment.tenant_id == current_user.tenant_id,
+                CommissionPayment.status == CommissionPaymentStatus.pending,
+            )
+        )
+    ).scalars().first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You already have a payment awaiting verification.",
+        )
+
+    payment = CommissionPayment(
+        tenant_id=current_user.tenant_id,
+        amount=payload.amount,
+        reference=payload.reference.strip().upper(),
+        notes=payload.notes,
+        submitted_by=current_user.id,
+    )
+    db.add(payment)
+    await db.commit()
+    await db.refresh(payment)
+    return payment
+
+
+@router.get("/payments", response_model=list[CommissionPaymentOut])
+@limiter.limit("30/minute")
+async def list_commission_payments(
+    request: Request,
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """✅ Tenant's commission payment history."""
+    if current_user.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant context for this account.",
+        )
+
+    stmt = (
+        select(CommissionPayment)
+        .where(CommissionPayment.tenant_id == current_user.tenant_id)
+        .order_by(CommissionPayment.created_at.desc())
+        .limit(limit)
+    )
+    payments = (await db.execute(stmt)).scalars().all()
+    return payments
+
+
+# ---------------------------------------------------------------------------
+# SUPER ADMIN VERIFICATION QUEUE
+# ---------------------------------------------------------------------------
+
+def _require_super_admin(current_user: User) -> None:
+    if current_user.role != UserRole.super_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super admin access required.",
+        )
+
+
+@router.get("/admin/payments", response_model=list[CommissionPaymentOut])
+@limiter.limit("60/minute")
+async def list_all_commission_payments(
+    request: Request,
+    status_filter: Optional[CommissionPaymentStatus] = Query(None, alias="status"),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """✅ Your verification queue. Use ?status=pending for the action list."""
+    _require_super_admin(current_user)
+
+    stmt = select(CommissionPayment)
+    if status_filter is not None:
+        stmt = stmt.where(CommissionPayment.status == status_filter)
+    stmt = stmt.order_by(CommissionPayment.created_at.desc()).limit(limit)
+    payments = (await db.execute(stmt)).scalars().all()
+    return payments
+
+
+@router.post("/admin/payments/{payment_id}/verify", response_model=CommissionPaymentVerifyResult)
+@limiter.limit("30/minute")
+async def verify_commission_payment(
+    request: Request,
+    payment_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    ✅ Confirm you received the money. The payment is applied to the tenant's
+    unpaid commission events (oldest first). The tenant's soft-lock lifts
+    AUTOMATICALLY because /summary recomputes from unpaid events — no extra
+    unlock code needed.
+    """
+    _require_super_admin(current_user)
+
+    payment = await db.get(CommissionPayment, payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found.")
+    if payment.status != CommissionPaymentStatus.pending:
+        raise HTTPException(
+            status_code=409, detail=f"Payment is already {payment.status.value}."
+        )
+
+    now = datetime.now(timezone.utc)
+
+    # Apply to unpaid events, oldest first
+    stmt = (
+        select(CommissionEvent)
+        .where(
+            CommissionEvent.tenant_id == payment.tenant_id,
+            CommissionEvent.status == CommissionStatus.unpaid,
+        )
+        .order_by(CommissionEvent.trip_started_at.asc(), CommissionEvent.id.asc())
+    )
+    events = (await db.execute(stmt)).scalars().all()
+
+    remaining = Decimal(payment.amount)
+    marked = 0
+    for event in events:
+        if remaining < Decimal(event.amount):
+            break  # amounts are uniform; nothing further can be covered
+        event.status = CommissionStatus.paid
+        event.paid_at = now
+        event.payment_reference = payment.reference
+        remaining -= Decimal(event.amount)
+        marked += 1
+
+    payment.status = CommissionPaymentStatus.verified
+    payment.verified_by = current_user.id
+    payment.verified_at = now
+
+    await db.commit()
+    await db.refresh(payment)
+
+    return CommissionPaymentVerifyResult(
+        payment=CommissionPaymentOut.model_validate(payment),
+        events_marked_paid=marked,
+        unapplied_amount=remaining,
+    )
+
+
+@router.post("/admin/payments/{payment_id}/reject", response_model=CommissionPaymentOut)
+@limiter.limit("30/minute")
+async def reject_commission_payment(
+    request: Request,
+    payment_id: int,
+    payload: CommissionPaymentRejectIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """✅ Code didn't match your statement. Tenant keeps owing and sees your note."""
+    _require_super_admin(current_user)
+
+    payment = await db.get(CommissionPayment, payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found.")
+    if payment.status != CommissionPaymentStatus.pending:
+        raise HTTPException(
+            status_code=409, detail=f"Payment is already {payment.status.value}."
+        )
+
+    now = datetime.now(timezone.utc)
+    payment.status = CommissionPaymentStatus.rejected
+    payment.verified_by = current_user.id
+    payment.verified_at = now
+    payment.notes = payload.notes
+
+    await db.commit()
+    await db.refresh(payment)
+    return payment

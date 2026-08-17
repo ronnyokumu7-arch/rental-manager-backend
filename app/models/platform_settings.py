@@ -28,10 +28,14 @@ class PlatformSettings(Base, AuditMixin):
     )
 
     # ── PLATFORM PAYMENT DETAILS (Shown on /commission/pay) ───────
-    # The Paybill number tenants will send their commission to
+    # 1. The Paybill (business) number, e.g., 400200 for Co-op Bank
     platform_paybill = Column(String(50), nullable=True)
-    
-    # The account name on the Paybill (e.g., "Rental Garage Ltd")
+
+    # 2. ✅ The bank account number behind the Paybill (where the money lands)
+    platform_account_number = Column(String(50), nullable=True)
+
+    # 3. The registered account name (personal or business) — shown so
+    #    tenants can confirm the recipient before sending money
     platform_account_name = Column(String(150), nullable=True)
     
     # Fallback contact for tenants who have questions about their bill

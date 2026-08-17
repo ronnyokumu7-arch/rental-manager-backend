@@ -1,6 +1,7 @@
 from app.models.bookings import Booking
 from app.models.clients import Client
 from app.models.commission import CommissionEvent, CommissionStatus
+from app.models.commission_payment import CommissionPayment, CommissionPaymentStatus
 from app.models.contracts import Contract
 from app.models.invoices import Invoice
 from app.models.password_reset import PasswordResetToken
@@ -29,6 +30,8 @@ __all__ = [
     "Client",
     "CommissionEvent",
     "CommissionStatus",
+    "CommissionPayment",
+    "CommissionPaymentStatus",
     "Contract",
     "Invoice",
     "PasswordResetToken",
