@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
+from app.dependencies.commission_lock import require_not_commission_locked
 from app.dependencies.subscription import require_active_subscription
 from app.dependencies.tenant import TenantScope, get_tenant_scope
 from app.models.bookings import Booking, BookingStatus
@@ -154,7 +155,7 @@ async def create_booking(
     request: Request,
     booking: BookingCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_active_subscription),  # ✅ Require active subscription
+    current_user: User = Depends(require_not_commission_locked),  # ✅ Require active subscription
 ):
     # 1. Validate Client
     client_stmt = select(Client).where(

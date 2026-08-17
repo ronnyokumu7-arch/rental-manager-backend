@@ -1,3 +1,4 @@
+# app/routers/bookings/lifecycle.py
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -9,9 +10,12 @@ from sqlalchemy.orm import selectinload
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.subscription import require_active_subscription
+from app.dependencies.commission_lock import require_not_commission_locked
 from app.models.bookings import Booking, BookingStatus
 from app.models.clients import Client, ClientStatus
 from app.models.commission import CommissionEvent, CommissionStatus
+from app.models.platform_settings import PlatformSettings
+from app.models.tenants import Tenant
 from app.models.users import User
 from app.models.vehicles import Vehicle, VehicleStatus
 from app.schemas.booking import BookingOut
@@ -40,7 +44,7 @@ async def confirm_booking(
     request: Request,
     booking_id: int, 
     db: AsyncSession = Depends(get_db), 
-    current_user: User = Depends(require_active_subscription)
+    current_user: User = Depends(require_not_commission_locked)
 ):
     booking = await get_authorized_booking_async(booking_id, current_user, db)
     
@@ -116,19 +120,37 @@ async def activate_booking(
 
     booking.status = BookingStatus.active
     vehicle.status = VehicleStatus.rented
-    
-    # ✅ PAYG COMMISSION TRIGGER: Trip started = KES 150 owed to platform
-    # Amount is snapshotted (150 hardcoded for now; later from platform settings)
-    # booking_id is unique → this trip can NEVER be double-charged
-    commission_event = CommissionEvent(
-        tenant_id=current_user.tenant_id,
-        booking_id=booking.id,
-        amount=Decimal("150.00"),
-        currency_code="KES",
-        status=CommissionStatus.unpaid,
-        created_by=current_user.id,
+
+    # ✅ TRIAL EXEMPTION: trips during the 30-day free trial are commission-free.
+    # trial_ends_at is NULL for legacy tenants → they are charged normally.
+    tenant = await db.get(Tenant, current_user.tenant_id)
+    now = datetime.now(timezone.utc)
+    in_trial = (
+        tenant is not None
+        and tenant.trial_ends_at is not None
+        and tenant.trial_ends_at > now
     )
-    db.add(commission_event)
+
+    if not in_trial:
+        # ✅ PAYG COMMISSION TRIGGER: Trip started = commission owed to platform
+        # Amount snapshotted from PlatformSettings (super-admin configurable)
+        # booking_id is unique → this trip can NEVER be double-charged
+        settings = (
+            await db.execute(
+                select(PlatformSettings).where(PlatformSettings.id == 1)
+            )
+        ).scalars().first()
+        amount = Decimal(settings.commission_amount) if settings else Decimal("150.00")
+
+        commission_event = CommissionEvent(
+            tenant_id=current_user.tenant_id,
+            booking_id=booking.id,
+            amount=amount,
+            currency_code="KES",
+            status=CommissionStatus.unpaid,
+            created_by=current_user.id,
+        )
+        db.add(commission_event)
     
     await db.commit()
     booking = await _reload_booking(db, booking.id)

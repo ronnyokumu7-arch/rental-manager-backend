@@ -89,12 +89,17 @@ async def create_tenant(
         now = datetime.now(timezone.utc)
         ends_at = None
         
-        if initial_plan_enum in [PlanType.free_trial, PlanType.starter_trial]:
+        # ✅ Handle PAYG (30-day trial, then commission accrues)
+        if initial_plan_enum == PlanType.pay_as_you_go:
+            initial_status = SubscriptionStatus.trial
+            duration_days = 30
+            ends_at = now + timedelta(days=duration_days)
+        elif initial_plan_enum in [PlanType.free_trial, PlanType.starter_trial]:
             initial_status = SubscriptionStatus.trial if initial_plan_enum == PlanType.free_trial else SubscriptionStatus.starter_trial
             duration_days = 30 if initial_plan_enum == PlanType.free_trial else 14
             ends_at = now + timedelta(days=duration_days)
         else:
-            # Paid plan selected during onboarding. Needs payment verification.
+            # Paid monthly plan selected during onboarding. Needs payment verification.
             initial_status = SubscriptionStatus.pending_verification
 
         # 1. Create Core Tenant Record

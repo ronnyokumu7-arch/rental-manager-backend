@@ -8,6 +8,7 @@ from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
 from app.dependencies.subscription import require_active_subscription
+from app.dependencies.commission_lock import require_not_commission_locked
 from app.dependencies.tenant import TenantScope, get_tenant_scope, require_mutation_tenant_scope
 from app.models.bookings import Booking, BookingStatus
 from app.models.users import User
@@ -31,7 +32,7 @@ async def create_vehicle(
     request: Request,
     vehicle: VehicleCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_active_subscription),
+    current_user: User = Depends(require_not_commission_locked),
     scope: TenantScope = Depends(require_mutation_tenant_scope),
 ):
     data = vehicle.model_dump()
