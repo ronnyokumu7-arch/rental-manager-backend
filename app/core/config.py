@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     SECRET_KEY: str = Field(..., min_length=32)  # ✅ Required, min 32 chars
     ENCRYPTION_KEY: str = Field(..., min_length=44)  # ✅ Required, 32-byte base64 = 44 chars
-    access_token_expire_minutes: int = 15
+    access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 7
     
     # ─────────────────────────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+# app/jobs/scheduler.py
 import logging
 import os
 
@@ -38,6 +39,7 @@ def start_scheduler():
     # 2. Deferred imports to avoid circular dependencies
     from app.jobs.subscription_jobs import run_subscription_lifecycle
     from app.jobs.booking_jobs import run_booking_auto_archive
+    from app.jobs.daily_commission import run_daily_commission_routine
 
     # 3. Registration with error handling
     try:
@@ -55,6 +57,16 @@ def start_scheduler():
             trigger=CronTrigger(hour=1, minute=0),  # Runs daily at 1:00 AM UTC
             id="booking_auto_archive",
             name="Daily booking auto-archive",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+
+        # ✅ COMMISSION STATEMENTS: 00:05H EAT = 21:05H UTC
+        scheduler.add_job(
+            run_daily_commission_routine,
+            trigger=CronTrigger(hour=21, minute=5),
+            id="daily_commission",
+            name="Daily commission statements (00:05H EAT)",
             replace_existing=True,
             misfire_grace_time=3600,
         )

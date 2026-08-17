@@ -463,3 +463,25 @@ async def update_platform_settings(
     await db.commit()
     await db.refresh(settings)
     return settings
+
+@router.post("/admin/run-daily-job", response_model=dict)
+@limiter.limit("5/minute")
+async def manual_trigger_daily_commission(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    ✅ Manual trigger for testing — runs the routine NOW instead of waiting for 00:05H.
+    Super admin only. Use this to verify emails are sending correctly.
+    """
+    _require_super_admin(current_user)
+
+    from app.jobs.daily_commission import run_daily_commission_routine
+    stats = await run_daily_commission_routine(db)
+    await db.commit()
+
+    return {
+        "message": "Daily commission routine executed successfully",
+        "stats": stats,
+    }
