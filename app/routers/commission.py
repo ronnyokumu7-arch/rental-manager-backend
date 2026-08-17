@@ -15,6 +15,7 @@ from app.models.commission import CommissionEvent, CommissionStatus
 from app.models.commission_payment import CommissionPayment, CommissionPaymentStatus
 from app.models.platform_settings import PlatformSettings
 from app.models.users import User, UserRole
+from app.schemas.platform_settings import PlatformSettingsOut, PlatformSettingsUpdate
 from app.schemas.commission import CommissionEventOut, CommissionSummaryOut
 from app.schemas.commission_payment import (
     CommissionPaymentCreate,
@@ -407,3 +408,58 @@ async def reject_commission_payment(
     await db.commit()
     await db.refresh(payment)
     return payment
+
+
+# ---------------------------------------------------------------------------
+# PLATFORM SETTINGS (super admin form)
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/settings", response_model=PlatformSettingsOut)
+@limiter.limit("60/minute")
+async def get_platform_settings(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """✅ Loads the Commission Settings form (super admin only)."""
+    _require_super_admin(current_user)
+
+    settings = await _get_settings(db)
+    if settings is None:
+        # Self-heal: the seed guarantees this row, but never 500 if it's missing
+        settings = PlatformSettings(
+            id=1, commission_amount=Decimal("150.00"), grace_period_days=3
+        )
+        db.add(settings)
+        await db.commit()
+        await db.refresh(settings)
+    return settings
+
+
+@router.put("/admin/settings", response_model=PlatformSettingsOut)
+@limiter.limit("10/minute")
+async def update_platform_settings(
+    request: Request,
+    payload: PlatformSettingsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    ✅ Saves the Commission Settings form. Takes effect IMMEDIATELY for all
+    tenants: new commission amount on next trip, new Paybill on the pay page,
+    new grace period on the next /summary read.
+    """
+    _require_super_admin(current_user)
+
+    settings = await _get_settings(db)
+    if settings is None:
+        settings = PlatformSettings(id=1)
+        db.add(settings)
+
+    # ✅ Full-state PUT: the form always sends everything, no drift
+    for field, value in payload.model_dump().items():
+        setattr(settings, field, value)
+
+    await db.commit()
+    await db.refresh(settings)
+    return settings
