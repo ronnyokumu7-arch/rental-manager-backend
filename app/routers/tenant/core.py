@@ -33,7 +33,7 @@ def _clean_string(value: str | None) -> str | None:
     if isinstance(value, str):
         cleaned = value.strip()
         return cleaned if cleaned else None
-    return value
+    return None
 
 
 @router.post("/", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
@@ -72,12 +72,12 @@ async def create_tenant(
     try:
         # ✅ RESPECT THE SELECTED PLAN (Don't force free_trial)
         initial_plan_str = payload.plan if payload.plan else "free_trial"
-        
+
         # Map string to Enum safely
         try:
             initial_plan_enum = PlanType(initial_plan_str)
         except ValueError:
-            initial_plan_enum = PlanType.free_trial # Fallback
+            initial_plan_enum = PlanType.free_trial  # Fallback
 
         initial_billing_cycle_str = payload.billing_cycle if payload.billing_cycle else "monthly"
         try:
@@ -88,7 +88,7 @@ async def create_tenant(
         # Determine initial status and duration based on plan
         now = datetime.now(timezone.utc)
         ends_at = None
-        
+
         # ✅ Handle PAYG (30-day trial, then commission accrues)
         if initial_plan_enum == PlanType.pay_as_you_go:
             initial_status = SubscriptionStatus.trial
@@ -137,7 +137,7 @@ async def create_tenant(
             updated_at=now,
         )
         db.add(new_subscription)
-        
+
         # Sync trial date to Tenant model for quick lookups
         tenant.trial_ends_at = ends_at if initial_status in [SubscriptionStatus.trial, SubscriptionStatus.starter_trial] else None
 
@@ -169,21 +169,32 @@ async def create_tenant(
         )
         db.add(admin_user)
         await db.flush()  # Generates admin_user.id
-        
+
         # LINK AGENCY OWNER TO TENANT
         tenant.owner_id = admin_user.id
 
-        # 5. Commit EVERYTHING atomically. If subscription fails, tenant creation rolls back.
+        # 5. Commit EVERYTHING atomically. If anything above fails, it all rolls back.
         await db.commit()
 
-        # 6. Eagerly refresh so Pydantic can serialize the new owner_id and profile
-        await db.refresh(tenant)
-        await db.refresh(tenant.profile)
+        # ✅ 6. Eager re-fetch so Pydantic serialization can NEVER lazy-load
+        # (this replaces the old db.refresh(tenant.profile) which could raise
+        #  MissingGreenlet AFTER the commit → the "tenant exists but UI shows error" bug)
+        stmt = select(Tenant).options(selectinload(Tenant.profile)).where(Tenant.id == tenant.id)
+        tenant = (await db.execute(stmt)).scalars().first()
 
-        # ✅ 7. Invalidate tenant cache and log the creation
-        await invalidate_tenant_cache()
-        await TenantActivityLogger.on_created(db, current_user.id, tenant)
-        await db.commit()  # Commit the activity log flush
+        # ✅ 7. Post-commit side effects must NEVER fail the response.
+        # The tenant already exists — a cache/log failure is a warning, not a 500.
+        try:
+            await invalidate_tenant_cache()
+        except Exception as cache_err:
+            print(f"⚠️ Cache invalidation warning (tenant created): {cache_err}")
+
+        try:
+            await TenantActivityLogger.on_created(db, current_user.id, tenant)
+            await db.commit()
+        except Exception as log_err:
+            await db.rollback()
+            print(f"⚠️ Activity log warning (tenant created): {log_err}")
 
         return tenant
 
@@ -195,6 +206,7 @@ async def create_tenant(
         )
     except Exception as e:
         await db.rollback()
+        print(f"🚨 create_tenant failed BEFORE commit: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to provision tenant environment: {str(e)}"
@@ -274,21 +286,21 @@ async def get_tenant(
     current_user: User = Depends(get_current_user),
 ):
     """Retrieve full details for a single tenant by ID."""
-    
+
     # Security Check: Super admins can see any tenant. Regular users can only see their own.
     if current_user.role != UserRole.super_admin and current_user.tenant_id != tenant_id:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to view this tenant."
         )
 
     stmt = select(Tenant).options(selectinload(Tenant.profile)).where(Tenant.id == tenant_id)
     result = await db.execute(stmt)
     tenant = result.scalars().first()
-    
+
     if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
-    
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
     return tenant
 
 
@@ -304,7 +316,7 @@ async def update_tenant(
     stmt = select(Tenant).options(selectinload(Tenant.profile)).where(Tenant.id == tenant_id)
     result = await db.execute(stmt)
     tenant = result.scalars().first()
-    
+
     if not tenant:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
 
@@ -312,20 +324,36 @@ async def update_tenant(
     for field, value in update_data.items():
         setattr(tenant, field, value)
 
+    # ✅ FIXED: Sync TenantProfile.company_name with Tenant.name (same commit).
+    # Profile is already eager-loaded via selectinload above.
+    # Keeps PDFs / public views / topbar consistent when a super admin renames a tenant.
+    if "name" in update_data and tenant.profile:
+        tenant.profile.company_name = tenant.name
+
     try:
         await db.commit()
-        await db.refresh(tenant)
-        await db.refresh(tenant.profile)
-
-        # ✅ Invalidate tenant cache and log the update
-        await invalidate_tenant_cache()
-        await TenantActivityLogger.on_updated(db, current_user.id, tenant, list(update_data.keys()))
-        await db.commit()  # Commit the activity log flush
-
-        return tenant
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Update failed due to a unique constraint violation."
         )
+
+    # ✅ Eager re-fetch (no lazy loads after commit)
+    stmt = select(Tenant).options(selectinload(Tenant.profile)).where(Tenant.id == tenant_id)
+    tenant = (await db.execute(stmt)).scalars().unique().first()
+
+    # ✅ Post-commit side effects must NEVER fail the response
+    try:
+        await invalidate_tenant_cache()
+    except Exception as cache_err:
+        print(f"⚠️ Cache invalidation warning (tenant updated): {cache_err}")
+
+    try:
+        await TenantActivityLogger.on_updated(db, current_user.id, tenant, list(update_data.keys()))
+        await db.commit()
+    except Exception as log_err:
+        await db.rollback()
+        print(f"⚠️ Activity log warning (tenant updated): {log_err}")
+
+    return tenant

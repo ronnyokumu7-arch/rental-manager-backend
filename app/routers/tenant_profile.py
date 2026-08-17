@@ -11,6 +11,7 @@ from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
 from app.models.tenant_profile import TenantProfile
 from app.models.users import User, UserRole
+from app.models.tenants import Tenant
 from app.schemas.tenant_profile import TenantProfileCreate, TenantProfileOut, TenantProfileUpdate
 from app.services.cache import invalidate_tenant_cache
 from app.services.activity_log import ActivityLogService
@@ -40,7 +41,7 @@ def _clean_string(value: str | None) -> str | None:
     if isinstance(value, str):
         cleaned = value.strip()
         return cleaned if cleaned else None
-    return None
+    return value
 
 
 @router.get("/", response_model=TenantProfileOut)
@@ -103,6 +104,14 @@ async def create_profile(
     )
     
     db.add(profile)
+
+    # ✅ FIXED: Keep Tenant.name in sync when a profile is created with a company name
+    if profile.company_name:
+        tenant_stmt = select(Tenant).where(Tenant.id == target_id)
+        tenant = (await db.execute(tenant_stmt)).scalars().first()
+        if tenant:
+            tenant.name = profile.company_name
+
     await db.commit()
     await db.refresh(profile)
 
@@ -157,6 +166,15 @@ async def update_profile(
                 setattr(profile, field, _clean_string(value))
             else:
                 setattr(profile, field, value)
+
+    # ✅ FIXED: Sync Tenant.name with profile.company_name in the SAME commit.
+    # Invoice/contract PDFs + public views read tenant.name — without this
+    # they stay stale after a Settings rename.
+    if "company_name" in update_data and profile.company_name:
+        tenant_stmt = select(Tenant).where(Tenant.id == target_id)
+        tenant = (await db.execute(tenant_stmt)).scalars().first()
+        if tenant:
+            tenant.name = profile.company_name
             
     await db.commit()
     await db.refresh(profile)
