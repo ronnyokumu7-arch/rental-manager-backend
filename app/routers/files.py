@@ -1,12 +1,17 @@
 """
 Authenticated file-serving endpoint.
 Replaces public StaticFiles for sensitive tenant uploads (IDs, DLs, contracts).
+
+Serving strategy:
+- Cloudinary backend → 302 redirect to a short-lived signed URL (bandwidth
+  offloaded from Render; tenant access still enforced here, first hop).
+- Local backend      → stream bytes via FileResponse (dev / fallback).
 """
 import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -14,9 +19,13 @@ from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.users import User, UserRole
+from app.services.storage import get_backend
 
 router = APIRouter(prefix="/files", tags=["files"])
 settings = get_settings()
+
+# ✅ Signed URLs live for 10 minutes — enough to view, too short to leak.
+SIGNED_URL_TTL_SECONDS = 600
 
 
 def _get_upload_dir() -> Path:
@@ -66,7 +75,21 @@ async def serve_secure_file(
             detail="Invalid filename"
         )
     
-    # Build and resolve the absolute path
+    # ✅ CLOUDINARY PATH: redirect to a short-lived signed URL.
+    # The tenant check above already ran, so the redirect inherits it.
+    relative_path = f"tenant_{tenant_id}/{category}/{filename}"
+    signed = get_backend().signed_url(relative_path, ttl_seconds=SIGNED_URL_TTL_SECONDS)
+    if signed:
+        return RedirectResponse(
+            url=signed,
+            status_code=status.HTTP_302_FOUND,
+            headers={
+                "Cache-Control": "private, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+    
+    # ─── LOCAL DISK FALLBACK (unchanged) ────────────────────────────────────
     upload_dir = _get_upload_dir()
     file_path = (upload_dir / f"tenant_{tenant_id}" / category / filename).resolve()
     
