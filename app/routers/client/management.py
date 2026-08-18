@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +17,7 @@ from app.models.bookings import Booking, BookingStatus
 from app.schemas.client import ClientCreate, ClientOut, ClientUpdate
 from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.services.cache import get_cached_client_list, set_cached_client_list, invalidate_client_cache
+from app.services.client_identity import check_identity_conflicts, compute_risk_flags
 from app.services.client_tasks import ClientTaskService
 from ._helpers import get_authorized_client_async
 
@@ -34,41 +37,53 @@ async def create_client(
     current_user: User = Depends(require_not_commission_locked),
     scope: TenantScope = Depends(require_mutation_tenant_scope),
 ):
-    # ✅ Check for duplicate phone (excluding archived clients)
-    phone_stmt = select(Client).where(
-        Client.tenant_id == scope.tenant_id,
-        Client.phone == client.phone,
-        Client.is_archived == False
+    # ✅ IDENTITY ENGINE: hard blocks (phone/email/id slot/dl, per-tenant)
+    conflicts = await check_identity_conflicts(
+        db,
+        scope.tenant_id,
+        phone=client.phone,
+        email=client.email,
+        id_type=client.id_type,
+        id_number=client.id_number,
+        dl_number=client.dl_number,
     )
-    if (await db.execute(phone_stmt)).scalars().first():
+    if conflicts:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A client with this phone number already exists."
+            status_code=status.HTTP_409_CONFLICT,
+            detail=[c.message for c in conflicts],
         )
 
-    # ✅ Check for duplicate ID number (excluding archived clients)
-    if client.id_number:
-        id_stmt = select(Client).where(
-            Client.tenant_id == scope.tenant_id,
-            Client.id_number == client.id_number,
-            Client.is_archived == False
-        )
-        if (await db.execute(id_stmt)).scalars().first():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A client with this ID number already exists."
-            )
+    # ✅ RISK FLAGS: soft suspicion (F1 self-reference, F2 recycled emergency #)
+    is_flagged, flag_notes = await compute_risk_flags(
+        db,
+        scope.tenant_id,
+        own_phone=client.phone,
+        next_of_kin_phone=client.next_of_kin_phone,
+    )
 
-    db_client = Client(**client.model_dump(), tenant_id=scope.tenant_id)
+    db_client = Client(
+        **client.model_dump(),
+        tenant_id=scope.tenant_id,
+        is_flagged=is_flagged,
+        flag_notes=flag_notes,
+    )
     db.add(db_client)
-    await db.commit()
-    await db.refresh(db_client)
+
+    try:
+        await db.commit()
+        await db.refresh(db_client)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A client with these details already exists.",
+        )
 
     await ClientTaskService.on_client_created(db, db_client, db_client.tenant_id)
-    
+
     # ✅ Invalidate cache
     await invalidate_client_cache(db_client.tenant_id)
-    
+
     return db_client
 
 
@@ -93,19 +108,19 @@ async def list_clients(
     cached = await get_cached_client_list(scope.tenant_id, archived=False)
     if cached is not None:
         return paginate_cached_items(cached, page=page, page_size=page_size)
-    
+
     # Cache miss: fetch from DB
     stmt = select(Client).where(Client.is_archived == False)
     if scope.tenant_id is not None:
         stmt = stmt.where(Client.tenant_id == scope.tenant_id)
     stmt = stmt.order_by(Client.created_at.desc())
-    
+
     result = await db.execute(stmt)
     clients = result.scalars().all()
-    
+
     # Write to cache (5-minute TTL)
     await set_cached_client_list(scope.tenant_id, archived=False, clients=clients)
-    
+
     return paginate_items(clients, total=len(clients), page=page, page_size=page_size)
 
 
@@ -126,19 +141,19 @@ async def list_archived_clients(
     cached = await get_cached_client_list(scope.tenant_id, archived=True)
     if cached is not None:
         return paginate_cached_items(cached, page=page, page_size=page_size)
-    
+
     # Cache miss: fetch from DB
     stmt = select(Client).where(Client.is_archived == True)
     if scope.tenant_id is not None:
         stmt = stmt.where(Client.tenant_id == scope.tenant_id)
     stmt = stmt.order_by(Client.archived_at.desc())
-    
+
     result = await db.execute(stmt)
     clients = result.scalars().all()
-    
+
     # Write to cache
     await set_cached_client_list(scope.tenant_id, archived=True, clients=clients)
-    
+
     return paginate_items(clients, total=len(clients), page=page, page_size=page_size)
 
 
@@ -169,25 +184,59 @@ async def update_client(
     client = await get_authorized_client_async(client_id, current_user, db)
     update_data = updates.model_dump(exclude_unset=True)
 
-    # ✅ Prevent changing phone to an existing one (excluding archived clients)
-    if "phone" in update_data and update_data["phone"] != client.phone:
-        existing_stmt = select(Client).where(
-            Client.tenant_id == client.tenant_id,
-            Client.phone == update_data["phone"],
-            Client.id != client_id,
-            Client.is_archived == False
+    # ✅ Build the FINAL values (existing merged with updates) so we can
+    # check identity uniqueness against the post-update state, excluding self.
+    final_phone = update_data.get("phone", client.phone)
+    final_email = update_data.get("email", client.email)
+    final_id_type = update_data.get("id_type", client.id_type)
+    final_id_number = update_data.get("id_number", client.id_number)
+    final_dl_number = update_data.get("dl_number", client.dl_number)
+    final_next_of_kin_phone = update_data.get("next_of_kin_phone", client.next_of_kin_phone)
+
+    # ✅ IDENTITY ENGINE: only run if any identity field is being touched
+    identity_keys = {"phone", "email", "id_type", "id_number", "dl_number"}
+    if identity_keys & update_data.keys():
+        conflicts = await check_identity_conflicts(
+            db,
+            client.tenant_id,
+            phone=final_phone,
+            email=final_email,
+            id_type=final_id_type,
+            id_number=final_id_number,
+            dl_number=final_dl_number,
+            exclude_client_id=client.id,
         )
-        if (await db.execute(existing_stmt)).scalars().first():
+        if conflicts:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Phone number already in use by another client."
+                status_code=status.HTTP_409_CONFLICT,
+                detail=[c.message for c in conflicts],
             )
 
+    # Apply updates
     for field, value in update_data.items():
         setattr(client, field, value)
 
-    await db.commit()
-    await db.refresh(client)
+    # ✅ RECOMPUTE FLAGS if emergency contact or phone changed
+    if {"phone", "next_of_kin_phone"} & update_data.keys():
+        is_flagged, flag_notes = await compute_risk_flags(
+            db,
+            client.tenant_id,
+            own_phone=final_phone,
+            next_of_kin_phone=final_next_of_kin_phone,
+            exclude_client_id=client.id,
+        )
+        client.is_flagged = is_flagged
+        client.flag_notes = flag_notes
+
+    try:
+        await db.commit()
+        await db.refresh(client)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A client with these details already exists.",
+        )
 
     # ✅ Invalidate cache
     await invalidate_client_cache(client.tenant_id)
@@ -208,13 +257,13 @@ async def archive_client(
     current_user: User = Depends(require_active_subscription),
 ):
     client = await get_authorized_client_async(client_id, current_user, db)
-    
+
     if client.is_archived:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Client is already archived."
         )
-    
+
     # ✅ Check for active bookings
     active_bookings_stmt = select(Booking).where(
         Booking.client_id == client.id,
@@ -226,16 +275,15 @@ async def archive_client(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot archive client with active bookings. Please complete or cancel bookings first."
         )
-        
+
     client.is_archived = True
-    from datetime import datetime, timezone
     client.archived_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(client)
-    
+
     # ✅ Invalidate cache
     await invalidate_client_cache(client.tenant_id)
-    
+
     return client
 
 
@@ -248,21 +296,21 @@ async def restore_client(
     current_user: User = Depends(require_active_subscription),
 ):
     client = await get_authorized_client_async(client_id, current_user, db)
-    
+
     if not client.is_archived:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Client is not archived."
         )
-        
+
     client.is_archived = False
     client.archived_at = None
     await db.commit()
     await db.refresh(client)
-    
+
     # ✅ Invalidate cache
     await invalidate_client_cache(client.tenant_id)
-    
+
     return client
 
 
@@ -275,13 +323,13 @@ async def delete_client(
     current_user: User = Depends(require_active_subscription),
 ):
     client = await get_authorized_client_async(client_id, current_user, db)
-    
+
     if not client.is_archived:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Client must be archived before deletion."
         )
-    
+
     # ✅ Check for active bookings
     active_bookings_stmt = select(Booking).where(
         Booking.client_id == client.id,
@@ -293,7 +341,7 @@ async def delete_client(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete client with active bookings. Please complete or cancel bookings first."
         )
-        
+
     try:
         await db.delete(client)
         await db.commit()
@@ -303,6 +351,6 @@ async def delete_client(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete client with historical bookings. Please archive instead."
         )
-    
+
     # ✅ Invalidate cache
     await invalidate_client_cache(client.tenant_id)

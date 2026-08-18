@@ -24,6 +24,7 @@ from app.routers import (
     admin,
     auth,
     bookings,
+    client_invites,    # ✅ NEW: Client invite system (token-based onboarding)
     clients,
     commission,
     contracts,
@@ -150,6 +151,7 @@ routers = [
     auth,
     tenants,
     users,
+    client_invites,    # ✅ NEW: Client invite system
     clients,
     commission,
     vehicles,

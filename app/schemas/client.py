@@ -1,14 +1,18 @@
 from datetime import datetime, date
 from typing import Optional
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from app.models.clients import ClientStatus
+from app.models.clients import ClientStatus, IdType
 
 
 class ClientBase(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=255)
     email: Optional[EmailStr] = Field(default=None, max_length=255)
     phone: str = Field(..., min_length=1, max_length=50)
+
+    # ✅ IDENTITY SLOT: which document `id_number` holds (defaults to national_id)
+    id_type: IdType = Field(default=IdType.national_id, description="national_id | passport")
     id_number: Optional[str] = Field(default=None, max_length=50)
+
     dl_number: Optional[str] = Field(default=None, max_length=50)
     dl_expiry: Optional[date] = Field(default=None, description="Must be a future date")
     residential_address: Optional[str] = None
@@ -62,7 +66,11 @@ class ClientUpdate(BaseModel):
     full_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     email: Optional[EmailStr] = Field(default=None, max_length=255)
     phone: Optional[str] = Field(default=None, min_length=1, max_length=50)
+
+    # ✅ IDENTITY SLOT (optional on update)
+    id_type: Optional[IdType] = None
     id_number: Optional[str] = Field(default=None, max_length=50)
+
     dl_number: Optional[str] = Field(default=None, max_length=50)
     dl_expiry: Optional[date] = Field(default=None, description="Must be a future date")
     residential_address: Optional[str] = None
@@ -107,7 +115,11 @@ class ClientOut(BaseModel):
     full_name: str
     email: Optional[EmailStr] = None
     phone: str
+
+    # ✅ IDENTITY SLOT
+    id_type: IdType = IdType.national_id
     id_number: Optional[str] = None
+
     dl_number: Optional[str] = None
     dl_expiry: Optional[date] = None
     status: ClientStatus
@@ -119,6 +131,11 @@ class ClientOut(BaseModel):
     id_image_front: Optional[str] = None
     id_image_back: Optional[str] = None
     dl_image_front: Optional[str] = None
+
+    # ✅ RISK FLAGS (read-only; set by the backend identity engine)
+    is_flagged: bool = False
+    flag_notes: Optional[str] = None
+
     is_archived: bool = False
     archived_at: Optional[datetime] = None
     created_at: datetime

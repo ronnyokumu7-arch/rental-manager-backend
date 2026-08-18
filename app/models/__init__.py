@@ -1,5 +1,6 @@
 from app.models.bookings import Booking
 from app.models.clients import Client
+from app.models.client_invite import ClientInvite, ClientInviteStatus
 from app.models.commission import CommissionEvent, CommissionStatus
 from app.models.commission_payment import CommissionPayment, CommissionPaymentStatus
 from app.models.contracts import Contract
@@ -50,6 +51,8 @@ __all__ = [
     "MpesaConfig",
     "StripeConfig",
     "PaypalConfig",
+    "ClientInvite",
+    "ClientInviteStatus",
     "AirtelMoneyConfig",
     "BankAccountConfig",
 ]
