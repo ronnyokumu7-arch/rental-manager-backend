@@ -320,6 +320,11 @@ def _get_backend() -> StorageBackend:
     return LocalDiskBackend()
 
 
+def get_backend() -> StorageBackend:
+    """Public accessor for the active storage backend (used by routers)."""
+    return _get_backend()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PUBLIC API (signatures UNCHANGED — routers keep working as-is)
 # ─────────────────────────────────────────────────────────────────────────────
