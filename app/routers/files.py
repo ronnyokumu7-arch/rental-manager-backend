@@ -6,6 +6,11 @@ Serving strategy:
 - Cloudinary backend → 302 redirect to a short-lived signed URL (bandwidth
   offloaded from Render; tenant access still enforced here, first hop).
 - Local backend      → stream bytes via FileResponse (dev / fallback).
+
+Signed-URL exchange:
+- Browsers/<img> tags cannot send the JWT Authorization header, so the
+  frontend calls GET .../signed (authenticated) to swap the stored API URL
+  for a short-lived signed Cloudinary URL, then renders that.
 """
 import mimetypes
 from pathlib import Path
@@ -27,11 +32,41 @@ settings = get_settings()
 # ✅ Signed URLs live for 10 minutes — enough to view, too short to leak.
 SIGNED_URL_TTL_SECONDS = 600
 
+# ✅ SECURITY: Valid categories (prevents arbitrary folder access)
+VALID_CATEGORIES = {"avatar", "compliance", "contract", "misc"}
+
 
 def _get_upload_dir() -> Path:
     """Returns the configured upload directory."""
     upload_dir = Path(settings.uploads_dir).resolve()
     return upload_dir
+
+
+def _enforce_access(current_user: User, tenant_id: int, category: str, filename: str) -> None:
+    """
+    ✅ Shared safety checks for both routes:
+    - Multi-tenancy enforcement (super admin bypasses)
+    - Category allowlist
+    - Filename path-traversal guard
+    """
+    if current_user.role != UserRole.super_admin:
+        if current_user.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to files from this tenant"
+            )
+
+    if category not in VALID_CATEGORIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid file category"
+        )
+
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid filename"
+        )
 
 
 @router.get("/tenant_{tenant_id}/{category}/{filename}")
@@ -46,35 +81,14 @@ async def serve_secure_file(
 ):
     """
     Serve a file ONLY if the authenticated user has access to the tenant that owns it.
-    
+
     Access rules:
     - Super admins: can access any tenant's files
     - Tenant users: can ONLY access their own tenant's files
     - Unauthenticated: blocked (enforced by get_current_user dependency)
     """
-    # ✅ MULTI-TENANCY ENFORCEMENT
-    if current_user.role != UserRole.super_admin:
-        if current_user.tenant_id != tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have access to files from this tenant"
-            )
-    
-    # ✅ VALIDATE CATEGORY (prevent arbitrary folder access)
-    valid_categories = {"avatar", "compliance", "contract", "misc"}
-    if category not in valid_categories:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file category"
-        )
-    
-    # ✅ PREVENT PATH TRAVERSAL IN FILENAME
-    if ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid filename"
-        )
-    
+    _enforce_access(current_user, tenant_id, category, filename)
+
     # ✅ CLOUDINARY PATH: redirect to a short-lived signed URL.
     # The tenant check above already ran, so the redirect inherits it.
     relative_path = f"tenant_{tenant_id}/{category}/{filename}"
@@ -88,11 +102,11 @@ async def serve_secure_file(
                 "X-Content-Type-Options": "nosniff",
             },
         )
-    
+
     # ─── LOCAL DISK FALLBACK (unchanged) ────────────────────────────────────
     upload_dir = _get_upload_dir()
     file_path = (upload_dir / f"tenant_{tenant_id}" / category / filename).resolve()
-    
+
     # ✅ FINAL SAFETY CHECK: Ensure resolved path is strictly inside upload_dir
     try:
         file_path.relative_to(upload_dir)
@@ -101,18 +115,18 @@ async def serve_secure_file(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: invalid file path"
         )
-    
+
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found"
         )
-    
+
     # Determine content type safely
     content_type, _ = mimetypes.guess_type(str(file_path))
     if not content_type:
         content_type = "application/octet-stream"
-    
+
     return FileResponse(
         path=str(file_path),
         media_type=content_type,
@@ -121,3 +135,37 @@ async def serve_secure_file(
             "X-Content-Type-Options": "nosniff",
         }
     )
+
+
+@router.get("/tenant_{tenant_id}/{category}/{filename}/signed")
+@limiter.limit("120/minute")
+async def get_signed_file_url(
+    request: Request,
+    tenant_id: int,
+    category: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    ✅ SIGNED-URL EXCHANGE for private assets.
+
+    Browsers and <img> tags cannot send the JWT Authorization header, so the
+    frontend calls this authenticated endpoint to swap the stored API URL for
+    a short-lived signed Cloudinary URL, then renders that.
+
+    Same tenant-isolation checks as the serving endpoint.
+    """
+    _enforce_access(current_user, tenant_id, category, filename)
+
+    signed = get_backend().signed_url(
+        f"tenant_{tenant_id}/{category}/{filename}",
+        ttl_seconds=SIGNED_URL_TTL_SECONDS,
+    )
+    if not signed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Signed URLs unavailable for this storage backend"
+        )
+
+    return {"url": signed, "ttl_seconds": SIGNED_URL_TTL_SECONDS}
