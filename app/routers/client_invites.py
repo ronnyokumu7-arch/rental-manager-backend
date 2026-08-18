@@ -2,7 +2,7 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,7 @@ from app.schemas.client_invite import (
     PublicInvitePreviewOut,
 )
 from app.services.client_identity import check_identity_conflicts, compute_risk_flags
+from app.services.storage import upload_file
 
 router = APIRouter()
 
@@ -128,8 +129,8 @@ async def preview_invite(
     return PublicInvitePreviewOut(
         tenant_name=tenant.name if tenant else "the agency",
         tenant_logo_url=profile.logo_url if profile else None,
-        tenant_phone=profile.phone if profile else None,
-        tenant_email=profile.email if profile else None,
+        tenant_phone=profile.phone if tenant else None,
+        tenant_email=profile.email if tenant else None,
         expires_at=invite.expires_at,
     )
 
@@ -147,6 +148,7 @@ async def submit_invite(
     - Hard blocks (identity conflicts) → 409
     - Soft flags (F1/F2) → stored, never block
     - status hardcoded to pending; invite flipped accepted atomically
+    - Document URLs from prior uploads are stored on the client record
     """
     # FOR UPDATE: two simultaneous submits can't both consume the invite
     stmt = select(ClientInvite).where(ClientInvite.token == token).with_for_update()
@@ -205,6 +207,11 @@ async def submit_invite(
         status=ClientStatus.pending,   # ✅ NEVER trust the client
         is_flagged=is_flagged,
         flag_notes=flag_notes,
+        # ✅ Store uploaded document URLs (backward-compatible via getattr)
+        avatar_image=getattr(payload, "avatar_image", None),
+        id_image_front=getattr(payload, "id_image_front", None),
+        id_image_back=getattr(payload, "id_image_back", None),
+        dl_image_front=getattr(payload, "dl_image_front", None),
     )
     db.add(client)
 
@@ -222,3 +229,55 @@ async def submit_invite(
 
     await db.refresh(client)
     return client
+
+
+# ─── PUBLIC DOCUMENT UPLOADS (Token-Scoped) ─────────────────────────────────
+
+@router.post("/clients/invite/{token}/upload", status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")  # 🚨 STRICT: public upload abuse prevention
+async def upload_invite_document(
+    request: Request,
+    token: str,
+    file: UploadFile = File(...),
+    field: str = Query(..., description="avatar | id_front | id_back | dl_front"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ✅ PUBLIC: Upload a document while the invite is live.
+    Returns the authenticated URL that will be stored on the client.
+    """
+    # Validate invite is live
+    stmt = select(ClientInvite).where(ClientInvite.token == token)
+    invite = (await db.execute(stmt)).scalars().first()
+
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found.")
+    if invite.status != ClientInviteStatus.pending:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="This invite has already been used or was revoked.",
+        )
+    if invite.is_expired:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE, detail="This invite has expired.",
+        )
+
+    # Validate field
+    valid_fields = {"avatar", "id_front", "id_back", "dl_front"}
+    if field not in valid_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid field. Must be one of: {', '.join(valid_fields)}",
+        )
+
+    # Map field to category
+    category = "avatar" if field == "avatar" else "compliance"
+
+    # Upload using the secure multi-tenant storage service
+    file_url = await upload_file(
+        file=file,
+        tenant_id=invite.tenant_id,
+        category=category
+    )
+
+    return {"url": file_url, "field": field}

@@ -66,3 +66,10 @@ class ClientIntakeCreate(ClientBase):
         ..., description="Choose exactly one: national_id | passport"
     )
     id_number: str = Field(..., min_length=3, max_length=50)
+
+    # ✅ DOCUMENT URLS (uploaded first via POST /clients/invite/{token}/upload,
+    # then passed here so they're stored on the client record)
+    avatar_image: Optional[str] = Field(default=None, max_length=500)
+    id_image_front: Optional[str] = Field(default=None, max_length=500)
+    id_image_back: Optional[str] = Field(default=None, max_length=500)
+    dl_image_front: Optional[str] = Field(default=None, max_length=500)
