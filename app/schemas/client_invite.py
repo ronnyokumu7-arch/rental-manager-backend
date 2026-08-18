@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.client_invite import ClientInviteStatus
 from app.models.clients import IdType
@@ -13,11 +13,25 @@ class ClientInviteCreate(BaseModel):
     """
     Tenant requests a single-use onboarding link.
     (Empty body is valid — ttl defaults to 7 days.)
+
+    ✅ expected_name / expected_phone are OPTIONAL and informational only:
+    they tell the tenant WHO they're expecting. Never enforced at intake.
     """
     ttl_days: int = Field(
         default=7, ge=1, le=30,
         description="How many days the link stays valid (1–30)",
     )
+    expected_name: Optional[str] = Field(default=None, max_length=255)
+    expected_phone: Optional[str] = Field(default=None, max_length=50)
+
+    @field_validator("expected_name", "expected_phone")
+    @classmethod
+    def _blank_to_none(cls, v: Optional[str]) -> Optional[str]:
+        """Treat empty strings as absent (clean NULLs in the DB)."""
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
 
 
 class ClientInviteOut(BaseModel):
@@ -31,6 +45,8 @@ class ClientInviteOut(BaseModel):
     token: str                      # frontend builds {origin}/invite/{token}
     status: ClientInviteStatus
     expires_at: datetime
+    expected_name: Optional[str] = None     # ✅ who we're expecting
+    expected_phone: Optional[str] = None    # ✅ who we're expecting
     accepted_client_id: Optional[int] = None
     created_at: datetime
     is_expired: bool = False
@@ -43,6 +59,7 @@ class PublicInvitePreviewOut(BaseModel):
     """
     ✅ WHAT THE PUBLIC PAGE SEES for a VALID invite:
     agency branding + expiry notice. Nothing sensitive.
+    (expected_* are intentionally NOT exposed here — privacy.)
     Invalid/expired/revoked invites → endpoint returns 410 Gone instead.
     """
     tenant_name: str

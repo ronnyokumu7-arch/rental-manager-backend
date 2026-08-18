@@ -45,6 +45,9 @@ async def create_invite(
         token=secrets.token_urlsafe(32),
         status=ClientInviteStatus.pending,
         expires_at=datetime.now(timezone.utc) + timedelta(days=payload.ttl_days),
+        # ✅ OPTIONAL: who the tenant is expecting (informational only)
+        expected_name=payload.expected_name,
+        expected_phone=payload.expected_phone,
     )
     db.add(invite)
     await db.commit()
@@ -207,11 +210,11 @@ async def submit_invite(
         status=ClientStatus.pending,   # ✅ NEVER trust the client
         is_flagged=is_flagged,
         flag_notes=flag_notes,
-        # ✅ Store uploaded document URLs (backward-compatible via getattr)
-        avatar_image=getattr(payload, "avatar_image", None),
-        id_image_front=getattr(payload, "id_image_front", None),
-        id_image_back=getattr(payload, "id_image_back", None),
-        dl_image_front=getattr(payload, "dl_image_front", None),
+        # ✅ Store uploaded document URLs (now real schema fields)
+        avatar_image=payload.avatar_image,
+        id_image_front=payload.id_image_front,
+        id_image_back=payload.id_image_back,
+        dl_image_front=payload.dl_image_front,
     )
     db.add(client)
 
