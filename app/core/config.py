@@ -1,5 +1,6 @@
 import json
 import os
+import warnings
 from functools import lru_cache
 from typing import List, Union, Optional
 
@@ -60,6 +61,17 @@ class Settings(BaseSettings):
     # ⚠️ SUPERADMIN PASSWORD - NO DEFAULT! Must be set in production.
     # ─────────────────────────────────────────────────────────────────────────
     superadmin_password: Optional[str] = None  # ✅ No fallback value
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STORAGE BACKEND (Cloudinary or local disk)
+    # Switch via env var: STORAGE_BACKEND=cloudinary | local (default)
+    # Local uses `uploads_dir` above. Cloudinary uses the 3 creds below.
+    # All stored URLs in the DB stay identical across backends.
+    # ─────────────────────────────────────────────────────────────────────────
+    storage_backend: str = "local"          # "local" | "cloudinary"
+    cloudinary_cloud_name: str = ""         # e.g. "gbua3kjg"
+    cloudinary_api_key: str = ""            # numeric, from Cloudinary dashboard
+    cloudinary_api_secret: str = ""         # from Cloudinary dashboard
     
     # ─────────────────────────────────────────────────────────────────────────
     # PYDANTIC CONFIG
@@ -102,6 +114,15 @@ class Settings(BaseSettings):
         """Ensure secrets are not empty and meet minimum length requirements."""
         if not v or len(v.strip()) < 32:
             raise ValueError("SECRET_KEY and ENCRYPTION_KEY must be at least 32 characters")
+        return v.strip()
+
+    # ✅ NEW: STORAGE BACKEND VALIDATOR (graceful, never crashes)
+    @field_validator("storage_backend", "cloudinary_cloud_name", "cloudinary_api_key", "cloudinary_api_secret")
+    @classmethod
+    def normalize_storage(cls, v: Optional[str]) -> str:
+        """Strip whitespace; empty becomes '' so downstream checks are trivial."""
+        if v is None:
+            return ""
         return v.strip()
     
     @field_validator("cors_origins", mode="before")
