@@ -1,4 +1,5 @@
 import asyncio
+import time
 import uuid
 import warnings
 from abc import ABC, abstractmethod
@@ -37,6 +38,7 @@ VALID_CATEGORIES = {"avatar", "compliance", "contract", "misc"}
 try:
     import cloudinary
     import cloudinary.uploader
+    import cloudinary.utils
     from cloudinary.exceptions import Error as CloudinaryError
     CLOUDINARY_AVAILABLE = True
 except ImportError:
@@ -125,6 +127,12 @@ class StorageBackend(ABC):
     @abstractmethod
     def delete(self, relative_path: str, tenant_id: int) -> None: ...
 
+    @abstractmethod
+    def signed_url(self, relative_path: str, ttl_seconds: int = 600) -> Optional[str]:
+        """Return a short-lived direct URL for the file, or None if this
+        backend serves files through the API router (local disk)."""
+        ...
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOCAL DISK BACKEND (unchanged behavior, extracted)
@@ -182,6 +190,10 @@ class LocalDiskBackend(StorageBackend):
         if file_path.exists() and file_path.is_file():
             file_path.unlink()
 
+    def signed_url(self, relative_path, ttl_seconds=600):
+        # Local files are streamed by the files router; no direct URL exists.
+        return None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLOUDINARY BACKEND (private, tenant-mirrored folders)
@@ -195,7 +207,7 @@ class CloudinaryBackend(StorageBackend):
 
     Returns the SAME authenticated URL format as local disk:
       {api}/api/v1/files/tenant_{id}/{category}/{uuid}.{ext}
-    so the serving router (Stamp 3) can 302-redirect to signed URLs.
+    so the serving router can 302-redirect to short-lived signed URLs.
     """
 
     # Top-level Cloudinary folder — keeps tenant files isolated from any other
@@ -214,6 +226,13 @@ class CloudinaryBackend(StorageBackend):
     @property
     def name(self) -> str:
         return "cloudinary"
+
+    @staticmethod
+    def _resource_type_for(filename: str) -> str:
+        """Cloudinary stores PDFs under /raw/ and images under /image/ when
+        uploaded with resource_type='auto'. Derive it back from the extension."""
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        return "raw" if ext == "pdf" else "image"
 
     async def upload(self, file, safe_folder, filename, category):
         # 1. Read all bytes + enforce size limit (files are small, ≤10MB)
@@ -259,15 +278,38 @@ class CloudinaryBackend(StorageBackend):
             return
         tenant_folder, category, filename = parts
         uuid_part = filename.rsplit(".", 1)[0]
-        public_id = f"{tenant_folder}/{category}/{uuid_part}"
+        public_id = f"{self._BUCKET}/{tenant_folder}/{category}/{uuid_part}"
 
         try:
             cloudinary.uploader.destroy(
-                f"{self._BUCKET}/{public_id}",
-                resource_type="auto",
+                public_id,
+                resource_type=self._resource_type_for(filename),
             )
         except Exception:
             pass  # idempotent — file may already be gone
+
+    def signed_url(self, relative_path, ttl_seconds=600):
+        """Generate a short-lived signed URL for a private (authenticated)
+        asset. Returns None on any failure so the router can degrade safely."""
+        parts = relative_path.split("/")
+        if len(parts) != 3 or ".." in relative_path:
+            return None
+        tenant_folder, category, filename = parts
+        uuid_part = filename.rsplit(".", 1)[0]
+        public_id = f"{self._BUCKET}/{tenant_folder}/{category}/{uuid_part}"
+
+        try:
+            url, _ = cloudinary.utils.cloudinary_url(
+                public_id,
+                resource_type=self._resource_type_for(filename),
+                type="authenticated",
+                sign_url=True,
+                expires=int(time.time()) + ttl_seconds,
+                secure=True,
+            )
+            return url
+        except Exception:
+            return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
