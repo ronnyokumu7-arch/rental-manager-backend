@@ -463,7 +463,8 @@ async def create_user_invite(
 
     # ✅ Placeholder email (replaced when the user accepts the invite)
     invite_token = secrets.token_urlsafe(32)
-    placeholder_email = f"invite-{uuid.uuid4().hex}@pending.local"
+        # ✅ Use .setup (valid gTLD) — .local is reserved and rejected by Pydantic's EmailStr
+    placeholder_email = f"invite-{uuid.uuid4().hex}@pending.setup"
 
     db_user = User(
         full_name=invite_in.full_name,
