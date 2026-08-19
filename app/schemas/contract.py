@@ -66,6 +66,7 @@ class PublicContractView(BaseModel):
     booking_number: Optional[str] = None
     tenant_name: str
     client_name: str
+    id_number: Optional[str] = None
     vehicle_make: str
     vehicle_model: str
     vehicle_plate: str

@@ -49,6 +49,7 @@ async def view_contract_public(
         booking_id=booking.id,
         tenant_name=booking.tenant.name if booking.tenant else "Unknown",
         client_name=booking.client.full_name if booking.client else "Unknown",
+        id_number=booking.client.id_number if booking.client else None,  # ✅ ADDED: Maps ID number to response
         vehicle_make=booking.vehicle.make if booking.vehicle else "Unknown",
         vehicle_model=booking.vehicle.model if booking.vehicle else "Unknown",
         vehicle_plate=booking.vehicle.plate_number if booking.vehicle else "Unknown",
