@@ -1,5 +1,3 @@
-import secrets
-from datetime import datetime, timezone, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -9,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.core.limiter import limiter
-from app.core.config import get_settings
 from app.core.security import get_password_hash, normalize_email
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
@@ -360,24 +357,13 @@ async def create_user(
     _enforce_create_permission(current_user, user_in.role, user_data.get("tenant_id"))
     await _validate_tenant_for_role(db, user_in.role, user_data.get("tenant_id"))
 
-    if user_in.password:
-        db_user = User(
-            **user_data, 
-            password_hash=get_password_hash(user_in.password), 
-            is_onboarded=True,
-            email_verified=True 
-        )
-    else:
-        invite_token = secrets.token_urlsafe(32)
-        invite_expires_at = datetime.now(timezone.utc) + timedelta(hours=48)
-        db_user = User(
-            **user_data, 
-            password_hash=None, 
-            invite_token=invite_token, 
-            invite_expires_at=invite_expires_at, 
-            is_onboarded=False,
-            email_verified=False
-        )
+    # ✅ Password is now REQUIRED (schema-enforced): always create a ready-to-login user
+    db_user = User(
+        **user_data,
+        password_hash=get_password_hash(user_in.password),
+        is_onboarded=True,
+        email_verified=True,
+    )
     
     if user_data.get("job_title"):
         template_stmt = select(RoleTemplate).where(
@@ -399,24 +385,15 @@ async def create_user(
     db.add(db_user)
     await db.flush()
     
+    # ✅ Agency Owner assignment (super admin creating the first user in a tenant)
     is_agency_owner = False
-    temp_password = None
     if current_user.role == UserRole.super_admin and db_user.tenant_id:
         tenant_stmt = select(Tenant).where(Tenant.id == db_user.tenant_id)
         tenant = (await db.execute(tenant_stmt)).scalars().first()
         if tenant and tenant.owner_id is None:
             is_agency_owner = True
             tenant.owner_id = db_user.id
-            
-            if not user_in.password:
-                temp_password = secrets.token_urlsafe(12)
-                db_user.password_hash = get_password_hash(temp_password)
-            
-            db_user.is_onboarded = True
-            db_user.email_verified = True
             db_user.phone_verified = True
-            db_user.invite_token = None
-            db_user.invite_expires_at = None
 
     try:
         await db.commit()
@@ -426,14 +403,14 @@ async def create_user(
         
     await db.refresh(db_user)
     
+    # ✅ Password is always present now — single email path
     # Note: send_welcome_email is synchronous. In a high-scale app, this should be a background task.
-    if is_agency_owner and not user_in.password:
-        send_welcome_email(to=db_user.email, full_name=db_user.full_name, role=db_user.role.value, temp_password=temp_password)
-    elif not user_in.password:
-        invite_link = f"{get_settings().frontend_url}/invite?token={db_user.invite_token}"
-        send_welcome_email(to=db_user.email, full_name=db_user.full_name, role=db_user.role.value, temp_password=invite_link)
-    else:
-        send_welcome_email(to=db_user.email, full_name=db_user.full_name, role=db_user.role.value, temp_password=user_in.password)
+    send_welcome_email(
+        to=db_user.email,
+        full_name=db_user.full_name,
+        role=db_user.role.value,
+        temp_password=user_in.password,
+    )
     
     # ✅ Invalidate cache and log the creation
     target_tenant_id = db_user.tenant_id

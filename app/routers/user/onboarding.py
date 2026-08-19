@@ -3,12 +3,14 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from app.models.tenants import Tenant
 
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.core.security import get_password_hash, normalize_email
 from app.models.users import User
-from app.schemas.user import UserOut, AcceptInvitePayload
+from app.schemas.user import UserOut, AcceptInvitePayload, UserInvitePreviewOut
 from app.services.cache import invalidate_user_cache
 from app.services.activity_log import ActivityLogService
 # from app.services.uploads import check_tenant_access  # ✅ NEW: Validate file ownership
@@ -133,3 +135,51 @@ async def accept_invite(
     await db.commit()  # Commit the activity log flush
 
     return user
+
+@router.get("/invite/{token}/preview", response_model=UserInvitePreviewOut)
+@limiter.limit("30/minute")
+async def preview_user_invite(
+    request: Request,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """✅ Branding & role preview for the public user onboarding page. Dead links → 410 Gone."""
+    stmt = select(User).options(
+        selectinload(User.tenant).selectinload(Tenant.profile)
+    ).where(User.invite_token == token)
+    user = (await db.execute(stmt)).scalars().unique().first()
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found.")
+    
+    if user.is_onboarded:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="This account has already been set up.",
+        )
+        
+    if user.invite_expires_at and user.invite_expires_at < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE, 
+            detail="This invite has expired.",
+        )
+
+    tenant = user.tenant
+    profile = tenant.profile if tenant and hasattr(tenant, 'profile') else None
+    
+    # Derive driver flag for the frontend
+    is_driver = bool(user.job_title and user.job_title.lower() == "driver")
+
+    return UserInvitePreviewOut(
+        tenant_name=tenant.name if tenant else "the platform",
+        tenant_logo_url=profile.logo_url if profile else None,
+        tenant_phone=profile.phone if profile else None,
+        tenant_email=profile.email if profile else None,
+        expires_at=user.invite_expires_at,
+        expected_full_name=user.full_name,
+        expected_email=user.email,
+        department=user.department,
+        job_title=user.job_title,
+        role=user.role,
+        is_driver=is_driver,
+    )

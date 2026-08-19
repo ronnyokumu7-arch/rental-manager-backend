@@ -40,8 +40,10 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    # ✅ Made optional so we can create "Pending Invite" users without a password
-    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    # ✅ REQUIRED: All user creation now requires a password.
+    # Passwords are delivered via the welcome email; the invite-token
+    # path is retired for admin-created users.
+    password: str = Field(min_length=8, max_length=128)
 
 
 # ✅ NEW: Super Admin Only - Allows cross-tenant user creation
@@ -149,14 +151,13 @@ class UserOut(BaseModel):
     id_image_url: Optional[str] = None
     dl_image_url: Optional[str] = None
 
-    # ✅ SECURITY FIX: Removed invite_token (secret, should never be exposed)
+    # ✅ SECURITY FIX: Removed invite_token (secret, should never be exposed in list/get)
     # ✅ SECURITY FIX: Removed failed_login_attempts (aids brute-force reconnaissance)
     email_verified: bool = False
     phone_verified: bool = False
     account_locked_until: Optional[datetime] = None
 
     # ✅ Expose Invite State to Frontend (for "Pending" badges)
-    # ✅ SECURITY FIX: Removed invite_token, only expose metadata
     invite_expires_at: Optional[datetime] = None
     is_onboarded: bool = False
 
@@ -168,6 +169,48 @@ class UserOut(BaseModel):
     is_tenant_owner: bool = False
 
     model_config = {"from_attributes": True}
+
+
+# ✅ NEW: Extended UserOut for POST /users/ response
+# Only returned by the create endpoint — list/get endpoints still use UserOut
+class UserCreateResponse(UserOut):
+    """
+    Extends UserOut with invite metadata that should ONLY be returned
+    immediately after creation (never in list/get responses).
+    
+    - invite_token: raw token for programmatic use
+    - invite_link: pre-built clickable URL ready to share
+    """
+    invite_token: Optional[str] = Field(
+        default=None,
+        description="Invite token (only populated when user was created without a password)"
+    )
+    invite_link: Optional[str] = Field(
+        default=None,
+        description="Pre-built invite URL ready to share (only populated when invite was generated)"
+    )
+
+
+# ✅ NEW: Public preview for user onboarding
+# Returns tenant branding + expected role data for the public intake form
+class UserInvitePreviewOut(BaseModel):
+    """✅ Public preview for user onboarding. Returns tenant branding + expected role data."""
+    # Tenant Branding
+    tenant_name: str
+    tenant_logo_url: Optional[str] = None
+    tenant_phone: Optional[str] = None
+    tenant_email: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    
+    # Expected User Data (pre-filled by admin)
+    expected_full_name: str
+    expected_email: EmailStr
+    department: Optional[str] = None
+    job_title: Optional[str] = None
+    role: UserRole
+    
+    # UX Flags
+    is_driver: bool  # Tells frontend to require DL fields
 
 
 # ✅ COMPLETELY REWRITTEN: Self-Service Onboarding Payload
