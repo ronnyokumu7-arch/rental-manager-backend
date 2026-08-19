@@ -9,7 +9,7 @@ class UserBase(BaseModel):
     # ✅ SECURITY FIX: Removed tenant_id - tenant admins cannot specify which tenant to create users in.
     # Only SuperAdminUserCreate (below) allows cross-tenant user creation.
     full_name: str = Field(min_length=1, max_length=255)
-    email: EmailStr
+    email: EmailStr  # ✅ KEEP validation on INPUT (create/update)
     role: UserRole = UserRole.tenant_staff
     is_active: bool = True
     is_suspended: bool = False
@@ -139,7 +139,7 @@ class UserOut(BaseModel):
     id: int
     tenant_id: Optional[int] = None
     full_name: str
-    email: EmailStr
+    email: str  # ✅ OUTPUT ONLY: don't re-validate DB values (prevents 500 on placeholder/legacy rows)
     role: UserRole
     is_active: bool
     is_suspended: bool = False
@@ -217,7 +217,7 @@ class UserInvitePreviewOut(BaseModel):
     
     # Expected User Data (pre-filled by admin)
     expected_full_name: str
-    expected_email: EmailStr
+    expected_email: str  # ✅ OUTPUT ONLY: may be placeholder for pending invites
     department: Optional[str] = None
     job_title: Optional[str] = None
     role: UserRole
@@ -233,7 +233,7 @@ class AcceptInvitePayload(BaseModel):
     
     # Identity
     full_name: str = Field(min_length=1, max_length=255)
-    email: EmailStr
+    email: EmailStr  # ✅ KEEP validation on INPUT (user provides real email)
     phone_number: Optional[str] = None
     avatar_url: Optional[str] = None
     
