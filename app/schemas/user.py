@@ -40,9 +40,8 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    # ✅ REQUIRED: All user creation now requires a password.
-    # Passwords are delivered via the welcome email; the invite-token
-    # path is retired for admin-created users.
+    # ✅ REQUIRED: Manual creation always requires a password.
+    # (Invite flow uses the separate UserInviteCreate schema below.)
     password: str = Field(min_length=8, max_length=128)
 
 
@@ -57,6 +56,20 @@ class SuperAdminUserCreate(UserCreate):
         None, 
         description="Super admin only: Create user in a specific tenant"
     )
+
+
+# ✅ NEW: Admin-side invite creation (name + phone only)
+class UserInviteCreate(BaseModel):
+    """
+    Minimal payload for generating a user invite link.
+    The user supplies their own email, documents, and password
+    on the public onboarding form (POST /users/accept-invite).
+    """
+    full_name: str = Field(min_length=1, max_length=255)
+    phone_number: Optional[str] = None
+    role: UserRole = UserRole.tenant_staff
+    department: Optional[str] = None
+    job_title: Optional[str] = None
 
 
 class UserUpdate(BaseModel):

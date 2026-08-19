@@ -1,3 +1,7 @@
+import secrets
+import uuid
+from datetime import datetime, timezone, timedelta
+
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -7,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.core.limiter import limiter
+from app.core.config import get_settings
 from app.core.security import get_password_hash, normalize_email
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
@@ -14,7 +19,7 @@ from app.models.users import User, UserRole
 from app.models.role_template import RoleTemplate
 from app.models.tenants import Tenant
 from app.core.permissions import ALL_PERMISSION_KEYS
-from app.schemas.user import UserOut, UserUpdate, SuperAdminUserCreate, SuperAdminUserUpdate
+from app.schemas.user import UserOut, UserUpdate, SuperAdminUserCreate, SuperAdminUserUpdate, UserInviteCreate, UserCreateResponse
 from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.services.email import send_welcome_email
 from app.services.cache import get_cached_user_list, set_cached_user_list, invalidate_user_cache
@@ -425,6 +430,97 @@ async def create_user(
     await db.commit()  # Commit the activity log flush
     
     return (await _enrich_users_with_owner_status([db_user], db))[0]
+
+
+# =============================================================================
+# 4.5 CREATE USER INVITE (POST /invite) - GENERATES SHAREABLE LINK
+# =============================================================================
+@router.post("/invite", response_model=UserCreateResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("20/minute")
+async def create_user_invite(
+    request: Request,
+    invite_in: UserInviteCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = admin_or_above,
+):
+    """
+    ✅ INVITE FLOW: Admin provides only name + phone (+ optional role details).
+    Creates a pending user with an invite token and returns the shareable link.
+    The user completes their own email, documents, and password on the public
+    onboarding form (POST /users/accept-invite).
+    """
+    # 🚨 CRITICAL: Invites are tenant-scoped; tenant admins invite into their own tenant
+    if current_user.role == UserRole.super_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Super admins cannot generate tenant invite links.",
+        )
+    tenant_id = current_user.tenant_id
+
+    _validate_job_title_and_department(invite_in.role, invite_in.department, invite_in.job_title)
+    _enforce_create_permission(current_user, invite_in.role, tenant_id)
+    await _validate_tenant_for_role(db, invite_in.role, tenant_id)
+
+    # ✅ Placeholder email (replaced when the user accepts the invite)
+    invite_token = secrets.token_urlsafe(32)
+    placeholder_email = f"invite-{uuid.uuid4().hex}@pending.local"
+
+    db_user = User(
+        full_name=invite_in.full_name,
+        email=placeholder_email,
+        phone_number=invite_in.phone_number,
+        role=invite_in.role,
+        department=invite_in.department,
+        job_title=invite_in.job_title,
+        tenant_id=tenant_id,
+        password_hash=None,
+        invite_token=invite_token,
+        invite_expires_at=datetime.now(timezone.utc) + timedelta(hours=48),
+        is_onboarded=False,
+        email_verified=False,
+    )
+
+    # ✅ Permissions from role template (same logic as create_user)
+    if invite_in.job_title:
+        template_stmt = select(RoleTemplate).where(
+            RoleTemplate.tenant_id == tenant_id,
+            RoleTemplate.job_title == invite_in.job_title,
+        )
+        template = (await db.execute(template_stmt)).scalars().first()
+        if template:
+            db_user.permissions = template.permissions
+        elif invite_in.role == UserRole.tenant_admin:
+            db_user.permissions = ALL_PERMISSION_KEYS
+        else:
+            db_user.permissions = ["view_dashboard", "view_bookings", "view_clients"]
+    elif invite_in.role == UserRole.tenant_admin:
+        db_user.permissions = ALL_PERMISSION_KEYS
+    else:
+        db_user.permissions = ["view_dashboard", "view_bookings", "view_clients"]
+
+    db.add(db_user)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to create invite")
+    await db.refresh(db_user)
+
+    if tenant_id:
+        await invalidate_user_cache(tenant_id)
+
+    await ActivityLogService.log(
+        db=db, tenant_id=tenant_id or 0, user_id=current_user.id,
+        action="create_user_invite", target_type="user", target_id=db_user.id,
+        details={"invitee_name": invite_in.full_name, "role": invite_in.role.value},
+    )
+    await db.commit()
+
+    # ✅ Return the shareable link (admin shares via Copy/WhatsApp/SMS)
+    response = UserCreateResponse.model_validate(db_user)
+    response.invite_token = invite_token
+    response.invite_link = f"{get_settings().frontend_url}/invite?token={invite_token}"
+    return response
 
 
 # =============================================================================
