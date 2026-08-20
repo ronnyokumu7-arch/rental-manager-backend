@@ -260,63 +260,66 @@
         /* ═══════════════════════════════════════════════════════════
            SIGNATURE & POLICY BOXES
            ══════════════════════════════════════════════════════════ */
-        .signature-box {
-            margin-top: 8pt;
-            padding: 8pt;
-            background: #f8fafc;
-            border: 1pt solid #e2e8f0;
-            border-radius: 3pt;
-        }
-        
-        .signature-quote {
-            font-size: 8.5pt;
-            color: #475569;
-            font-family: Georgia, serif;
-            font-style: italic;
-            margin: 0 0 5pt 0;
-            line-height: 1.4;
-        }
-        
-        .signature-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-            padding-top: 2pt;
-        }
-        
-        .signature-label {
-            font-size: 8.5pt;
-            font-weight: bold;
-            color: #0f172a;
-        }
-        
-        .signature-text {
-            text-align: right;
-            max-width: 45%;
-        }
-        
-        .signature-name {
-            font-family: Georgia, serif;
-            font-style: italic;
-            font-weight: bold;
-            color: #1e293b;
-            font-size: 10pt;
-            margin: 0;
-        }
-        
-        .signature-date {
-            font-size: 8pt;
-            color: #94a3b8;
-            font-family: monospace;
-            margin: 1pt 0 0 0;
-        }
-        
-        .signature-image {
-            max-height: 35pt;
-            max-width: 130pt;
-            margin-bottom: 2pt;
-            display: block;
-        }
+.signature-box {
+    margin-top: 10pt;
+    padding: 8pt;
+    background: #f8fafc;
+    border: 1pt solid #e2e8f0;
+    border-radius: 3pt;
+    break-inside: avoid;
+    page-break-inside: avoid;
+}
+
+.signature-quote {
+    font-size: 8.5pt;
+    color: #475569;
+    font-family: Georgia, serif;
+    font-style: italic;
+    margin: 0 0 6pt 0;
+    line-height: 1.4;
+}
+
+.signature-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding-top: 2pt;
+}
+
+.signature-label {
+    font-size: 8.5pt;
+    font-weight: bold;
+    color: #0f172a;
+}
+
+.signature-text {
+    text-align: right;
+    max-width: 45%;
+}
+
+.signature-name {
+    font-family: Georgia, serif;
+    font-style: italic;
+    font-weight: bold;
+    color: #1e293b;
+    font-size: 11pt;
+    margin: 0;
+}
+
+.signature-date {
+    font-size: 8pt;
+    color: #94a3b8;
+    font-family: monospace;
+    margin: 1pt 0 0 0;
+}
+
+/* ✅ CRITICAL: This is what makes signatures render in PDFs */
+.signature-image {
+    max-height: 40pt;
+    max-width: 150pt;
+    margin-bottom: 2pt;
+    display: block;
+}
 
         .policy-list {
             list-style-type: disc;
@@ -533,19 +536,19 @@
                 <div><span class="info-label">Fuel Level:</span> <span class="info-value">As seen on photo evidence</span></div>
             </div>
 
-            <div class="signature-box no-break">
-                <p class="signature-quote">"I confirm that I have inspected the vehicle identified above and accept its handover condition and initial mileage reading as accurate."</p>
-                <div class="signature-row">
-                    <span class="signature-label">Handover Acceptance</span>
-                    <div class="signature-text">
-                        {% if contract.signed_by_client and signature_data_uri %}
-                            <img src="{{ signature_data_uri }}" class="signature-image" alt="Signature" />
-                        {% endif %}
-                        <p class="signature-name">/s/ {{ client.full_name if client else 'Client' }}</p>
-                        <p class="signature-date">{{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
-                    </div>
-                </div>
-            </div>
+<div class="signature-box">
+    <p class="signature-quote">"I confirm that I have inspected the vehicle identified above and accept its handover condition and initial mileage reading as accurate."</p>
+    <div class="signature-row">
+        <span class="signature-label">Handover Acceptance</span>
+        <div class="signature-text">
+            {% if contract.signed_by_client and signature_data_uri %}
+                <img src="{{ signature_data_uri }}" class="signature-image" alt="Signature" />
+            {% endif %}
+            <p class="signature-name">/s/ {{ client.full_name if client else 'Client' }}</p>
+            <p class="signature-date">{{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
+        </div>
+    </div>
+</div>
         </section>
 
         <!-- [COMPONENT: FINANCIAL_SCHEDULE] -->
@@ -637,7 +640,7 @@
         </section>
 
         <section class="contract-section">
-            <h2 class="section-title">General Conditions (Simple English)</h2>
+            <h2 class="section-title">General Conditions</h2>
             
             <div class="info-grid" style="grid-template-columns: 1fr; gap: 5pt 0; margin-bottom: 8pt;">
                 <div class="col-span-2">
