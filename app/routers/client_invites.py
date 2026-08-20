@@ -237,7 +237,7 @@ async def submit_invite(
 # ─── PUBLIC DOCUMENT UPLOADS (Token-Scoped) ─────────────────────────────────
 
 @router.post("/clients/invite/{token}/upload", status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/minute")  # 🚨 STRICT: public upload abuse prevention
+@limiter.limit("60/minute")  # 🚨 STRICT: public upload abuse prevention
 async def upload_invite_document(
     request: Request,
     token: str,
