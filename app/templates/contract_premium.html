@@ -370,22 +370,6 @@
             font-size: 8.5pt;
         }
         
-/* ✅ FIXED: Larger container to prevent clipping the signature image */
-.signature-line {
-    position: relative;
-    height: 50pt; /* Increased from 28pt */
-    border-bottom: 1pt solid #0f172a;
-    margin-top: 15pt;
-    margin-bottom: 15pt;
-}
-
-.signature-line img {
-    position: absolute;
-    bottom: 2pt; /* Sit slightly above the border line */
-    left: 0;
-    max-height: 45pt; /* Allow image to grow without being clipped */
-    max-width: 150pt;
-}
 
         .audit-stamp {
             margin-top: 14pt;
@@ -707,9 +691,7 @@
                     <p class="execution-title">Company Representative</p>
                     <p class="execution-detail">Name: {{ tenant.name if tenant else 'Agency Operations' }}</p>
                     <p class="execution-detail">Date: {{ contract.created_at.strftime('%d, %b, %Y') if contract.created_at else '—' }}</p>
-                    <div class="signature-line">
-                        <!-- Agency signature placeholder -->
-                    </div>
+                    <div style="margin-top: 12pt; border-bottom: 1pt solid #0f172a; height: 40pt;"></div>
                 </div>
 
                 <!-- Renter / Client -->
@@ -717,10 +699,13 @@
                     <p class="execution-title">Renter / Client</p>
                     <p class="execution-detail">Name: {{ client.full_name if client else '—' }}</p>
                     <p class="execution-detail">Date: {{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
-                    <div class="signature-line">
+                    
+                    <!-- PDF-Safe Signature Block -->
+                    <div style="margin-top: 12pt; height: 45pt; position: relative;">
                         {% if contract.signed_by_client and signature_data_uri %}
-                            <img src="{{ signature_data_uri }}" alt="Signature" />
+                            <img src="{{ signature_data_uri }}" style="display: block; max-height: 40pt; max-width: 140pt; margin-bottom: 2pt;" alt="Client Signature" />
                         {% endif %}
+                        <div style="border-bottom: 1pt solid #0f172a; position: absolute; bottom: 0; left: 0; width: 100%;"></div>
                     </div>
                 </div>
             </div>
