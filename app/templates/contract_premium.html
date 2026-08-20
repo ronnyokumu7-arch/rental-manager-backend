@@ -367,20 +367,22 @@
             font-size: 8.5pt;
         }
         
-        .signature-line {
-            margin-top: 12pt;
-            border-bottom: 1pt solid #0f172a;
-            height: 28pt;
-            position: relative;
-        }
-        
-        .signature-line img {
-            position: absolute;
-            bottom: 1pt;
-            left: 0;
-            max-height: 26pt;
-            max-width: 130pt;
-        }
+/* ✅ FIXED: Larger container to prevent clipping the signature image */
+.signature-line {
+    position: relative;
+    height: 50pt; /* Increased from 28pt */
+    border-bottom: 1pt solid #0f172a;
+    margin-top: 15pt;
+    margin-bottom: 15pt;
+}
+
+.signature-line img {
+    position: absolute;
+    bottom: 2pt; /* Sit slightly above the border line */
+    left: 0;
+    max-height: 45pt; /* Allow image to grow without being clipped */
+    max-width: 150pt;
+}
 
         .audit-stamp {
             margin-top: 14pt;
