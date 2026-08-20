@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Invoice - {{ invoice.invoice_number }}</title>
+    <style>
+        /* ═══════════════════════════════════════════════════════════
+           EXACT SAME CSS BASE AS CONTRACT PREMIUM
+           ═══════════════════════════════════════════════════════════ */
+        @page { size: A4; margin: 12mm 15mm; @bottom-center { content: "Page " counter(page) " of " counter(pages); font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 8pt; color: #64748b; margin-top: 8mm; } }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 9.5pt; line-height: 1.45; color: #0f172a; background: white; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .document-wrapper { width: 100%; max-width: 100%; }
+        .contract-section { margin-bottom: 14pt; }
+        .no-break { break-inside: avoid; page-break-inside: avoid; }
+        
+        /* HEADER */
+        .header { break-inside: avoid; page-break-inside: avoid; margin-bottom: 14pt; padding-bottom: 10pt; border-bottom: 1.5pt solid #e2e8f0; }
+        .header-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16pt; }
+        .logo-section { display: flex; align-items: flex-start; gap: 10pt; }
+        .logo-box { width: 90pt; height: 45pt; background: transparent; display: flex; align-items: center; justify-content: center; border-radius: 3pt; flex-shrink: 0; overflow: hidden; border: 1pt solid #e2e8f0; }
+        .logo-box img { width: 100%; height: 100%; object-fit: contain; padding: 4pt; }
+        .logo-fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: #f8fafc; color: #0f172a; font-weight: bold; font-size: 9pt; letter-spacing: 0.04em; }
+        .agency-info h1 { font-size: 12pt; font-weight: 800; text-transform: uppercase; letter-spacing: -0.02em; margin: 0 0 2pt 0; color: #020617; }
+        .agency-info p { margin: 1pt 0; color: #475569; font-weight: 500; font-size: 8.5pt; }
+        
+        /* STATUS BADGES */
+        .status-badge { display: inline-flex; align-items: center; gap: 4pt; font-size: 8pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.04em; }
+        .status-paid { color: #065f46; }
+        .status-pending { color: #92400e; }
+        .status-overdue { color: #991b1b; }
+        .status-partial { color: #1e40af; }
+        .secured-text { font-size: 7.5pt; color: #94a3b8; font-family: monospace; margin-top: 2pt; text-align: right; }
+        
+        /* META GRID */
+        .meta-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10pt; margin-top: 12pt; padding-top: 8pt; border-top: 1pt solid #e2e8f0; background: #f8fafc; padding: 6pt 8pt; border-radius: 3pt; }
+        .meta-item p:first-child { font-size: 7.5pt; font-weight: bold; text-transform: uppercase; color: #0f172a; margin: 0 0 2pt 0; }
+        .meta-item p:last-child { font-weight: 600; color: #334155; margin: 0; font-size: 9pt; }
+        
+        /* SECTIONS & GRIDS */
+        .section-title { font-size: 10pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: #020617; border-bottom: 1.5pt solid #e2e8f0; padding-bottom: 2pt; margin-bottom: 8pt; }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4pt 20pt; margin-bottom: 6pt; }
+        .info-grid .col-span-2 { grid-column: 1 / -1; }
+        .info-label { font-weight: 600; color: #0f172a; font-size: 8.5pt; display: inline-block; margin-right: 3pt; }
+        .info-value { color: #334155; font-weight: 500; font-size: 9pt; }
+        
+        /* TABLES */
+        .charges-table { width: 100%; border-collapse: collapse; margin-top: 8pt; text-align: left; font-size: 9pt; break-inside: avoid; }
+        .charges-table th { background: #f1f5f9; color: #0f172a; font-weight: bold; padding: 5pt 6pt; border: 1pt solid #e2e8f0; font-size: 8pt; }
+        .charges-table td { padding: 5pt 6pt; border: 1pt solid #e2e8f0; color: #334155; font-weight: 500; }
+        .charges-table .text-right { text-align: right; }
+        .charges-table .total-row { background: #f8fafc; font-weight: bold; color: #020617; }
+        
+        /* PAYMENT BOX */
+        .payment-box { margin-top: 10pt; padding: 10pt; background: #f8fafc; border: 1pt solid #e2e8f0; border-radius: 3pt; break-inside: avoid; }
+        .payment-title { font-size: 9pt; font-weight: 700; color: #020617; margin-bottom: 4pt; }
+        .payment-detail { font-size: 8.5pt; color: #475569; margin: 2pt 0; }
+        
+        /* FOOTER */
+        .document-footer { margin-top: 16pt; padding-top: 6pt; border-top: 1pt solid #e2e8f0; display: flex; justify-content: space-between; font-size: 7.5pt; color: #94a3b8; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <div class="document-wrapper">
+        
+        <!-- HEADER -->
+        <header class="header">
+            <div class="header-top">
+                <div class="logo-section">
+                    <div class="logo-box">
+                        {% if tenant_profile and tenant_profile.logo_url %}
+                            <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
+                        {% else %}
+                            <div class="logo-fallback">
+                                <span>{{ (tenant.name[:8] if tenant else 'AGENCY') | upper }}</span>
+                            </div>
+                        {% endif %}
+                    </div>
+                    <div class="agency-info">
+                        <h1>{{ tenant.name if tenant else 'Rental Agency' }}</h1>
+                        <p>{{ tenant_profile.address if tenant_profile else '—' }}</p>
+                        <p>Tel: {{ tenant_profile.phone if tenant_profile and tenant_profile.phone else '—' }}</p>
+                        <p>Email: {{ tenant_profile.email if tenant_profile and tenant_profile.email else '—' }}</p>
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    {% set status_class = 'status-paid' if invoice.status == 'paid' else 'status-overdue' if invoice.status == 'overdue' else 'status-partial' if invoice.status == 'partially_paid' else 'status-pending' %}
+                    <span class="status-badge {{ status_class }}">
+                        {% if invoice.status == 'paid' %}
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>
+                            PAID
+                        {% elif invoice.status == 'overdue' %}
+                            OVERDUE
+                        {% elif invoice.status == 'partially_paid' %}
+                            PARTIAL
+                        {% else %}
+                            PENDING
+                        {% endif %}
+                    </span>
+                    <p class="secured-text">INVOICE DOCUMENT</p>
+                </div>
+            </div>
+
+            <div class="meta-grid">
+                <div class="meta-item"><p>Invoice No</p><p>{{ invoice.invoice_number }}</p></div>
+                <div class="meta-item"><p>Issue Date</p><p>{{ invoice.created_at.strftime('%d, %b, %Y') if invoice.created_at else '—' }}</p></div>
+                <div class="meta-item"><p>Due Date</p><p>{{ invoice.due_date.strftime('%d, %b, %Y') if invoice.due_date else '—' }}</p></div>
+                <div class="meta-item"><p>Currency</p><p>{{ invoice.currency_code if invoice.currency_code else 'KES' }}</p></div>
+            </div>
+        </header>
+
+        <!-- 1. BILL TO -->
+        <section class="contract-section">
+            <h2 class="section-title">1. Bill To</h2>
+            <div class="info-grid">
+                <div><span class="info-label">Client Name:</span> <span class="info-value">{{ client.full_name if client else '—' }}</span></div>
+                <div><span class="info-label">ID / Passport:</span> <span class="info-value">{{ client.id_number if client else '—' }}</span></div>
+                <div><span class="info-label">Phone Number:</span> <span class="info-value">{{ client.phone if client else '—' }}</span></div>
+                <div><span class="info-label">Email Address:</span> <span class="info-value">{{ client.email if client and client.email else '—' }}</span></div>
+                {% if booking %}
+                <div class="col-span-2"><span class="info-label">Booking Reference:</span> <span class="info-value">{{ booking.booking_number if booking.booking_number else booking.id }}</span></div>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- 2. RENTAL DETAILS -->
+        {% if vehicle and booking %}
+        <section class="contract-section">
+            <h2 class="section-title">2. Rental Details</h2>
+            <div class="info-grid">
+                <div><span class="info-label">Vehicle:</span> <span class="info-value">{{ vehicle.make }} {{ vehicle.model }} ({{ vehicle.plate_number }})</span></div>
+                <div><span class="info-label">Rental Period:</span> <span class="info-value">{{ booking.start_date.strftime('%d, %b') }} to {{ booking.end_date.strftime('%d, %b, %Y') }}</span></div>
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- 3. ITEMIZED CHARGES -->
+        <section class="contract-section">
+            <h2 class="section-title">3. Itemized Charges</h2>
+            <table class="charges-table no-break">
+                <thead>
+                    <tr>
+                        <th>Description</th>
+                        <th class="text-right" style="width: 80pt;">Days</th>
+                        <th class="text-right" style="width: 100pt;">Daily Rate</th>
+                        <th class="text-right" style="width: 100pt;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Vehicle Rental Charge</td>
+                        <td class="text-right">{{ rental_days }}</td>
+                        <td class="text-right">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(daily_rate) }}</td>
+                        <td class="text-right">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(amount_due) }}</td>
+                    </tr>
+                    {% if invoice.notes %}
+                    <tr>
+                        <td colspan="4" style="font-style: italic; color: #64748b;">Note: {{ invoice.notes }}</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </section>
+
+        <!-- 4. SUMMARY & TOTALS -->
+        <section class="contract-section">
+            <h2 class="section-title">4. Summary & Totals</h2>
+            <table class="charges-table no-break">
+                <tbody>
+                    <tr>
+                        <td style="border: none; text-align: right; font-weight: bold;">Subtotal:</td>
+                        <td class="text-right" style="border: none; width: 120pt;">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(amount_due) }}</td>
+                    </tr>
+                    <tr>
+                        <td style="border: none; text-align: right; font-weight: bold;">Amount Paid:</td>
+                        <td class="text-right" style="border: none;">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(amount_paid) }}</td>
+                    </tr>
+                    <tr class="total-row">
+                        <td style="text-align: right; border-top: 2pt solid #e2e8f0; font-size: 10pt;">BALANCE DUE:</td>
+                        <td class="text-right" style="border-top: 2pt solid #e2e8f0; font-size: 10pt;">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(balance) }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- 5. PAYMENT INSTRUCTIONS -->
+        <section class="contract-section">
+            <h2 class="section-title">5. Payment Instructions</h2>
+            <div class="payment-box">
+                <p class="payment-title">Please remit payment using one of the following methods:</p>
+                <p class="payment-detail"><strong>M-Pesa / Bank Transfer:</strong> Please contact the agency for Paybill, Till, or Bank Account details.</p>
+                <p class="payment-detail" style="margin-top: 6pt; font-style: italic;">Please include your Invoice Number (<strong>{{ invoice.invoice_number }}</strong>) as the payment reference.</p>
+            </div>
+        </section>
+
+        <!-- FOOTER -->
+        <footer class="document-footer">
+            <div>INVOICE #{{ invoice.invoice_number }}</div>
+            <div>POWERED BY Rental Garage PLATFORM</div>
+        </footer>
+
+    </div>
+</body>
+</html>
