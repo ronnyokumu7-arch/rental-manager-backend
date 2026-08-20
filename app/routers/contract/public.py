@@ -1,7 +1,8 @@
 import base64
+import io
 import os
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,6 +16,7 @@ from app.models.tenants import Tenant
 from app.models.vehicles import Vehicle
 from app.schemas.contract import ContractSignPayload, PublicContractView
 from app.services.contract_pdf import generate_contract_pdf
+from app.services.storage import upload_file
 
 router = APIRouter()
 
@@ -49,7 +51,7 @@ async def view_contract_public(
         booking_id=booking.id,
         tenant_name=booking.tenant.name if booking.tenant else "Unknown",
         client_name=booking.client.full_name if booking.client else "Unknown",
-        id_number=booking.client.id_number if booking.client else None,  # ✅ ADDED: Maps ID number to response
+        id_number=booking.client.id_number if booking.client else None,
         vehicle_make=booking.vehicle.make if booking.vehicle else "Unknown",
         vehicle_model=booking.vehicle.model if booking.vehicle else "Unknown",
         vehicle_plate=booking.vehicle.plate_number if booking.vehicle else "Unknown",
@@ -115,20 +117,24 @@ async def sign_contract_public(
 
     now = datetime.now(timezone.utc)
     
-    # ✅ Process Signature safely (Schema already validated base64, but we extract cleanly)
-    signature_data = payload.signature.split(",")[1] if "," in payload.signature else payload.signature
-    image_bytes = base64.b64decode(signature_data)
+    # ✅ Process Signature safely and upload to Cloudinary via storage service
+    signature_b64 = payload.signature.split(",")[1] if "," in payload.signature else payload.signature
+    signature_bytes = base64.b64decode(signature_b64)
+
+    signature_file = UploadFile(
+        filename=f"sig_{contract.id}_{int(now.timestamp())}.png",
+        file=io.BytesIO(signature_bytes),
+        headers={"content-type": "image/png"},
+    )
+
+    # Store under the "compliance" category (5MB limit, fits signatures perfectly)
+    signature_url = await upload_file(
+        file=signature_file,
+        tenant_id=contract.tenant_id,
+        category="compliance",
+    )
+    contract.signature_image_path = signature_url
     
-    signature_dir = "storage/signatures"
-    os.makedirs(signature_dir, exist_ok=True)
-    
-    filename = f"sig_{contract.id}_{int(now.timestamp())}.png"
-    filepath = os.path.join(signature_dir, filename)
-    
-    with open(filepath, "wb") as f:
-        f.write(image_bytes)
-        
-        contract.signature_image_path = filepath
     contract.signed_by_client = True
     contract.client_signed_at = now
     contract.status = ContractStatus.signed

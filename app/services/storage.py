@@ -19,6 +19,7 @@ ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "pdf"}
 ALLOWED_MIME_TYPES = {
     "image/jpeg",
     "image/png",
+    
     "image/webp",
     "application/pdf",
 }
