@@ -65,6 +65,14 @@ class PublicContractView(BaseModel):
     booking_id: int
     booking_number: Optional[str] = None
     tenant_name: str
+    
+    # ✅ NEW: Owning tenant's branding (auto-resolved from the contract's tenant,
+    # NOT from the logged-in session). Powers the public signing page header.
+    tenant_logo_url: Optional[str] = None
+    tenant_address: Optional[str] = None
+    tenant_phone: Optional[str] = None
+    tenant_email: Optional[str] = None
+    
     client_name: str
     id_number: Optional[str] = None
     vehicle_make: str
@@ -77,7 +85,6 @@ class PublicContractView(BaseModel):
     status: ContractStatus
     signed_by_client: bool
     created_at: datetime
-
 
 class ContractSignPayload(BaseModel):
     """

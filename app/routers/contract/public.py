@@ -11,6 +11,7 @@ from app.core.limiter import limiter
 from app.db.database import get_db
 from app.models.bookings import Booking
 from app.models.clients import Client
+   from app.models.tenant_profile import TenantProfile
 from app.models.contracts import Contract, ContractStatus
 from app.models.tenants import Tenant
 from app.models.vehicles import Vehicle
@@ -28,6 +29,9 @@ async def view_contract_public(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
+    # Add TenantProfile to imports at the top of the file:
+    # from app.models.tenant_profile import TenantProfile
+    
     # ✅ Optimized: Fetch all related data in a single query
     stmt = select(Contract).options(
         selectinload(Contract.booking).selectinload(Booking.client),
@@ -45,11 +49,24 @@ async def view_contract_public(
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This contract link has expired.")
 
     booking = contract.booking
+
+    # ✅ NEW: Fetch the OWNING tenant's profile (branding for the public page).
+    # This resolves from the contract itself — NOT from any logged-in session.
+    # This is what fixes the "ROYRIDE showing on Nairobi Car Hire contracts" bug.
+    tenant_profile = None
+    if booking.tenant_id:
+        profile_stmt = select(TenantProfile).where(TenantProfile.tenant_id == booking.tenant_id)
+        tenant_profile = (await db.execute(profile_stmt)).scalars().first()
     
     return PublicContractView(
         contract_number=contract.contract_number,
         booking_id=booking.id,
         tenant_name=booking.tenant.name if booking.tenant else "Unknown",
+        # ✅ NEW: Owning agency branding (auto-resolved from contract's tenant)
+        tenant_logo_url=tenant_profile.logo_url if tenant_profile else None,
+        tenant_address=tenant_profile.address if tenant_profile else None,
+        tenant_phone=tenant_profile.phone if tenant_profile else None,
+        tenant_email=tenant_profile.email if tenant_profile else None,
         client_name=booking.client.full_name if booking.client else "Unknown",
         id_number=booking.client.id_number if booking.client else None,
         vehicle_make=booking.vehicle.make if booking.vehicle else "Unknown",
