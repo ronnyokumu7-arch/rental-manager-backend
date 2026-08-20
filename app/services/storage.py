@@ -12,15 +12,17 @@ from fastapi import HTTPException, UploadFile, status
 from app.core.config import get_settings
 
 
-# ✅ SECURITY: Strict extension allowlist (no duplicates)
-ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "pdf"}
+# ✅ SECURITY: Strict extension allowlist (smartphone-friendly for v1)
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "pdf", "heic", "heif", "avif"}
 
 # ✅ SECURITY: MIME type allowlist (prevents .php renamed to .jpg)
 ALLOWED_MIME_TYPES = {
     "image/jpeg",
     "image/png",
-    
     "image/webp",
+    "image/heic",
+    "image/heif",
+    "image/avif",
     "application/pdf",
 }
 
