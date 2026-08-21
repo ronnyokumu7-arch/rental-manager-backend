@@ -21,13 +21,19 @@ router = APIRouter()
 settings = get_settings()
 
 
-# ✅ NEW: Optional payload for customizing the generated invoice
+# ✅ Optional payload for customizing the generated invoice
 class GenerateInvoicePayload(BaseModel):
     custom_amount: Optional[Decimal] = Field(
         default=None, 
         gt=0, 
         decimal_places=2,
         description="Optional custom amount for the invoice"
+    )
+    custom_rate: Optional[Decimal] = Field(
+        default=None, 
+        gt=0, 
+        decimal_places=2,
+        description="Optional daily rate override — written to booking.daily_rate, recomputes total"
     )
     due_date: Optional[datetime] = Field(
         default=None, 
@@ -60,11 +66,12 @@ async def generate_invoice(
                 detail="Due date must be in the future."
             )
 
-    # ✅ Pass customizations to the robust service
+    # ✅ Pass customizations (including rate override) to the robust service
     invoice = await create_invoice_for_booking(
         booking, 
         db, 
         custom_amount=payload.custom_amount if payload else None, 
+        custom_rate=payload.custom_rate if payload else None,
         due_date_override=payload.due_date if payload else None,
         notes=payload.notes if payload else None
     )

@@ -146,14 +146,17 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "LATE RETURNS: Returns over 2 hours late are treated as a new rental day (daily rates apply)."
     ]
 
-    # ✅ FIXED: Daily rate = the specific vehicle's 1-day rate (source of truth).
+    # ✅ FIXED: Priority order for daily rate:
+    # 1. booking.daily_rate (admin-set override via invoice modal) — WINS if set
+    # 2. vehicle.daily_rate (vehicle's standard rate) — fallback
+    # 3. Derived from booking.total_amount — last-resort
     # Rental days are inclusive of pickup AND return day (Aug 13 → Aug 14 = 2 days),
     # so Total = daily_rate × days (6500 × 2 = 13000).
     daily_rate = 0
-    if vehicle and vehicle.daily_rate:
-        daily_rate = vehicle.daily_rate            # ✅ the vehicle's actual 1-day rate
-    elif booking and booking.daily_rate:
-        daily_rate = booking.daily_rate            # stored snapshot, if vehicle rate missing
+    if booking and booking.daily_rate:
+        daily_rate = booking.daily_rate            # ✅ BOOKING-SPECIFIC OVERRIDE WINS (set via invoice modal)
+    elif vehicle and vehicle.daily_rate:
+        daily_rate = vehicle.daily_rate            # fallback: vehicle's standard rate
     elif booking and booking.total_amount and booking.start_date and booking.end_date:
         days = (booking.end_date - booking.start_date).days + 1
         daily_rate = booking.total_amount / days   # last-resort derivation (13000 / 2 = 6500)
