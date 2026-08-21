@@ -7,6 +7,7 @@ Consumers: pricing engine, bookings router, duty scheduler, invoicing, frontend.
 Design principles:
   * Definitions are CODE (versioned, testable). Rates are DATA (tenant config).
   * billing_model selects a pricing STRATEGY over a shared rate card.
+  * category drives UI grouping (Chauffeur dropdown) + duty-scheduler behaviour.
   * Alias map keeps historical service_type values resolvable after renames.
   * rate_extras (JSONB on the config row) feeds model-specific rates,
     so new pricing models ship WITHOUT schema migrations.
@@ -32,7 +33,6 @@ class ServiceCategory(str, enum.Enum):
     selfdrive = "selfdrive"
     chauffeur = "chauffeur"
     transfer = "transfer"
-    event = "event"
 
 
 @dataclass(frozen=True)
@@ -66,8 +66,10 @@ SERVICE_CATALOG: Dict[str, ServiceDefinition] = {
         BillingModel.rolling_24h, 24, True, True,
         "Multi-day trips with driver — selfdrive rates + driver fee stack.",
     ),
+    # ✅ Wedding IS a chauffeur service (requires driver); its PRICING is
+    # differentiated by billing_model=event_base, not by category.
     "chauffeur_wedding": ServiceDefinition(
-        "chauffeur_wedding", "Chauffeur · Wedding", ServiceCategory.event,
+        "chauffeur_wedding", "Chauffeur · Wedding", ServiceCategory.chauffeur,
         BillingModel.event_base, 12, True, True,
         "Single-event 12h base package + hourly add-ons.",
     ),
