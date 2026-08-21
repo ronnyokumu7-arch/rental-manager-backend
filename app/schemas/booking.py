@@ -20,6 +20,11 @@ class BookingBase(BaseModel):
     daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
     total_amount: Decimal = Field(gt=0, decimal_places=2)
     currency_code: str = Field(default="KES", min_length=3, max_length=3)
+    
+    # ✅ MILESTONE 1: Service type + exact times
+    service_type: str = "selfdrive"
+    pickup_at: Optional[datetime] = None
+    scheduled_return_at: Optional[datetime] = None
 
     @model_validator(mode="after")
     def check_dates(self):
@@ -48,6 +53,11 @@ class BookingUpdate(BaseModel):
     daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
     total_amount: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
     currency_code: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    
+    # ✅ MILESTONE 1: Service type + exact times
+    service_type: Optional[str] = None
+    pickup_at: Optional[datetime] = None
+    scheduled_return_at: Optional[datetime] = None
 
     @model_validator(mode="after")
     def check_dates(self):
@@ -78,12 +88,28 @@ class BookingOut(BaseModel):
     archived_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    
+    # ✅ MILESTONE 1: Service type + exact times + pricing snapshot
+    service_type: str
+    pickup_at: Optional[datetime] = None
+    scheduled_return_at: Optional[datetime] = None
+    pricing_day_hours: Optional[int] = None
+    pricing_grace_minutes: Optional[int] = None
+    pricing_overtime_hourly_rate: Optional[Decimal] = None
 
     # 💡 NESTED RELATIONSHIPS:
     client: Optional[ClientOut] = None
     vehicle: Optional[VehicleOut] = None
 
     model_config = {"from_attributes": True}
+
+
+# ✅ MILESTONE 1: Live pricing preview request (no DB writes)
+class BookingQuote(BaseModel):
+    vehicle_id: int
+    service_type: str = "selfdrive"
+    pickup_at: datetime
+    return_at: datetime
 
 
 # ✅ EXTENSION PAYLOAD: For Milestone 2 Booking Extensions
