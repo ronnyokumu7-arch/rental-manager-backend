@@ -35,6 +35,7 @@ from app.routers import (
     payments,
     reports,
     role_templates,
+    services,          # ✅ MILESTONE 1.1: Service catalog export
     subscriptions,
     system,
     tasks,
@@ -163,6 +164,7 @@ routers = [
     tenant_profile,
     tenant_policies,
     role_templates,
+    services,          # ✅ MILESTONE 1.1: Service catalog export (tenant-scoped)
     contracts,
     financials,
     admin,

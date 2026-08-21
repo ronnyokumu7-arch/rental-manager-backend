@@ -1,15 +1,24 @@
 # app/services/pricing.py
 """
-Time-Aware Pricing Engine + Backend Service Registry (Milestone 1).
+Time-Aware Pricing Engine — strategy dispatch over a shared rate card.
 
-LIVE SERVICES:
-  selfdrive    → 24h rolling clock from pickup_at; 1h grace; hourly OT (capped at day rate).
-  with_driver  → SAME 24h rolling clock (standard selfdrive rates)
-                 + driver fee stack: daily fee + driver OT + accommodation per night.
-  wedding      → 12h max per calendar day; extra hours billable or waivable.
+Billing models (selected via tenant config override or catalog default):
+  rolling_24h    24h countdown from pickup; grace; hourly OT (capped at day rate);
+                 driver fee stack (daily + OT + accommodation).
+  event_base     single event: flat base (base_hours, e.g. 12h wedding) +
+                 hourly add-ons (waivable); driver stack applies.
+  hourly         rate × hours with min_charge_hours; all-inclusive (no driver stack).
+  package        half_day (≤ half_day_hours) OR full_day (≤ full_day_hours)
+                 + hourly add-ons beyond full_day.
+  fixed_route    flat rate from rate_extras.route_rates[route_key] or fixed_rate.
+  distance_time  base_fare + km × per_km + minutes × per_min.
+  route_stops    stops × per_stop_rate (parked).
 
-PARKED (backend-defined, engine rejects until activated):
-  airport_transfer, safari, inter_county, city_excursion.
+Rate card = rate_extras JSONB keys:
+  per_hour, per_km, per_min, base_fare, fixed_rate, half_day_rate, half_day_hours,
+  full_day_rate, full_day_hours, min_charge_hours, route_rates, per_stop_rate.
+
+DB access limited to get_pricing_config(); calculate() is pure.
 """
 from __future__ import annotations
 
@@ -23,53 +32,32 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.pricing import ServicePricingConfig
+from app.services.catalog import (
+    BillingModel, get_service, live_services, resolve_key,
+)
 
 SELFDRIVE = "selfdrive"
-WITH_DRIVER = "with_driver"
-WEDDING = "wedding"
 
 CENT = Decimal("0.01")
 
-# Grace defaults per billing model (minutes)
-DEFAULT_GRACE_MINUTES = {"rolling": 60, "calendar_day": 30}
-
-
-# ---------------------------------------------------------------------------
-# BACKEND SERVICE REGISTRY (single source of truth for service semantics)
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class ServiceDefinition:
-    key: str
-    label: str
-    day_hours: int
-    billing_model: str        # "rolling" | "calendar_day" | "parked"
-    includes_driver: bool
-    is_live: bool
-
-
-SERVICE_REGISTRY: Dict[str, ServiceDefinition] = {
-    SELFDRIVE: ServiceDefinition(SELFDRIVE, "Self Drive", 24, "rolling", False, True),
-    WITH_DRIVER: ServiceDefinition(WITH_DRIVER, "With Driver", 24, "rolling", True, True),
-    WEDDING: ServiceDefinition(WEDDING, "Wedding Car Hire", 12, "calendar_day", True, True),
-    # ✅ PARKED: defined now, activated later with their own pricing models
-    "airport_transfer": ServiceDefinition("airport_transfer", "Airport Transfer", 0, "parked", True, False),
-    "safari": ServiceDefinition("safari", "Safari", 0, "parked", True, False),
-    "inter_county": ServiceDefinition("inter_county", "Inter-County", 0, "parked", True, False),
-    "city_excursion": ServiceDefinition("city_excursion", "City Excursion", 0, "parked", True, False),
+DEFAULT_GRACE_MINUTES: Dict[str, int] = {
+    BillingModel.rolling_24h.value: 60,
+    BillingModel.event_base.value: 30,
+    BillingModel.hourly.value: 0,
+    BillingModel.package.value: 0,
+    BillingModel.fixed_route.value: 0,
+    BillingModel.distance_time.value: 0,
+    BillingModel.route_stops.value: 0,
 }
-
-
-def get_service_definition(service_type: str) -> ServiceDefinition:
-    return SERVICE_REGISTRY.get(service_type, SERVICE_REGISTRY[SELFDRIVE])
-
-
-def live_services() -> List[ServiceDefinition]:
-    return [s for s in SERVICE_REGISTRY.values() if s.is_live]
 
 
 def _q(value: Decimal) -> Decimal:
     return value.quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def _dec(value) -> Decimal:
+    """JSONB-safe Decimal conversion (float/int/str/Decimal)."""
+    return Decimal(str(value))
 
 
 @dataclass
@@ -83,6 +71,7 @@ class PricingLine:
 class PricingResult:
     service_type: str
     service_label: str
+    billing_model: str
     pickup_at: datetime
     return_at: datetime
     daily_rate: Decimal
@@ -109,6 +98,7 @@ def calculate(
     pickup_at: datetime,
     return_at: datetime,
     daily_rate: Decimal,
+    billing_model: Optional[str] = None,
     day_hours: Optional[int] = None,
     grace_minutes: Optional[int] = None,
     overtime_hourly_rate: Optional[Decimal] = None,
@@ -116,110 +106,202 @@ def calculate(
     driver_daily_fee: Optional[Decimal] = None,
     driver_overtime_hourly_fee: Optional[Decimal] = None,
     driver_night_accommodation_fee: Optional[Decimal] = None,
+    rate_extras: Optional[dict] = None,
+    distance_km: Optional[Decimal] = None,
+    route_key: Optional[str] = None,
+    stops: Optional[int] = None,
 ) -> PricingResult:
-    """Pure pricing calculation. Raises ValueError on invalid/parked service."""
+    """Pure pricing calculation. Raises ValueError on invalid input/parked service."""
     if return_at <= pickup_at:
         raise ValueError("return_at must be strictly after pickup_at")
 
-    definition = get_service_definition(service_type)
+    definition = get_service(service_type)
     if not definition.is_live:
         raise ValueError(f"Service '{service_type}' is not yet available.")
 
-    day_hours = day_hours or definition.day_hours
+    model = billing_model or definition.billing_model.value
+    day_hours = day_hours or definition.base_hours or 24
     grace_minutes = (
-        grace_minutes
-        if grace_minutes is not None
-        else DEFAULT_GRACE_MINUTES.get(definition.billing_model, 60)
+        grace_minutes if grace_minutes is not None
+        else DEFAULT_GRACE_MINUTES.get(model, 0)
     )
-
+    extras = rate_extras or {}
     daily_rate = Decimal(daily_rate)
-    hourly_rate = (
-        Decimal(overtime_hourly_rate)
-        if overtime_hourly_rate is not None
+
+    derived_hourly = (
+        Decimal(overtime_hourly_rate) if overtime_hourly_rate is not None
         else daily_rate / Decimal(day_hours)
+    )
+    per_hour = (
+        _dec(extras["per_hour"]) if "per_hour" in extras
+        else derived_hourly
     )
 
     elapsed_seconds = (return_at - pickup_at).total_seconds()
     day_seconds = day_hours * 3600
     grace_seconds = grace_minutes * 60
 
-    if definition.billing_model == "calendar_day":
-        # WEDDING: 1 day per calendar day touched; each includes day_hours (12).
-        included_days = (return_at.date() - pickup_at.date()).days + 1
-        included_seconds = included_days * day_seconds
-        extra_seconds = max(0.0, elapsed_seconds - included_seconds)
+    ZERO = Decimal("0.00")
+    included_days = 0
+    extra_hours = 0
+    grace_used_seconds = 0.0
+    base_charge = ZERO
+    overtime_charge = ZERO
+    overtime_waivable = False
+    lines: List[PricingLine] = []
+
+    # ── rolling_24h ─────────────────────────────────────────────
+    if model == BillingModel.rolling_24h.value:
+        full_days = int(elapsed_seconds // day_seconds)
+        remainder = elapsed_seconds - (full_days * day_seconds)
+        included_days = max(1, full_days)
+        if full_days >= 1 and remainder > 0:
+            grace_used_seconds = min(remainder, grace_seconds)
+            overtime_seconds = max(0.0, remainder - grace_seconds)
+            extra_hours = math.ceil(overtime_seconds / 3600) if overtime_seconds else 0
+        base_charge = _q(daily_rate * included_days)
+        lines.append(PricingLine(
+            f"{definition.display_name} rental",
+            f"{included_days} day(s) x {day_hours}h", base_charge))
+        if extra_hours:
+            raw = per_hour * extra_hours
+            if cap_overtime_at_day_rate:
+                raw = min(raw, daily_rate)
+            overtime_charge = _q(raw)
+            lines.append(PricingLine("Vehicle overtime (after grace)",
+                                     f"{extra_hours} hr(s)", overtime_charge))
+
+    # ── event_base (wedding) ────────────────────────────────────
+    elif model == BillingModel.event_base.value:
+        included_days = 1
+        base_seconds = day_hours * 3600
+        extra_seconds = max(0.0, elapsed_seconds - base_seconds)
         grace_used_seconds = min(extra_seconds, grace_seconds)
         overtime_seconds = max(0.0, extra_seconds - grace_seconds)
+        extra_hours = math.ceil(overtime_seconds / 3600) if overtime_seconds else 0
+        base_charge = _q(daily_rate)   # flat event package (12h base)
+        lines.append(PricingLine(
+            f"{definition.display_name} package",
+            f"1 event x {day_hours}h base", base_charge))
+        if extra_hours:
+            overtime_charge = _q(per_hour * extra_hours)
+            overtime_waivable = True
+            lines.append(PricingLine("Event add-on hours (waivable)",
+                                     f"{extra_hours} hr(s)", overtime_charge))
+
+    # ── hourly ──────────────────────────────────────────────────
+    elif model == BillingModel.hourly.value:
+        min_hours = int(extras.get("min_charge_hours", 2))
+        hours = max(min_hours, math.ceil(elapsed_seconds / 3600))
+        base_charge = _q(per_hour * hours)
+        lines.append(PricingLine(
+            f"{definition.display_name} (hourly, min {min_hours}h)",
+            f"{hours} hr(s)", base_charge))
+
+    # ── package (half/full day) ─────────────────────────────────
+    elif model == BillingModel.package.value:
+        half_h = int(extras.get("half_day_hours", 4))
+        full_h = int(extras.get("full_day_hours", 8))
+        half_rate = _dec(extras["half_day_rate"]) if "half_day_rate" in extras else _q(daily_rate / 2)
+        full_rate = _dec(extras["full_day_rate"]) if "full_day_rate" in extras else daily_rate
+        hours = elapsed_seconds / 3600
+        if hours <= half_h:
+            base_charge = _q(half_rate)
+            lines.append(PricingLine("Half-day package",
+                                     f"up to {half_h}h", base_charge))
+        elif hours <= full_h:
+            base_charge = _q(full_rate)
+            lines.append(PricingLine("Full-day package",
+                                     f"up to {full_h}h", base_charge))
+        else:
+            extra_hours = math.ceil((elapsed_seconds - full_h * 3600) / 3600)
+            base_charge = _q(full_rate)
+            overtime_charge = _q(per_hour * extra_hours)
+            lines.append(PricingLine("Full-day package",
+                                     f"up to {full_h}h", base_charge))
+            lines.append(PricingLine("Extra hours",
+                                     f"{extra_hours} hr(s)", overtime_charge))
+
+    # ── fixed_route ─────────────────────────────────────────────
+    elif model == BillingModel.fixed_route.value:
+        route_rates = extras.get("route_rates") or {}
+        rate = None
+        label = "standard route"
+        if route_key and route_key in route_rates:
+            rate = _dec(route_rates[route_key])
+            label = route_key
+        elif "fixed_rate" in extras:
+            rate = _dec(extras["fixed_rate"])
+        if rate is None:
+            raise ValueError(
+                f"No fixed rate configured for route '{route_key or '(none)'}'.")
+        base_charge = _q(rate)
+        lines.append(PricingLine(f"{definition.display_name} ({label})",
+                                 "flat rate", base_charge))
+
+    # ── distance_time ───────────────────────────────────────────
+    elif model == BillingModel.distance_time.value:
+        if "per_km" not in extras:
+            raise ValueError("distance_time requires rate_extras.per_km")
+        per_km = _dec(extras["per_km"])
+        per_min = _dec(extras["per_min"]) if "per_min" in extras else ZERO
+        base_fare = _dec(extras["base_fare"]) if "base_fare" in extras else ZERO
+        if distance_km is None:
+            raise ValueError("distance_time requires distance_km.")
+        minutes = math.ceil(elapsed_seconds / 60)
+        base_charge = _q(base_fare + (per_km * Decimal(distance_km))
+                         + (per_min * minutes))
+        lines.append(PricingLine(
+            f"{definition.display_name} (metered)",
+            f"{distance_km} km + {minutes} min", base_charge))
+
+    # ── route_stops (parked) ────────────────────────────────────
+    elif model == BillingModel.route_stops.value:
+        if "per_stop_rate" not in extras or stops is None:
+            raise ValueError("route_stops requires per_stop_rate and stops.")
+        base_charge = _q(_dec(extras["per_stop_rate"]) * stops)
+        lines.append(PricingLine(f"{definition.display_name}",
+                                 f"{stops} stop(s)", base_charge))
+
     else:
-        # ROLLING (selfdrive / with_driver): 24h countdown from pickup_at.
-        full_days = int(elapsed_seconds // day_seconds)
-        remainder_seconds = elapsed_seconds - (full_days * day_seconds)
-        included_days = max(1, full_days)
-        grace_used_seconds = 0.0
-        overtime_seconds = 0.0
-        if full_days >= 1 and remainder_seconds > 0:
-            grace_used_seconds = min(remainder_seconds, grace_seconds)
-            overtime_seconds = max(0.0, remainder_seconds - grace_seconds)
+        raise ValueError(f"Unknown billing model '{model}'.")
 
-    extra_hours = math.ceil(overtime_seconds / 3600) if overtime_seconds > 0 else 0
-    grace_used_minutes = int(grace_used_seconds // 60)
-
-    # --- Vehicle charges ---
-    base_charge = _q(daily_rate * included_days)
-    raw_overtime = hourly_rate * extra_hours
-    if cap_overtime_at_day_rate and extra_hours > 0:
-        raw_overtime = min(raw_overtime, daily_rate)
-    overtime_charge = _q(raw_overtime)
-
-    # --- Driver fee stack (only when configured) ---
-    ZERO = Decimal("0.00")
-    driver_daily = _q(Decimal(driver_daily_fee) * included_days) if driver_daily_fee is not None else ZERO
-    driver_ot = (
-        _q(Decimal(driver_overtime_hourly_fee) * extra_hours)
-        if driver_overtime_hourly_fee is not None and extra_hours > 0
-        else ZERO
-    )
-    nights = max(0, included_days - 1)
-    driver_accom = (
-        _q(Decimal(driver_night_accommodation_fee) * nights)
-        if driver_night_accommodation_fee is not None and nights > 0
-        else ZERO
-    )
+    # ── Driver fee stack (rolling + event only) ─────────────────
+    driver_daily = driver_ot = driver_accom = ZERO
+    if model in (BillingModel.rolling_24h.value, BillingModel.event_base.value):
+        if driver_daily_fee is not None:
+            driver_daily = _q(Decimal(driver_daily_fee) * max(1, included_days))
+            lines.append(PricingLine("Driver fee",
+                                     f"{max(1, included_days)} day(s)", driver_daily))
+        if driver_overtime_hourly_fee is not None and extra_hours:
+            driver_ot = _q(Decimal(driver_overtime_hourly_fee) * extra_hours)
+            lines.append(PricingLine("Driver overtime",
+                                     f"{extra_hours} hr(s)", driver_ot))
+        nights = max(0, included_days - 1)
+        if driver_night_accommodation_fee is not None and nights:
+            driver_accom = _q(Decimal(driver_night_accommodation_fee) * nights)
+            lines.append(PricingLine("Driver accommodation",
+                                     f"{nights} night(s)", driver_accom))
     driver_charge = driver_daily + driver_ot + driver_accom
 
     total = _q(base_charge + overtime_charge + driver_charge)
 
-    lines = [
-        PricingLine(
-            description=f"{definition.label} rental",
-            quantity=f"{included_days} day(s) x {day_hours}h",
-            amount=base_charge,
-        )
-    ]
-    if extra_hours > 0:
-        lines.append(PricingLine("Vehicle overtime (after grace)", f"{extra_hours} hr(s)", overtime_charge))
-    if driver_daily > 0:
-        lines.append(PricingLine("Driver fee", f"{included_days} day(s)", driver_daily))
-    if driver_ot > 0:
-        lines.append(PricingLine("Driver overtime", f"{extra_hours} hr(s)", driver_ot))
-    if driver_accom > 0:
-        lines.append(PricingLine("Driver accommodation", f"{nights} night(s)", driver_accom))
-
     return PricingResult(
-        service_type=service_type,
-        service_label=definition.label,
+        service_type=resolve_key(service_type),
+        service_label=definition.display_name,
+        billing_model=model,
         pickup_at=pickup_at,
         return_at=return_at,
         daily_rate=_q(daily_rate),
         day_hours=day_hours,
         grace_minutes=grace_minutes,
-        overtime_hourly_rate=_q(hourly_rate),
+        overtime_hourly_rate=_q(per_hour),
         included_days=included_days,
         extra_hours=extra_hours,
-        grace_used_minutes=grace_used_minutes,
+        grace_used_minutes=int(grace_used_seconds // 60),
         base_charge=base_charge,
         overtime_charge=overtime_charge,
-        overtime_waivable=(definition.billing_model == "calendar_day"),
+        overtime_waivable=overtime_waivable,
         driver_daily_fee=driver_daily,
         driver_overtime_fee=driver_ot,
         driver_accommodation_fee=driver_accom,
@@ -234,32 +316,34 @@ async def get_pricing_config(
 ) -> Optional[ServicePricingConfig]:
     stmt = select(ServicePricingConfig).where(
         ServicePricingConfig.tenant_id == tenant_id,
-        ServicePricingConfig.service_type == service_type,
+        ServicePricingConfig.service_type == resolve_key(service_type),
         ServicePricingConfig.is_active.is_(True),
     )
     return (await db.execute(stmt)).scalars().first()
 
 
 def snapshot_fields(config: Optional[ServicePricingConfig], service_type: str) -> dict:
-    definition = get_service_definition(service_type)
+    definition = get_service(service_type)
     return {
         "pricing_day_hours": (
-            config.day_hours if config else definition.day_hours
+            config.day_hours if config else definition.base_hours or 24
         ),
         "pricing_grace_minutes": (
             config.grace_minutes if config
-            else DEFAULT_GRACE_MINUTES.get(definition.billing_model, 60)
+            else DEFAULT_GRACE_MINUTES.get(definition.billing_model.value, 0)
         ),
         "pricing_overtime_hourly_rate": config.overtime_hourly_rate if config else None,
     }
 
 
-async def price_booking(db: AsyncSession, booking, daily_rate: Decimal) -> PricingResult:
+async def price_booking(
+    db: AsyncSession, booking, daily_rate: Decimal,
+    distance_km: Optional[Decimal] = None,
+    route_key: Optional[str] = None,
+    stops: Optional[int] = None,
+) -> PricingResult:
     """
-    Price a booking using (priority order):
-      1. Snapshotted pricing fields on the booking
-      2. Active tenant ServicePricingConfig
-      3. Registry defaults
+    Price a booking. Priority: booking snapshot → tenant config → catalog defaults.
     Falls back to start_date/end_date when pickup_at/scheduled_return_at are NULL.
     """
     service_type = getattr(booking, "service_type", None) or SELFDRIVE
@@ -274,6 +358,7 @@ async def price_booking(db: AsyncSession, booking, daily_rate: Decimal) -> Prici
         pickup_at=pickup_at,
         return_at=return_at,
         daily_rate=daily_rate,
+        billing_model=config.billing_model if config else None,
         day_hours=booking.pricing_day_hours or snap["pricing_day_hours"],
         grace_minutes=booking.pricing_grace_minutes or snap["pricing_grace_minutes"],
         overtime_hourly_rate=booking.pricing_overtime_hourly_rate
@@ -282,4 +367,8 @@ async def price_booking(db: AsyncSession, booking, daily_rate: Decimal) -> Prici
         driver_daily_fee=config.driver_daily_fee if config else None,
         driver_overtime_hourly_fee=config.driver_overtime_hourly_fee if config else None,
         driver_night_accommodation_fee=config.driver_night_accommodation_fee if config else None,
+        rate_extras=config.rate_extras if config else None,
+        distance_km=distance_km,
+        route_key=route_key,
+        stops=stops,
     )

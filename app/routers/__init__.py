@@ -18,6 +18,7 @@ from . import activity_logs
 from . import role_templates
 from . import tasks
 from . import vault  # ✅ NEW: Add the vault router
+from . import services  # ✅ NEW: Service catalog export (Milestone 1.1)
 
 __all__ = [
     "admin",
@@ -38,4 +39,5 @@ __all__ = [
     "role_templates",
     "tasks",
     "vault",  # ✅ NEW
+    "services",  # ✅ NEW: Milestone 1.1
 ]

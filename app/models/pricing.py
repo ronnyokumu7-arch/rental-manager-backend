@@ -2,32 +2,46 @@
 """
 Service Pricing Configuration (tenant-scoped).
 
-Backend-level service definitions:
-  - selfdrive:  1 day = 24h rolling from pickup, 1h grace, hourly overtime (capped).
-  - with_driver: SAME 24h rolling clock as selfdrive (standard selfdrive rates)
-                 + driver fee stack: daily fee + driver overtime + accommodation.
-  - wedding:    1 day = max 12h per calendar day; extra hours billable/forgivable.
-  - PARKED (defined, inactive): airport_transfer, safari, inter_county, city_excursion.
+Pricing architecture (Milestone 1.1):
+  * Service DEFINITIONS live in app/services/catalog.py (billing model defaults,
+    categories, driver requirements, live/parked flags).
+  * This table stores tenant RATE DATA per service_type.
+  * billing_model (nullable) overrides the catalog default per tenant —
+    e.g. one agency runs airport_transfer as fixed_route, another as distance_time.
+  * rate_extras (JSONB) is the flexible rate card: per_km, base_fare, fixed_rate,
+    half/full-day rates, min_charge_hours, route_rates map, per_stop_rate.
+    New pricing models ship WITHOUT schema migrations.
+
+Billing models (strategies in app/services/pricing.py):
+  rolling_24h    24h countdown from pickup; grace; hourly OT (capped).
+  event_base     flat base hours (12h wedding) + hourly add-ons.
+  hourly         rate × hours with min charge.
+  package        half-day / full-day blocks + extra hours.
+  fixed_route    flat rate per standard route (route_rates map).
+  distance_time  base fare + per-km + per-minute.
+  route_stops    per place visited (future).
 """
 import enum
 
 from sqlalchemy import (
     Boolean, CheckConstraint, Column, ForeignKey, Integer,
-    Numeric, String, UniqueConstraint,
+    Numeric, String, UniqueConstraint, text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 from app.db.database import Base, AuditMixin
 
 
 class ServiceType(str, enum.Enum):
+    # ✅ Current keys (mirror app/services/catalog.py)
     selfdrive = "selfdrive"
-    with_driver = "with_driver"
-    wedding = "wedding"
-    # ✅ PARKED: backend-defined, activated when their pricing models ship:
-    # airport_transfer = "airport_transfer"
-    # safari = "safari"
-    # inter_county = "inter_county"
-    # city_excursion = "city_excursion"
+    chauffeur_pro_driver = "chauffeur_pro_driver"
+    chauffeur_wedding = "chauffeur_wedding"
+    # Deprecated aliases — kept so historical references never break:
+    with_driver = "with_driver"    # → chauffeur_pro_driver
+    wedding = "wedding"            # → chauffeur_wedding
+    # ✅ PARKED: chauffeur_hourly, corporate, city_excursion,
+    # airport_transfer, chauffeur_taxi, route_stops_service (see catalog.py)
 
 
 class ServicePricingConfig(Base, AuditMixin):
@@ -42,7 +56,20 @@ class ServicePricingConfig(Base, AuditMixin):
     # ✅ String (not DB ENUM) → new services ship without ALTER TYPE migrations
     service_type = Column(String(30), nullable=False)
 
-    # Hours that constitute one billable day (24 selfdrive/with_driver, 12 wedding)
+    # ✅ MILESTONE 1.1: strategy selector. NULL → catalog default for this service.
+    # Lets one agency run airport_transfer as fixed_route, another as distance_time.
+    billing_model = Column(String(30), nullable=True)
+
+    # ✅ MILESTONE 1.1: flexible rate card (JSONB).
+    # Known keys: per_hour, per_km, per_min, base_fare, fixed_rate,
+    # half_day_rate, half_day_hours, full_day_rate, full_day_hours,
+    # min_charge_hours, route_rates {"JKIA_CBD": 2500, ...}, per_stop_rate.
+    # Strategies read only what they need → new models, zero migrations.
+    rate_extras = Column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    # Hours that constitute one billable day (24 selfdrive/pro_driver, 12 wedding)
     day_hours = Column(Integer, nullable=False, default=24)
 
     # Free buffer after the rental period exhausts, in minutes (standard: 60)
@@ -54,8 +81,8 @@ class ServicePricingConfig(Base, AuditMixin):
     # ✅ Safety valve: vehicle overtime can never exceed one full day rate
     overtime_cap_at_day_rate = Column(Boolean, nullable=False, default=True)
 
-    # ✅ MILESTONE 1: DRIVER FEE STACK (with_driver / wedding when configured)
-    # Driver's base fee per rental day (24h block / 12h wedding day)
+    # ✅ MILESTONE 1: DRIVER FEE STACK (chauffeur services when configured)
+    # Driver's base fee per rental day (24h block / 12h event day)
     driver_daily_fee = Column(Numeric(10, 2), nullable=True)
     # Driver's overtime per hour beyond grace (NULL → no driver OT charged)
     driver_overtime_hourly_fee = Column(Numeric(10, 2), nullable=True)

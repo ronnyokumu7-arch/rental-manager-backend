@@ -177,10 +177,12 @@ async def quote_booking(
             pickup_at=quote.pickup_at,
             return_at=quote.return_at,
             daily_rate=daily_rate,
+            billing_model=config.billing_model if config else None,
             day_hours=config.day_hours if config else None,
             grace_minutes=config.grace_minutes if config else None,
             overtime_hourly_rate=config.overtime_hourly_rate if config else None,
             cap_overtime_at_day_rate=config.overtime_cap_at_day_rate if config else True,
+            rate_extras=config.rate_extras if config else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -276,10 +278,12 @@ async def create_booking(
             pickup_at=pickup_at,
             return_at=scheduled_return_at,
             daily_rate=daily_rate,
+            billing_model=config.billing_model if config else None,
             day_hours=config.day_hours if config else None,
             grace_minutes=config.grace_minutes if config else None,
             overtime_hourly_rate=config.overtime_hourly_rate if config else None,
             cap_overtime_at_day_rate=config.overtime_cap_at_day_rate if config else True,
+            rate_extras=config.rate_extras if config else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -392,10 +396,12 @@ async def update_booking(
                     pickup_at=target_pickup,
                     return_at=target_return,
                     daily_rate=daily_rate,
+                    billing_model=config.billing_model if config else None,
                     day_hours=config.day_hours if config else None,
                     grace_minutes=config.grace_minutes if config else None,
                     overtime_hourly_rate=config.overtime_hourly_rate if config else None,
                     cap_overtime_at_day_rate=config.overtime_cap_at_day_rate if config else True,
+                    rate_extras=config.rate_extras if config else None,
                 )
                 update_data["total_amount"] = quote.total
                 update_data["daily_rate"] = daily_rate
