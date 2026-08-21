@@ -20,7 +20,8 @@ from app.services.catalog import (
     SERVICE_CATALOG, resolve_key, to_dict,
 )
 
-router = APIRouter()
+# ✅ PREFIX lives HERE (main.py only adds /api/v1) — matches every other router
+router = APIRouter(prefix="/services", tags=["services"])
 
 
 def _config_out(cfg) -> dict | None:
