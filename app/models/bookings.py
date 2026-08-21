@@ -42,6 +42,26 @@ class Booking(Base, AuditMixin):
     end_date = Column(DateTime(timezone=True), nullable=False)
     original_end_date = Column(DateTime(timezone=True), nullable=True)  # For tracking extensions
 
+    # ✅ MILESTONE 1: Service type + time-aware scheduling
+    # String (not DB ENUM) → future services ship without ALTER TYPE migrations.
+    service_type = Column(
+        String(30), nullable=False,
+        default="selfdrive", server_default="selfdrive", index=True,
+    )
+
+    # Exact countdown origin: 1 rental day = day_hours from pickup_at (selfdrive: 24h).
+    # Nullable for backward compat — PricingService falls back to start_date/end_date.
+    pickup_at = Column(DateTime(timezone=True), nullable=True)
+    scheduled_return_at = Column(DateTime(timezone=True), nullable=True)
+    # Set when the vehicle is physically returned (late-return reconciliation).
+    actual_return_at = Column(DateTime(timezone=True), nullable=True)
+
+    # ✅ PRICING SNAPSHOT at creation → signed contracts never mutate,
+    # even if the tenant edits their pricing config later.
+    pricing_day_hours = Column(Integer, nullable=True)          # 24 / 12
+    pricing_grace_minutes = Column(Integer, nullable=True)      # 60 / 30
+    pricing_overtime_hourly_rate = Column(Numeric(10, 2), nullable=True)
+
     # Financial Details
     daily_rate = Column(Numeric(10, 2), nullable=True)
     total_amount = Column(Numeric(10, 2), nullable=False)
@@ -69,11 +89,15 @@ class Booking(Base, AuditMixin):
     __table_args__ = (
         # ✅ NEW: document numbers must be unique PER TENANT (not globally)
         UniqueConstraint("tenant_id", "booking_number", name="uq_bookings_tenant_booking_number"),
-
+        
         # Data Integrity Check Constraints
         CheckConstraint("end_date > start_date", name="ck_bookings_valid_date_range"),
         CheckConstraint("total_amount >= 0", name="ck_bookings_total_amount_non_negative"),
         CheckConstraint("daily_rate >= 0", name="ck_bookings_daily_rate_non_negative"),
+                CheckConstraint(
+            "scheduled_return_at IS NULL OR pickup_at IS NULL OR scheduled_return_at > pickup_at",
+            name="ck_bookings_valid_schedule",
+        ),
 
         # 1. Gantt Chart & Vehicle Availability (MOST IMPORTANT)
         # Query: WHERE tenant_id = ? AND start_date <= ? AND end_date >= ?

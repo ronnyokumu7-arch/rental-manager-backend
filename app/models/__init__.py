@@ -17,6 +17,7 @@ from app.models.users import User
 from app.models.vehicles import Vehicle
 from app.models.activity_log import ActivityLog
 from app.models.role_template import RoleTemplate
+from app.models.pricing import ServicePricingConfig  # noqa: F401
 from app.models.task import Task
 from app.models.payment_gateways import (
     AirtelMoneyConfig,
@@ -53,6 +54,7 @@ __all__ = [
     "PaypalConfig",
     "ClientInvite",
     "ClientInviteStatus",
+    "Pricing",
     "AirtelMoneyConfig",
     "BankAccountConfig",
 ]
