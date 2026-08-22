@@ -28,6 +28,7 @@ from app.routers import (
     clients,
     commission,
     contracts,
+    drivers,           # ✅ MILESTONE 2: Staff drivers CRUD
     files,             # ✅ NEW: Authenticated file-serving router
     financials,
     invoices,
@@ -156,6 +157,7 @@ routers = [
     clients,
     commission,
     vehicles,
+    drivers,           # ✅ MILESTONE 2: Staff drivers CRUD
     bookings,
     subscriptions,
     invoices,

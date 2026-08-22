@@ -1,15 +1,13 @@
 # app/models/drivers.py
 """
-Driver entity (tenant-scoped).
+Driver entity (tenant-scoped) — STAFF DRIVERS first (Milestone 2).
 
-Supports in-house AND contracted drivers, with per-driver rate overrides
-that layer over the tenant's service pricing config:
+A driver record owns compliance (licence, documents), pay configuration,
+and scheduling identity. Staff drivers may later link to a login via
+user_id (parked). Contract & client drivers are parked expansions.
 
-    per-driver rate → tenant service config → derived/none
-
-Compliance fields (dl_number, dl_expiry) enable future licence-expiry alerts.
-delivery_commission feeds vehicle delivery/collection task payouts
-(duty scheduler, Milestone 2.2).
+Pay resolution order (chauffeur services):
+    per-driver fee → tenant service config → derived/none
 """
 import enum
 
@@ -23,8 +21,8 @@ from app.db.database import Base, AuditMixin
 
 
 class DriverEmploymentType(str, enum.Enum):
-    in_house = "in_house"
-    contracted = "contracted"
+    in_house = "in_house"        # ✅ LIVE: staff driver
+    contracted = "contracted"    # 🅿️ PARKED
 
 
 class DriverStatus(str, enum.Enum):
@@ -32,6 +30,12 @@ class DriverStatus(str, enum.Enum):
     on_trip = "on_trip"
     on_leave = "on_leave"
     suspended = "suspended"
+
+
+class DriverPayMode(str, enum.Enum):
+    commission = "commission"         # paid per task / commission
+    fixed_per_job = "fixed_per_job"   # fixed price per job (configurable per task later)
+    payroll = "payroll"               # 🅿️ PARKED (future payroll engine)
 
 
 class Driver(Base, AuditMixin):
@@ -45,12 +49,19 @@ class Driver(Base, AuditMixin):
 
     full_name = Column(String(150), nullable=False)
     phone = Column(String(30), nullable=False)
-    email = Column(String(150), nullable=True)
+    email = Column(String(150), nullable=True)  # optional (field drivers often lack email)
 
-    # ✅ Compliance (future: licence-expiry alerts)
-    id_number = Column(String(50), nullable=True)
-    dl_number = Column(String(50), nullable=True)
+    # ✅ Compliance — required for staff drivers
+    id_number = Column(String(50), nullable=False)
+    dl_number = Column(String(50), nullable=False)
     dl_expiry = Column(Date, nullable=True)
+
+    # ✅ Document photos: storage keys served via the authenticated files/vault
+    # pipeline (never binaries in DB).
+    profile_photo_key = Column(String(255), nullable=True)
+    id_front_key = Column(String(255), nullable=True)
+    id_back_key = Column(String(255), nullable=True)
+    dl_photo_key = Column(String(255), nullable=True)
 
     # ✅ String (not DB ENUM) → new values ship without ALTER TYPE migrations
     employment_type = Column(
@@ -58,6 +69,9 @@ class Driver(Base, AuditMixin):
     )
     status = Column(
         String(20), nullable=False, default=DriverStatus.available, index=True,
+    )
+    pay_mode = Column(
+        String(20), nullable=False, default=DriverPayMode.commission,
     )
 
     # ✅ Per-driver rate overrides (NULL → fall back to tenant service config)
@@ -68,7 +82,7 @@ class Driver(Base, AuditMixin):
     # ✅ Per vehicle delivery/collection task (duty scheduler payouts)
     delivery_commission = Column(Numeric(10, 2), nullable=True)
 
-    # ✅ PARKED: link when driver logins / duty scheduler ship
+    # 🅿️ PARKED: link when staff-driver logins / duty scheduler app ship
     user_id = Column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
     )
@@ -95,5 +109,17 @@ class Driver(Base, AuditMixin):
         CheckConstraint(
             "delivery_commission IS NULL OR delivery_commission >= 0",
             name="ck_driver_delivery_commission_non_negative",
+        ),
+        CheckConstraint(
+            "pay_mode IN ('commission', 'fixed_per_job', 'payroll')",
+            name="ck_driver_pay_mode_valid",
+        ),
+        CheckConstraint(
+            "employment_type IN ('in_house', 'contracted')",
+            name="ck_driver_employment_type_valid",
+        ),
+        CheckConstraint(
+            "status IN ('available', 'on_trip', 'on_leave', 'suspended')",
+            name="ck_driver_status_valid",
         ),
     )

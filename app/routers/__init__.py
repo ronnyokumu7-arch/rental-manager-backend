@@ -5,6 +5,7 @@ from . import auth
 from . import bookings
 from . import clients
 from . import contracts
+from . import drivers  # ✅ NEW: Staff drivers CRUD (Milestone 2)
 from . import invoices
 from . import payments
 from . import reports
@@ -26,6 +27,7 @@ __all__ = [
     "bookings",
     "clients",
     "contracts",
+    "drivers",  # ✅ NEW: Milestone 2
     "invoices",
     "payments",
     "reports",
