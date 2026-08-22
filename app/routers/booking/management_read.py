@@ -50,7 +50,8 @@ async def list_bookings(
 
     stmt = select(Booking).options(
         selectinload(Booking.client),
-        selectinload(Booking.vehicle)
+        selectinload(Booking.vehicle),
+        selectinload(Booking.driver)  # ✅ MILESTONE 2: eager-load driver (avoids async lazy-load)
     ).where(Booking.is_archived == False)
     if scope.tenant_id is not None:
         stmt = stmt.where(Booking.tenant_id == scope.tenant_id)
@@ -90,7 +91,8 @@ async def list_archived_bookings(
 
     stmt = select(Booking).options(
         selectinload(Booking.client),
-        selectinload(Booking.vehicle)
+        selectinload(Booking.vehicle),
+        selectinload(Booking.driver)  # ✅ MILESTONE 2
     ).where(Booking.is_archived == True)
     if scope.tenant_id is not None:
         stmt = stmt.where(Booking.tenant_id == scope.tenant_id)
@@ -116,7 +118,8 @@ async def get_booking(
     stmt = select(Booking).options(
         selectinload(Booking.client),
         selectinload(Booking.vehicle),
-        selectinload(Booking.invoices)
+        selectinload(Booking.invoices),
+        selectinload(Booking.driver)  # ✅ MILESTONE 2: powers DriverProfileWidget
     ).where(Booking.id == booking.id)
     result = await db.execute(stmt)
     booking = result.scalars().unique().first()

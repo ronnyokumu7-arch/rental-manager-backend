@@ -172,7 +172,8 @@ async def create_booking(
 
     stmt = select(Booking).options(
         selectinload(Booking.client),
-        selectinload(Booking.vehicle)
+        selectinload(Booking.vehicle),
+        selectinload(Booking.driver)  # ✅ MILESTONE 2: eager-load driver for BookingOut
     ).where(Booking.id == db_booking.id)
 
     result = await db.execute(stmt)

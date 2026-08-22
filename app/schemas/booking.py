@@ -7,6 +7,7 @@ from app.models.bookings import BookingStatus
 # 💡 Import nested schemas so Pydantic serializes joined relations
 from app.schemas.client import ClientOut
 from app.schemas.vehicle import VehicleOut
+from app.schemas.driver import DriverOut  # ✅ MILESTONE 2: nested driver
 
 
 class BookingBase(BaseModel):
@@ -103,8 +104,7 @@ class BookingOut(BaseModel):
     pricing_grace_minutes: Optional[int] = None
     pricing_overtime_hourly_rate: Optional[Decimal] = None
 
-    # ✅ MILESTONE 2: Staff driver link (scalar only — no nested object,
-    # avoids async lazy-load on list endpoints)
+    # ✅ MILESTONE 2: Staff driver link
     driver_id: Optional[int] = None
 
     # 🅿️ PARKED (client drivers): read-only snapshots for contracts
@@ -115,6 +115,7 @@ class BookingOut(BaseModel):
     # 💡 NESTED RELATIONSHIPS:
     client: Optional[ClientOut] = None
     vehicle: Optional[VehicleOut] = None
+    driver: Optional[DriverOut] = None  # ✅ MILESTONE 2: nested driver (full detail)
 
     model_config = {"from_attributes": True}
 
