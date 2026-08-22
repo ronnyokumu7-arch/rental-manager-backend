@@ -32,6 +32,14 @@ class Booking(Base, AuditMixin):
     client_id = Column(Integer, ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True)
     vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="CASCADE"), nullable=False, index=True)
 
+    # ✅ MILESTONE 2: Driver assignment (nullable — assigned at confirmation or pickup)
+    driver_id = Column(
+        Integer, ForeignKey("drivers.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    client_provided_driver = Column(Boolean, nullable=False, default=False)
+    client_driver_name = Column(String(150), nullable=True)
+    client_driver_phone = Column(String(30), nullable=True)
+
     # Location Details (with bounded lengths)
     destination = Column(String(255), nullable=True)
     pickup_location = Column(String(255), nullable=True)
@@ -79,6 +87,7 @@ class Booking(Base, AuditMixin):
     tenant = relationship("Tenant", back_populates="bookings", foreign_keys=[tenant_id])
     client = relationship("Client", back_populates="bookings", foreign_keys=[client_id])
     vehicle = relationship("Vehicle", back_populates="bookings", foreign_keys=[vehicle_id])
+    driver = relationship("Driver", back_populates="bookings", foreign_keys=[driver_id])
 
     # ✅ CRITICAL FIX: Removed 'delete-orphan' from invoices and contract.
     # Historical financial records must be preserved for audits even if a booking is archived/deleted.
@@ -94,7 +103,7 @@ class Booking(Base, AuditMixin):
         CheckConstraint("end_date > start_date", name="ck_bookings_valid_date_range"),
         CheckConstraint("total_amount >= 0", name="ck_bookings_total_amount_non_negative"),
         CheckConstraint("daily_rate >= 0", name="ck_bookings_daily_rate_non_negative"),
-                CheckConstraint(
+        CheckConstraint(
             "scheduled_return_at IS NULL OR pickup_at IS NULL OR scheduled_return_at > pickup_at",
             name="ck_bookings_valid_schedule",
         ),
@@ -118,4 +127,8 @@ class Booking(Base, AuditMixin):
         # 5. Vehicle Utilization (Agency Health endpoint)
         # Query: WHERE tenant_id = ? AND vehicle_id = ? AND start_date <= ? AND end_date >= ?
         Index("ix_bookings_vehicle_utilization", "tenant_id", "vehicle_id", "start_date", "end_date"),
+
+        # 6. Driver Availability (Duty Scheduler)
+        # Query: WHERE tenant_id = ? AND driver_id = ? AND start_date <= ? AND end_date >= ?
+        Index("ix_bookings_driver_availability", "tenant_id", "driver_id", "start_date", "end_date"),
     )

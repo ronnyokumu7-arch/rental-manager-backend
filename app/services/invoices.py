@@ -8,6 +8,7 @@ inclusive "+1 day" formula is removed. custom_rate overrides re-price the
 booking through the engine (24h blocks + grace + overtime + driver stack),
 so booking page, invoice, and contract can never disagree again.
 """
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
