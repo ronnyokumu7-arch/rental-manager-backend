@@ -16,27 +16,25 @@ from app.core.config import get_settings
 from app.core.exceptions import http_exception_handler
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
-# 💡 Imported health from app.endpoints as requested
-from app.endpoints import health
-
 from app.routers import (
     activity_logs,
     admin,
     auth,
     bookings,
-    client_invites,    # ✅ NEW: Client invite system (token-based onboarding)
+    client_invites,
     clients,
     commission,
     contracts,
-    drivers,           # ✅ MILESTONE 2: Staff drivers CRUD
-    files,             # ✅ NEW: Authenticated file-serving router
+    drivers,
+    files,
     financials,
+    health,             # ✅ NEW: System health endpoint (lightweight, no auth)
     invoices,
     payment_verifications,
     payments,
     reports,
     role_templates,
-    services,          # ✅ MILESTONE 1.1: Service catalog export
+    services,
     subscriptions,
     system,
     tasks,
@@ -49,7 +47,7 @@ from app.routers import (
     vault,
 )
 
-# ✅ Initialize settings early so it can be used in the lifespan function
+# ✅ Initialize settings early
 settings = get_settings()
 
 @asynccontextmanager
@@ -68,7 +66,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Redis initialization warning: {e}")
 
-    # ✅ 2. Pre-warm the headless browser for instant PDF generation
+    # ✅ 2. Pre-warm the headless browser
     try:
         from app.services.browser_pool import browser_pool
         await browser_pool.get_browser()
@@ -79,16 +77,13 @@ async def lifespan(app: FastAPI):
     # ✅ 3. Start background scheduler
     start_scheduler()
     
-    # Yield control to the application
     yield
     
     # ─── SHUTDOWN PHASE ─────────────────────────────────────────────────────
     print("🔄 Shutting down application gracefully...")
     
-    # Stop scheduler
     stop_scheduler()
     
-    # Close browser pool
     try:
         from app.services.browser_pool import browser_pool
         await browser_pool.close()
@@ -96,7 +91,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Browser shutdown warning: {e}")
         
-    # Close Redis connection to prevent Docker/Render connection leaks
     if redis_client:
         try:
             await redis_client.close()
@@ -111,17 +105,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 2. Register the Rate Limiter globally
+# Register Rate Limiter globally
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ✅ CORS Middleware
-# ⚠️ IMPORTANT: Ensure settings.cors_origins returns a LIST of strings, 
-# not a comma-separated string. FastAPI's CORSMiddleware requires a list.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app", # ✅ NEW: Allows ANY Vercel deployment (preview or prod)
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -129,35 +121,25 @@ app.add_middleware(
 
 app.add_exception_handler(HTTPException, http_exception_handler)
 
-@app.get("/health", tags=["system"])
-def health_check():
-    # Render's health check only needs a 200 OK response.
-    # Keep this lightweight to avoid blocking the event loop.
-    return {
-        "status": "ok",
-        "environment": settings.environment,
-        "db_status": "connected",
-        "cache_status": "connected",
-        "rate_limit_status": "active",
-    }
-
+# ✅ Root endpoint (keep simple)
 @app.get("/")
 def root():
     return {
         "message": "Rental Garage API is running",
         "docs": "/docs",
-        "health": "/health"
+        "health": "/api/v1/health"
     }
 
+# ✅ Register all API routers
 routers = [
     auth,
     tenants,
     users,
-    client_invites,    # ✅ NEW: Client invite system
+    client_invites,
     clients,
     commission,
     vehicles,
-    drivers,           # ✅ MILESTONE 2: Staff drivers CRUD
+    drivers,
     bookings,
     subscriptions,
     invoices,
@@ -166,7 +148,7 @@ routers = [
     tenant_profile,
     tenant_policies,
     role_templates,
-    services,          # ✅ MILESTONE 1.1: Service catalog export (tenant-scoped)
+    services,
     contracts,
     financials,
     admin,
@@ -177,10 +159,8 @@ routers = [
     user_preferences,
     vault,
     files,
+    health,  # ✅ NEW: Register system health router
 ]
 
-# ✅ CORRECT: Extracts the .router attribute from each module
 for router in routers:
     app.include_router(router.router, prefix="/api/v1")
-
-app.include_router(health.router, prefix="/api/v1")

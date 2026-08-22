@@ -88,14 +88,23 @@ async def create_booking(
     if vehicle.status != VehicleStatus.available or vehicle.is_archived:
         raise HTTPException(status_code=409, detail="Vehicle is not available.")
 
-    # ✅ MILESTONE 2: Validate Driver (tenant-scoped, eligibility-checked)
-    if booking.driver_id is not None:
-        await validate_driver_assignment(db, current_user.tenant_id, booking.driver_id)
-
     # ✅ MILESTONE 1: Resolve exact schedule (times → dates fallback)
     service_type = getattr(booking, "service_type", None) or SELFDRIVE
     pickup_at = getattr(booking, "pickup_at", None) or booking.start_date
     scheduled_return_at = getattr(booking, "scheduled_return_at", None) or booking.end_date
+
+    # ✅ MILESTONE 2: Service-driver compatibility guard
+    # Self-drive = client drives; staff driver assignment is operationally wrong.
+    if service_type == SELFDRIVE and booking.driver_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Self-drive bookings cannot have an assigned driver. The client drives.",
+        )
+
+    # ✅ MILESTONE 2: Validate Driver (tenant-scoped, eligibility-checked)
+    # Only for chauffeur/driver-requiring services
+    if booking.driver_id is not None:
+        await validate_driver_assignment(db, current_user.tenant_id, booking.driver_id)
 
     # ✅ DOUBLE BOOKING PREVENTION (time-exact; coalesce covers pre-migration rows)
     overlap_stmt = select(Booking).where(

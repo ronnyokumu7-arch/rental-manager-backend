@@ -36,6 +36,16 @@ async def update_booking(
     booking = await get_authorized_booking_async(booking_id, current_user, db)
     update_data = booking_update.model_dump(exclude_unset=True)
 
+    # ✅ MILESTONE 2: Service-driver compatibility guard (covers both create-time and reassign)
+    target_service = update_data.get("service_type", booking.service_type) or SELFDRIVE
+    target_driver_id = update_data.get("driver_id", booking.driver_id)
+
+    if target_service == SELFDRIVE and target_driver_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Self-drive bookings cannot have an assigned driver. The client drives.",
+        )
+
     # ✅ MILESTONE 2: Validate driver on reassign; allow null to unassign
     if "driver_id" in update_data and update_data["driver_id"] is not None:
         await validate_driver_assignment(
@@ -43,7 +53,6 @@ async def update_booking(
         )
 
     # ✅ MILESTONE 1: effective post-update schedule (times → dates fallback)
-    target_service = update_data.get("service_type", booking.service_type) or SELFDRIVE
     target_pickup = (
         update_data.get("pickup_at")
         or update_data.get("start_date")
