@@ -26,6 +26,9 @@ class BookingBase(BaseModel):
     pickup_at: Optional[datetime] = None
     scheduled_return_at: Optional[datetime] = None
 
+    # ✅ MILESTONE 2: Staff driver assignment (validated tenant-side in router)
+    driver_id: Optional[int] = None
+
     @model_validator(mode="after")
     def check_dates(self):
         if self.end_date <= self.start_date:
@@ -58,6 +61,9 @@ class BookingUpdate(BaseModel):
     service_type: Optional[str] = None
     pickup_at: Optional[datetime] = None
     scheduled_return_at: Optional[datetime] = None
+
+    # ✅ MILESTONE 2: Staff driver assignment / reassignment / unassignment (null clears)
+    driver_id: Optional[int] = None
 
     @model_validator(mode="after")
     def check_dates(self):
@@ -96,6 +102,15 @@ class BookingOut(BaseModel):
     pricing_day_hours: Optional[int] = None
     pricing_grace_minutes: Optional[int] = None
     pricing_overtime_hourly_rate: Optional[Decimal] = None
+
+    # ✅ MILESTONE 2: Staff driver link (scalar only — no nested object,
+    # avoids async lazy-load on list endpoints)
+    driver_id: Optional[int] = None
+
+    # 🅿️ PARKED (client drivers): read-only snapshots for contracts
+    client_provided_driver: bool = False
+    client_driver_name: Optional[str] = None
+    client_driver_phone: Optional[str] = None
 
     # 💡 NESTED RELATIONSHIPS:
     client: Optional[ClientOut] = None
