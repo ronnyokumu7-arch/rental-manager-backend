@@ -17,6 +17,7 @@ from sqlalchemy import (
     Boolean, CheckConstraint, Column, Date, DateTime, ForeignKey,
     Integer, Numeric, String,
 )
+from sqlalchemy.orm import relationship
 
 from app.db.database import Base, AuditMixin
 
@@ -74,6 +75,9 @@ class Driver(Base, AuditMixin):
 
     is_archived = Column(Boolean, nullable=False, default=False)
     archived_at = Column(DateTime(timezone=True), nullable=True)
+
+    # ✅ MILESTONE 2: Back-reference to bookings (required for back_populates)
+    bookings = relationship("Booking", back_populates="driver")
 
     __table_args__ = (
         CheckConstraint(
