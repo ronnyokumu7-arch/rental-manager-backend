@@ -130,6 +130,10 @@
             <div class="info-grid">
                 <div><span class="info-label">Vehicle:</span> <span class="info-value">{{ vehicle.make }} {{ vehicle.model }} ({{ vehicle.plate_number }})</span></div>
                 <div><span class="info-label">Rental Period:</span> <span class="info-value">{{ booking.start_date.strftime('%d, %b') }} to {{ booking.end_date.strftime('%d, %b, %Y') }}</span></div>
+                <!-- ✅ MILESTONE 2: Assigned driver (only when present) -->
+                {% if driver %}
+                <div class="col-span-2"><span class="info-label">Assigned Driver:</span> <span class="info-value">{{ driver.full_name }} ({{ driver.phone }}) — DL {{ driver.dl_number or '—' }}</span></div>
+                {% endif %}
             </div>
         </section>
         {% endif %}
@@ -153,6 +157,37 @@
                         <td class="text-right">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(daily_rate) }}</td>
                         <td class="text-right">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(amount_due) }}</td>
                     </tr>
+                    
+                    <!-- ✅ MILESTONE 2: Driver fee line items (only when driver assigned + fees > 0) -->
+                    {% if driver and driver_fees.driver_total > 0 %}
+                        {% if driver_fees.driver_daily > 0 %}
+                        <tr>
+                            <td>Driver Daily Fee</td>
+                            <td class="text-right">—</td>
+                            <td class="text-right">—</td>
+                            <td class="text-right">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(driver_fees.driver_daily|float) }}</td>
+                        </tr>
+                        {% endif %}
+                        
+                        {% if driver_fees.driver_overtime > 0 %}
+                        <tr>
+                            <td>Driver Overtime</td>
+                            <td class="text-right">—</td>
+                            <td class="text-right">—</td>
+                            <td class="text-right">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(driver_fees.driver_overtime|float) }}</td>
+                        </tr>
+                        {% endif %}
+                        
+                        {% if driver_fees.driver_accommodation > 0 %}
+                        <tr>
+                            <td>Driver Accommodation</td>
+                            <td class="text-right">—</td>
+                            <td class="text-right">—</td>
+                            <td class="text-right">{{ invoice.currency_code or 'KES' }} {{ '%.2f'|format(driver_fees.driver_accommodation|float) }}</td>
+                        </tr>
+                        {% endif %}
+                    {% endif %}
+                    
                     {% if invoice.notes %}
                     <tr>
                         <td colspan="4" style="font-style: italic; color: #64748b;">Note: {{ invoice.notes }}</td>

@@ -28,6 +28,7 @@ async def _build_public_view(db: AsyncSession, invoice_id: int) -> PublicInvoice
     stmt = select(Invoice).options(
         selectinload(Invoice.booking).selectinload(Booking.client),
         selectinload(Invoice.booking).selectinload(Booking.vehicle),
+        selectinload(Invoice.booking).selectinload(Booking.driver),  # ✅ MILESTONE 2
         selectinload(Invoice.tenant).selectinload(Tenant.profile)
     ).where(Invoice.id == invoice_id)
 
@@ -37,6 +38,7 @@ async def _build_public_view(db: AsyncSession, invoice_id: int) -> PublicInvoice
     booking = invoice.booking
     client = booking.client if booking else None
     vehicle = booking.vehicle if booking else None
+    driver = booking.driver if booking else None  # ✅ MILESTONE 2
     tenant = invoice.tenant
     profile = tenant.profile if tenant else None
 
@@ -79,7 +81,7 @@ async def _build_public_view(db: AsyncSession, invoice_id: int) -> PublicInvoice
             
             # Bank fields (aligned with new model columns)
             bank_name=bank_config.bank_name if bank_config else None,
-            bank_account_number=bank_config.account_number if bank_config else None,  # ✅ RENAMED
+            bank_account_number=bank_config.account_number if bank_config else None,
             bank_account_name=bank_config.account_name if bank_config else None,
             branch_code=bank_config.branch_code if bank_config else None,
             swift_code=bank_config.swift_code if bank_config else None,
@@ -113,6 +115,10 @@ async def _build_public_view(db: AsyncSession, invoice_id: int) -> PublicInvoice
         vehicle_plate=vehicle.plate_number if vehicle else None,
         booking_start_date=str(booking.start_date) if booking else None,
         booking_end_date=str(booking.end_date) if booking else None,
+        # ✅ MILESTONE 2: Driver fields (null for self-drive)
+        driver_name=driver.full_name if driver else None,
+        driver_phone=driver.phone if driver else None,
+        driver_dl_number=driver.dl_number if driver else None,
         payment_details=payment_details,
     )
 

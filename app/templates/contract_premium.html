@@ -59,7 +59,7 @@
 
         /* ═══════════════════════════════════════════════════════════
            TYPOGRAPHY & LAYOUT UTILITIES
-           ══════════════════════════════════════════════════════════ */
+           ═══════════════════════════════════════════════════════════ */
         .section-title {
             font-size: 10pt;
             font-weight: 700;
@@ -224,7 +224,7 @@
 
         /* ══════════════════════════════════════════════════════════
            TABLES & FINANCIALS
-           ═══════════════════════════════════════════════════════════ */
+           ══════════════════════════════════════════════════════════ */
         .charges-table {
             width: 100%;
             border-collapse: collapse;
@@ -259,7 +259,7 @@
 
         /* ═══════════════════════════════════════════════════════════
            SIGNATURE & POLICY BOXES
-           ══════════════════════════════════════════════════════════ */
+           ═══════════════════════════════════════════════════════════ */
 .signature-box {
     margin-top: 10pt;
     padding: 8pt;
@@ -535,6 +535,21 @@
 </div>
         </section>
 
+        <!-- ✅ MILESTONE 2: DRIVER ASSIGNMENT (only when driver assigned) -->
+        {% if driver %}
+        <section class="contract-section">
+            <h2 class="section-title">Authorized Driver Assignment</h2>
+            <div class="info-grid">
+                <div><span class="info-label">Driver Name:</span> <span class="info-value">{{ driver.full_name }}</span></div>
+                <div><span class="info-label">Driver Phone:</span> <span class="info-value">{{ driver.phone }}</span></div>
+                <div><span class="info-label">ID Number:</span> <span class="info-value">{{ driver.id_number }}</span></div>
+                <div><span class="info-label">DL Number:</span> <span class="info-value">{{ driver.dl_number }}</span></div>
+                <div><span class="info-label">DL Expiry Date:</span> <span class="info-value">{{ driver.dl_expiry.strftime('%d, %b, %Y') if driver.dl_expiry else '—' }}</span></div>
+                <div><span class="info-label">Driver Status:</span> <span class="info-value">{{ driver.status|replace('_', ' ')|title }}</span></div>
+            </div>
+        </section>
+        {% endif %}
+
         <!-- [COMPONENT: FINANCIAL_SCHEDULE] -->
         <section class="contract-section">
             <h2 class="section-title">3. Rental Schedule & Itemized Financial Schedule</h2>
@@ -560,6 +575,34 @@
                         <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(daily_rate|float) }}</td>
                         <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(booking.total_amount|float) if booking and booking.total_amount else '0.00' }}</td>
                     </tr>
+                    
+                    <!-- ✅ MILESTONE 2: Driver fee line items (only when driver assigned + service requires driver) -->
+                    {% if driver and driver_fees.driver_total > 0 %}
+                        {% if driver_fees.driver_daily > 0 %}
+                        <tr>
+                            <td>Driver Daily Fee</td>
+                            <td class="text-right">—</td>
+                            <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(driver_fees.driver_daily|float) }}</td>
+                        </tr>
+                        {% endif %}
+                        
+                        {% if driver_fees.driver_overtime > 0 %}
+                        <tr>
+                            <td>Driver Overtime</td>
+                            <td class="text-right">—</td>
+                            <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(driver_fees.driver_overtime|float) }}</td>
+                        </tr>
+                        {% endif %}
+                        
+                        {% if driver_fees.driver_accommodation > 0 %}
+                        <tr>
+                            <td>Driver Accommodation</td>
+                            <td class="text-right">—</td>
+                            <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(driver_fees.driver_accommodation|float) }}</td>
+                        </tr>
+                        {% endif %}
+                    {% endif %}
+                    
                     <tr class="total-row">
                         <td colspan="2" class="text-right" style="border-top: 2pt solid #e2e8f0;">Total Contract Value Due</td>
                         <td class="text-right" style="border-top: 2pt solid #e2e8f0;">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(booking.total_amount|float) if booking and booking.total_amount else '0.00' }}</td>

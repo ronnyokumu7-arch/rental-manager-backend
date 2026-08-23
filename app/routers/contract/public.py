@@ -29,13 +29,11 @@ async def view_contract_public(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
-    # Add TenantProfile to imports at the top of the file:
-    # from app.models.tenant_profile import TenantProfile
-    
     # ✅ Optimized: Fetch all related data in a single query
     stmt = select(Contract).options(
         selectinload(Contract.booking).selectinload(Booking.client),
         selectinload(Contract.booking).selectinload(Booking.vehicle),
+        selectinload(Contract.booking).selectinload(Booking.driver),  # ✅ MILESTONE 2
         selectinload(Contract.booking).selectinload(Booking.tenant)
     ).where(Contract.share_token == token)
     
@@ -49,6 +47,7 @@ async def view_contract_public(
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="This contract link has expired.")
 
     booking = contract.booking
+    driver = booking.driver if booking else None  # ✅ MILESTONE 2: may be None for self-drive
 
     # ✅ NEW: Fetch the OWNING tenant's profile (branding for the public page).
     # This resolves from the contract itself — NOT from any logged-in session.
@@ -79,6 +78,10 @@ async def view_contract_public(
         status=contract.status,
         signed_by_client=contract.signed_by_client,
         created_at=contract.created_at,
+        # ✅ MILESTONE 2: Driver fields (null for self-drive bookings)
+        driver_name=driver.full_name if driver else None,
+        driver_phone=driver.phone if driver else None,
+        driver_dl_number=driver.dl_number if driver else None,
     )
 
 

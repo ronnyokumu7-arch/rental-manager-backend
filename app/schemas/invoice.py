@@ -170,6 +170,11 @@ class PublicInvoiceView(BaseModel):
     vehicle_name: Optional[str] = None
     vehicle_plate: Optional[str] = None
     
+    # ✅ MILESTONE 2: Assigned driver (null for self-drive bookings)
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    driver_dl_number: Optional[str] = None
+    
     # Booking reference
     booking_number: Optional[str] = None
     booking_start_date: Optional[str] = None

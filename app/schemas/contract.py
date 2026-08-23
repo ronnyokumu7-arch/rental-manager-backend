@@ -1,3 +1,5 @@
+# app/schemas/contract.py
+
 import base64
 from datetime import datetime
 from typing import Any, Optional
@@ -85,6 +87,11 @@ class PublicContractView(BaseModel):
     status: ContractStatus
     signed_by_client: bool
     created_at: datetime
+    
+    # ✅ MILESTONE 2: Assigned driver (null for self-drive bookings)
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    driver_dl_number: Optional[str] = None
 
 class ContractSignPayload(BaseModel):
     """
