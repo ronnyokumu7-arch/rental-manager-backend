@@ -1,5 +1,6 @@
 # app/routers/booking/management_create.py
 """CREATE — validation, double-booking prevention, server-side pricing, tasks."""
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -92,6 +93,16 @@ async def create_booking(
     service_type = getattr(booking, "service_type", None) or SELFDRIVE
     pickup_at = getattr(booking, "pickup_at", None) or booking.start_date
     scheduled_return_at = getattr(booking, "scheduled_return_at", None) or booking.end_date
+
+    # ✅ PAST-TIME GUARD: new bookings cannot be scheduled in the past.
+    # 2-minute buffer accounts for clock skew between client and server.
+    now_naive = datetime.utcnow()
+    pickup_naive = pickup_at.replace(tzinfo=None) if pickup_at.tzinfo else pickup_at
+    if pickup_naive < (now_naive - timedelta(minutes=2)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Pickup time cannot be in the past. Please select a future date and time.",
+        )
 
     # ✅ MILESTONE 2: Service-driver compatibility guard
     if service_type == SELFDRIVE and booking.driver_id is not None:
