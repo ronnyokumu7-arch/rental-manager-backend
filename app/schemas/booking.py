@@ -32,8 +32,12 @@ class BookingBase(BaseModel):
 
     @model_validator(mode="after")
     def check_dates(self):
-        if self.end_date <= self.start_date:
-            raise ValueError("end_date must be after start_date")
+        # ✅ MILESTONE 2 LOCKDOWN: same-day rentals are legal (chauffeur day trips,
+        # weddings, airport runs). Exact-time ordering is enforced by the pricing
+        # engine (return_at must be strictly after pickup_at); here we only reject
+        # a return BEFORE the pickup day.
+        if self.end_date < self.start_date:
+            raise ValueError("end_date cannot be before start_date")
         return self
 
 
@@ -70,8 +74,9 @@ class BookingUpdate(BaseModel):
     def check_dates(self):
         """Validate date range if both dates are provided."""
         if self.start_date and self.end_date:
-            if self.end_date <= self.start_date:
-                raise ValueError("end_date must be after start_date")
+            # ✅ MILESTONE 2 LOCKDOWN: allow same-day updates
+            if self.end_date < self.start_date:
+                raise ValueError("end_date cannot be before start_date")
         return self
 
 
