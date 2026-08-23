@@ -126,8 +126,9 @@ class BookingQuote(BaseModel):
     service_type: str = "selfdrive"
     pickup_at: datetime
     return_at: datetime
-    # ✅ MILESTONE 1.1: Future-proof for distance_time, fixed_route, route_stops
-    # (ignored until those services go live)
+    # ✅ MILESTONE 2: Optional driver for per-driver fee resolution
+    driver_id: Optional[int] = None
+    # ✅ Future-proof for distance_time, fixed_route, route_stops
     distance_km: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     route_key: Optional[str] = Field(default=None, max_length=100)
     stops: Optional[int] = Field(default=None, ge=0)

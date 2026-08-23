@@ -19,7 +19,7 @@ from app.schemas.booking import BookingCreate, BookingOut
 from app.services.booking_tasks import BookingTaskService
 from app.services.cache import invalidate_booking_cache
 from app.services.number_generator import generate_booking_number
-from app.services.pricing import SELFDRIVE, calculate, get_pricing_config, snapshot_fields
+from app.services.pricing import SELFDRIVE, calculate, get_pricing_config, resolve_driver_fees, snapshot_fields
 
 router = APIRouter()
 
@@ -94,7 +94,6 @@ async def create_booking(
     scheduled_return_at = getattr(booking, "scheduled_return_at", None) or booking.end_date
 
     # ✅ MILESTONE 2: Service-driver compatibility guard
-    # Self-drive = client drives; staff driver assignment is operationally wrong.
     if service_type == SELFDRIVE and booking.driver_id is not None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -102,9 +101,10 @@ async def create_booking(
         )
 
     # ✅ MILESTONE 2: Validate Driver (tenant-scoped, eligibility-checked)
-    # Only for chauffeur/driver-requiring services
+    # Captures the driver object for fee resolution (zero extra queries later)
+    driver = None
     if booking.driver_id is not None:
-        await validate_driver_assignment(db, current_user.tenant_id, booking.driver_id)
+        driver = await validate_driver_assignment(db, current_user.tenant_id, booking.driver_id)
 
     # ✅ DOUBLE BOOKING PREVENTION (time-exact; coalesce covers pre-migration rows)
     overlap_stmt = select(Booking).where(
@@ -130,6 +130,10 @@ async def create_booking(
         raise HTTPException(status_code=400, detail="Vehicle has no daily rate configured.")
 
     config = await get_pricing_config(db, current_user.tenant_id, service_type)
+    
+    # ✅ MILESTONE 2: Resolve driver fees (per-driver → config → None)
+    driver_fees = resolve_driver_fees(driver, config)
+    
     try:
         quote = calculate(
             service_type=service_type,
@@ -141,6 +145,9 @@ async def create_booking(
             grace_minutes=config.grace_minutes if config else None,
             overtime_hourly_rate=config.overtime_hourly_rate if config else None,
             cap_overtime_at_day_rate=config.overtime_cap_at_day_rate if config else True,
+            driver_daily_fee=driver_fees["driver_daily_fee"],
+            driver_overtime_hourly_fee=driver_fees["driver_overtime_hourly_fee"],
+            driver_night_accommodation_fee=driver_fees["driver_night_accommodation_fee"],
             rate_extras=config.rate_extras if config else None,
         )
     except ValueError as e:
@@ -150,7 +157,6 @@ async def create_booking(
     new_booking_number = await generate_booking_number(db, current_user.tenant_id)
 
     # 4. Create Booking (with pricing snapshot — contracts never mutate)
-    #    driver_id flows in via model_dump() — validated above.
     payload = booking.model_dump()
     payload.update({
         "service_type": service_type,
@@ -182,7 +188,7 @@ async def create_booking(
     stmt = select(Booking).options(
         selectinload(Booking.client),
         selectinload(Booking.vehicle),
-        selectinload(Booking.driver)  # ✅ MILESTONE 2: eager-load driver for BookingOut
+        selectinload(Booking.driver)
     ).where(Booking.id == db_booking.id)
 
     result = await db.execute(stmt)

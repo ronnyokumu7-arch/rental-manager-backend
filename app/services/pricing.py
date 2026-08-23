@@ -92,6 +92,37 @@ class PricingResult:
     lines: List[PricingLine] = field(default_factory=list)
 
 
+# ✅ MILESTONE 2: Per-driver fee resolution
+# Priority: per-driver override → tenant service config → None
+def resolve_driver_fees(
+    driver: Optional[object],  # Driver model instance or None
+    config: Optional[ServicePricingConfig],
+) -> dict:
+    """
+    Resolve driver fees with priority: driver override → tenant config → None.
+    
+    Args:
+        driver: Driver model instance (has daily_fee, overtime_hourly_fee, night_accommodation_fee)
+        config: ServicePricingConfig (tenant-level defaults)
+    
+    Returns:
+        Dict with keys: driver_daily_fee, driver_overtime_hourly_fee, driver_night_accommodation_fee
+    """
+    if driver:
+        return {
+            "driver_daily_fee": driver.daily_fee if driver.daily_fee else (config.driver_daily_fee if config else None),
+            "driver_overtime_hourly_fee": driver.overtime_hourly_fee if driver.overtime_hourly_fee else (config.driver_overtime_hourly_fee if config else None),
+            "driver_night_accommodation_fee": driver.night_accommodation_fee if driver.night_accommodation_fee else (config.driver_night_accommodation_fee if config else None),
+        }
+    else:
+        # No driver assigned — use tenant config defaults (or None)
+        return {
+            "driver_daily_fee": config.driver_daily_fee if config else None,
+            "driver_overtime_hourly_fee": config.driver_overtime_hourly_fee if config else None,
+            "driver_night_accommodation_fee": config.driver_night_accommodation_fee if config else None,
+        }
+
+
 def calculate(
     *,
     service_type: str,
@@ -345,6 +376,8 @@ async def price_booking(
     """
     Price a booking. Priority: booking snapshot → tenant config → catalog defaults.
     Falls back to start_date/end_date when pickup_at/scheduled_return_at are NULL.
+    
+    ✅ MILESTONE 2: Uses resolve_driver_fees() to prioritize per-driver overrides.
     """
     service_type = getattr(booking, "service_type", None) or SELFDRIVE
     pickup_at = booking.pickup_at or booking.start_date
@@ -352,6 +385,10 @@ async def price_booking(
 
     config = await get_pricing_config(db, booking.tenant_id, service_type)
     snap = snapshot_fields(config, service_type)
+    
+    # ✅ MILESTONE 2: Resolve driver fees (per-driver → config → None)
+    driver = getattr(booking, "driver", None)
+    driver_fees = resolve_driver_fees(driver, config)
 
     return calculate(
         service_type=service_type,
@@ -364,9 +401,9 @@ async def price_booking(
         overtime_hourly_rate=booking.pricing_overtime_hourly_rate
         or snap["pricing_overtime_hourly_rate"],
         cap_overtime_at_day_rate=config.overtime_cap_at_day_rate if config else True,
-        driver_daily_fee=config.driver_daily_fee if config else None,
-        driver_overtime_hourly_fee=config.driver_overtime_hourly_fee if config else None,
-        driver_night_accommodation_fee=config.driver_night_accommodation_fee if config else None,
+        driver_daily_fee=driver_fees["driver_daily_fee"],
+        driver_overtime_hourly_fee=driver_fees["driver_overtime_hourly_fee"],
+        driver_night_accommodation_fee=driver_fees["driver_night_accommodation_fee"],
         rate_extras=config.rate_extras if config else None,
         distance_km=distance_km,
         route_key=route_key,

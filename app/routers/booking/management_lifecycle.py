@@ -12,13 +12,13 @@ from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.bookings import Booking, BookingStatus
+from app.models.drivers import Driver
 from app.models.users import User
 from app.models.vehicles import Vehicle
 from app.schemas.booking import BookingOut, BookingUpdate
 from app.services.cache import invalidate_booking_cache
-from app.services.pricing import SELFDRIVE, calculate, get_pricing_config, snapshot_fields
+from app.services.pricing import SELFDRIVE, calculate, get_pricing_config, resolve_driver_fees, snapshot_fields
 from ._helpers import get_authorized_booking_async
-# ✅ MILESTONE 2: shared tenant-scoped driver validator (defined in create)
 from .management_create import validate_driver_assignment
 
 router = APIRouter()
@@ -47,10 +47,15 @@ async def update_booking(
         )
 
     # ✅ MILESTONE 2: Validate driver on reassign; allow null to unassign
+    # Captures the driver object for fee resolution below
+    target_driver = booking.driver  # already eager-loaded by helper
     if "driver_id" in update_data and update_data["driver_id"] is not None:
-        await validate_driver_assignment(
+        target_driver = await validate_driver_assignment(
             db, current_user.tenant_id, update_data["driver_id"]
         )
+    elif "driver_id" in update_data and update_data["driver_id"] is None:
+        # Explicit null = unassign
+        target_driver = None
 
     # ✅ MILESTONE 1: effective post-update schedule (times → dates fallback)
     target_pickup = (
@@ -93,6 +98,10 @@ async def update_booking(
         daily_rate = Decimal(vehicle.daily_rate or booking.daily_rate or 0)
         if daily_rate > 0:
             config = await get_pricing_config(db, current_user.tenant_id, target_service)
+            
+            # ✅ MILESTONE 2: Resolve driver fees for the target driver (new or existing)
+            driver_fees = resolve_driver_fees(target_driver, config)
+            
             try:
                 quote = calculate(
                     service_type=target_service,
@@ -104,6 +113,9 @@ async def update_booking(
                     grace_minutes=config.grace_minutes if config else None,
                     overtime_hourly_rate=config.overtime_hourly_rate if config else None,
                     cap_overtime_at_day_rate=config.overtime_cap_at_day_rate if config else True,
+                    driver_daily_fee=driver_fees["driver_daily_fee"],
+                    driver_overtime_hourly_fee=driver_fees["driver_overtime_hourly_fee"],
+                    driver_night_accommodation_fee=driver_fees["driver_night_accommodation_fee"],
                     rate_extras=config.rate_extras if config else None,
                 )
                 update_data["total_amount"] = quote.total

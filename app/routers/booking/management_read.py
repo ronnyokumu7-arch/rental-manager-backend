@@ -13,12 +13,13 @@ from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.tenant import TenantScope, get_tenant_scope
 from app.models.bookings import Booking
+from app.models.drivers import Driver
 from app.models.users import User
 from app.models.vehicles import Vehicle
 from app.schemas.booking import BookingOut, BookingQuote
 from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.services.cache import get_cached_booking_list, set_cached_booking_list
-from app.services.pricing import SELFDRIVE, calculate, get_pricing_config
+from app.services.pricing import SELFDRIVE, calculate, get_pricing_config, resolve_driver_fees
 from ._helpers import get_authorized_booking_async
 
 router = APIRouter()
@@ -131,6 +132,7 @@ async def get_booking(
 
 # ---------------------------------------------------------------------------
 # ✅ MILESTONE 1: LIVE PRICING QUOTE (no DB writes — powers frontend preview)
+# ✅ MILESTONE 2: Per-driver fee resolution
 # ---------------------------------------------------------------------------
 
 @router.post("/quote", response_model=dict)
@@ -154,6 +156,21 @@ async def quote_booking(
         raise HTTPException(status_code=400, detail="Vehicle has no daily rate configured.")
 
     config = await get_pricing_config(db, current_user.tenant_id, quote.service_type)
+    
+    # ✅ MILESTONE 2: Load driver if provided (tenant-scoped, validates ownership)
+    driver = None
+    if quote.driver_id is not None:
+        driver_stmt = select(Driver).where(
+            Driver.id == quote.driver_id,
+            Driver.tenant_id == current_user.tenant_id,
+        )
+        driver = (await db.execute(driver_stmt)).scalars().first()
+        if not driver:
+            raise HTTPException(status_code=404, detail="Driver not found.")
+    
+    # ✅ MILESTONE 2: Resolve driver fees (per-driver → config → None)
+    driver_fees = resolve_driver_fees(driver, config)
+    
     try:
         result = calculate(
             service_type=quote.service_type,
@@ -165,6 +182,9 @@ async def quote_booking(
             grace_minutes=config.grace_minutes if config else None,
             overtime_hourly_rate=config.overtime_hourly_rate if config else None,
             cap_overtime_at_day_rate=config.overtime_cap_at_day_rate if config else True,
+            driver_daily_fee=driver_fees["driver_daily_fee"],
+            driver_overtime_hourly_fee=driver_fees["driver_overtime_hourly_fee"],
+            driver_night_accommodation_fee=driver_fees["driver_night_accommodation_fee"],
             rate_extras=config.rate_extras if config else None,
         )
     except ValueError as e:
