@@ -8,16 +8,19 @@ Endpoints:
 - DELETE /sessions/all — Revoke all sessions except current (panic button)
 - GET /sessions/admin/{user_id} — Super admin view of a user's sessions
 
-✅ SECURITY MODEL (HttpOnly cookies):
-The current session is identified by reading the HttpOnly refresh cookie
-server-side. The token is NEVER passed via query params or request body,
-so it never appears in URLs, logs, referrer headers, or browser history.
+✅ SECURITY MODEL:
+The current session is identified by reading the refresh token from:
+  1. HttpOnly cookie (preferred, same-site only)
+  2. Request body `refresh_token` field (fallback for cross-site deployments)
+
+The token is NEVER passed via query params, so it never appears in URLs,
+logs, referrer headers, or browser history.
 """
 import hashlib
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,13 +50,23 @@ def _get_current_token_hash(refresh_token: Optional[str]) -> Optional[str]:
     return hashlib.sha256(refresh_token.encode()).hexdigest()
 
 
-def _read_refresh_cookie(request: Request) -> Optional[str]:
+def _read_refresh_token(request: Request, body_token: Optional[str] = None) -> Optional[str]:
     """
-    ✅ Read the refresh token from the HttpOnly cookie.
-    The browser sends it automatically (withCredentials: true),
-    and JavaScript can never touch it.
+    Read the refresh token from:
+      1. HttpOnly cookie (preferred, same-site only)
+      2. Request body `refresh_token` field (fallback for cross-site deployments)
+    
+    This dual-source approach supports both:
+      - Same-site deployments (cookie works)
+      - Cross-site deployments (cookie blocked, body fallback)
     """
-    return request.cookies.get(REFRESH_COOKIE_NAME)
+    # Try cookie first (same-site, more secure)
+    cookie_token = request.cookies.get(REFRESH_COOKIE_NAME)
+    if cookie_token:
+        return cookie_token
+    
+    # Fall back to body token (cross-site, localStorage-backed)
+    return body_token
 
 
 async def _get_user_sessions(
@@ -90,6 +103,7 @@ async def list_my_sessions(
     include_revoked: bool = Query(False, description="Include revoked/expired sessions"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    refresh_token: Optional[str] = Body(None, embed=True),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -99,7 +113,7 @@ async def list_my_sessions(
     ✅ SECURITY:
     - Tenant-scoped (defense in depth)
     - Only returns sessions belonging to the authenticated user
-    - Current session identified via HttpOnly cookie (never via URL)
+    - Current session identified via cookie (same-site) or body token (cross-site)
     
     ✅ USE CASE: "Where am I logged in?" UI
     """
@@ -110,8 +124,8 @@ async def list_my_sessions(
         active_only=not include_revoked,
     )
     
-    # ✅ Mark current session using the HttpOnly cookie
-    current_hash = _get_current_token_hash(_read_refresh_cookie(request))
+    # ✅ Mark current session using cookie or body token
+    current_hash = _get_current_token_hash(_read_refresh_token(request, refresh_token))
     
     session_items = [
         SessionOut(
@@ -197,6 +211,7 @@ async def revoke_session(
 @limiter.limit("5/minute")  # 🚨 STRICT: Panic button — limit to prevent abuse
 async def revoke_all_sessions_except_current(
     request: Request,
+    refresh_token: Optional[str] = Body(None, embed=True),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -204,18 +219,18 @@ async def revoke_all_sessions_except_current(
     Revoke ALL sessions except the current one (panic button for compromised accounts).
     
     ✅ SECURITY:
-    - Current session identified via HttpOnly cookie (never via URL)
+    - Current session identified via cookie (same-site) or body token (cross-site)
     - Tenant-scoped
     - Logs the mass revocation for audit trail
     
     ✅ USE CASE: "I think my account was compromised — log out everything else"
     """
-    # ✅ Identify the session to preserve from the HttpOnly cookie
-    current_hash = _get_current_token_hash(_read_refresh_cookie(request))
+    # ✅ Identify the session to preserve from cookie or body token
+    current_hash = _get_current_token_hash(_read_refresh_token(request, refresh_token))
     if not current_hash:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No active session cookie found. Please log in again.",
+            detail="No active session found. Please log in again.",
         )
     
     now = datetime.now(timezone.utc)
