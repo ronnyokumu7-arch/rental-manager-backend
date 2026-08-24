@@ -220,11 +220,11 @@ async def submit_invite(
         status=ClientStatus.pending,   # ✅ NEVER trust the client
         is_flagged=is_flagged,
         flag_notes=flag_notes,
-        # ✅ Store uploaded document URLs (now real schema fields)
+        # ✅ Store uploaded document URLs (schema field names — verified)
         avatar_image=payload.avatar_image,
         id_image_front=payload.id_image_front,
         id_image_back=payload.id_image_back,
-        dl_image_front=payload.dl_front,
+        dl_image_front=payload.dl_image_front,   # ← FIXED (was payload.dl_front)
     )
     db.add(client)
 
