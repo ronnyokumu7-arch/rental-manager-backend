@@ -1,3 +1,4 @@
+# app/services/storage.py
 import asyncio
 import time
 import uuid
@@ -12,8 +13,12 @@ from fastapi import HTTPException, UploadFile, status
 from app.core.config import get_settings
 
 
-# ✅ SECURITY: Strict extension allowlist (smartphone-friendly for v1)
-ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "pdf", "heic", "heif", "avif"}
+# ✅ SECURITY: Broad extension allowlist (smartphone + scanner friendly)
+ALLOWED_EXTENSIONS = {
+    "jpg", "jpeg", "png", "webp", "pdf", 
+    "heic", "heif", "avif",  # modern phone formats
+    "bmp", "tiff", "tif",   # scanner formats
+}
 
 # ✅ SECURITY: MIME type allowlist (prevents .php renamed to .jpg)
 ALLOWED_MIME_TYPES = {
@@ -23,15 +28,17 @@ ALLOWED_MIME_TYPES = {
     "image/heic",
     "image/heif",
     "image/avif",
+    "image/bmp",
+    "image/tiff",
     "application/pdf",
 }
 
-# ✅ SECURITY: Category-based size limits (in bytes)
+# ✅ SECURITY: Category-based RAW size limits (before compression)
 MAX_FILE_SIZES = {
-    "avatar": 2 * 1024 * 1024,        # 2MB
-    "compliance": 5 * 1024 * 1024,    # 5MB (ID, DL images)
-    "contract": 10 * 1024 * 1024,     # 10MB (PDFs)
-    "default": 5 * 1024 * 1024,       # 5MB fallback
+    "avatar": 10 * 1024 * 1024,      # 10MB raw (compressed to 1MB stored)
+    "compliance": 25 * 1024 * 1024,   # 25MB raw (compressed to 4MB stored)
+    "contract": 10 * 1024 * 1024,     # 10MB (PDFs, no compression)
+    "default": 10 * 1024 * 1024,      # 10MB fallback
 }
 
 # ✅ SECURITY: Valid categories (prevents arbitrary folder creation)
@@ -121,7 +128,7 @@ class StorageBackend(ABC):
     @abstractmethod
     async def upload(
         self,
-        file: UploadFile,
+        file_bytes: bytes,  # ✅ CHANGED: raw bytes instead of UploadFile
         safe_folder: str,   # e.g. "tenant_42/compliance"
         filename: str,      # e.g. "abc123def.jpg"
         category: str,
@@ -146,7 +153,7 @@ class LocalDiskBackend(StorageBackend):
     def name(self) -> str:
         return "local"
 
-    async def upload(self, file, safe_folder, filename, category):
+    async def upload(self, file_bytes, safe_folder, filename, category):
         upload_dir = _get_upload_dir()
         target_dir = upload_dir / safe_folder
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -155,19 +162,16 @@ class LocalDiskBackend(StorageBackend):
         max_size = MAX_FILE_SIZES.get(category, MAX_FILE_SIZES["default"])
 
         try:
-            total_size = 0
+            if len(file_bytes) > max_size:
+                max_mb = max_size // (1024 * 1024)
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"File too large. Maximum size for {category} is {max_mb}MB."
+                )
+            
             with open(file_path, "wb") as out_file:
-                while chunk := await file.read(1024 * 1024):
-                    total_size += len(chunk)
-                    if total_size > max_size:
-                        out_file.close()
-                        file_path.unlink(missing_ok=True)
-                        max_mb = max_size // (1024 * 1024)
-                        raise HTTPException(
-                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                            detail=f"File too large. Maximum size for {category} is {max_mb}MB."
-                        )
-                    out_file.write(chunk)
+                out_file.write(file_bytes)
+                
         except HTTPException:
             raise
         except Exception as e:
@@ -237,11 +241,7 @@ class CloudinaryBackend(StorageBackend):
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
         return "raw" if ext == "pdf" else "image"
 
-    async def upload(self, file, safe_folder, filename, category):
-        # 1. Read all bytes + enforce size limit (files are small, ≤10MB)
-        await file.seek(0)
-        file_bytes = await file.read()
-
+    async def upload(self, file_bytes, safe_folder, filename, category):
         max_size = MAX_FILE_SIZES.get(category, MAX_FILE_SIZES["default"])
         if len(file_bytes) > max_size:
             max_mb = max_size // (1024 * 1024)
@@ -371,7 +371,7 @@ def get_backend() -> StorageBackend:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PUBLIC API (signatures UNCHANGED — routers keep working as-is)
+# PUBLIC API (signatures UPDATED to accept processed bytes)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def upload_file(file: UploadFile, tenant_id: int, category: str = "default") -> str:
@@ -390,10 +390,15 @@ async def upload_file(file: UploadFile, tenant_id: int, category: str = "default
     """
     ext = _validate_file(file, category)
     safe_folder = _get_tenant_folder(tenant_id, category)
-    filename = f"{uuid.uuid4().hex}.{ext}"
+    
+    # ✅ NEW: Process file before storage (compress images, pass PDFs through)
+    from app.services.image_processing import process_upload
+    processed_bytes, processed_ext = await process_upload(file, category)
+    
+    filename = f"{uuid.uuid4().hex}.{processed_ext}"
 
     backend = _get_backend()
-    await backend.upload(file, safe_folder, filename, category)
+    await backend.upload(processed_bytes, safe_folder, filename, category)
 
     api_base = _get_api_url_base()
     return f"{api_base}/api/v1/files/{safe_folder}/{filename}"

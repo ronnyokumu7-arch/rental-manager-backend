@@ -1,9 +1,8 @@
-# app/models/client_invite.py
 import enum
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Column, DateTime, Enum, ForeignKey, Integer, String, Index,
+    Column, DateTime, Enum, ForeignKey, Integer, String, Index, JSON,
 )
 from sqlalchemy.orm import relationship
 
@@ -25,6 +24,9 @@ class ClientInvite(Base, AuditMixin):
     - `accepted_client_id` is unique → one invite can produce at most ONE client.
     - `expected_name` / `expected_phone` are OPTIONAL and informational only:
       they tell the tenant WHO they're expecting. Never enforced at intake.
+    - `uploaded_files` tracks per-slot file URLs during the invite's life
+      (keys: "avatar" | "id_front" | "id_back" | "dl_front"). On re-upload,
+      the previous file is deleted from storage. Cleared when invite is consumed.
     - created_by comes free from AuditMixin (which staff user sent the invite).
     """
     __tablename__ = "client_invites"
@@ -56,6 +58,12 @@ class ClientInvite(Base, AuditMixin):
         Integer, ForeignKey("clients.id", ondelete="SET NULL"),
         nullable=True, unique=True,
     )
+
+    # ✅ MILESTONE: Per-slot file URL tracking during invite lifecycle.
+    # Keys: "avatar" | "id_front" | "id_back" | "dl_front".
+    # On each re-upload, the previous URL is deleted from storage before storing new.
+    # Cleared when the invite is consumed (accepted) or revoked.
+    uploaded_files = Column(JSON, nullable=True, default=dict)
 
     tenant = relationship("Tenant", backref="client_invites")
     accepted_client = relationship("Client", foreign_keys=[accepted_client_id])

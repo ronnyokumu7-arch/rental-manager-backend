@@ -7,7 +7,7 @@ from app.dependencies.subscription import require_active_subscription
 from app.models.users import User
 from app.models.clients import Client
 from app.schemas.client import ClientOut
-from app.services.storage import upload_file
+from app.services.storage import upload_file, delete_file  # ✅ + delete_file
 from app.services.cache import invalidate_client_cache
 from app.services.client_tasks import ClientTaskService
 from ._helpers import get_authorized_client_async
@@ -16,7 +16,9 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# DOCUMENT UPLOADS (Using Secure Multi-Tenant Storage)
+# DOCUMENT UPLOADS — SLOT UPSERT (one file per slot, atomic replace)
+# Every endpoint: upload new → delete old → point column at new.
+# Re-uploading a slot can NEVER accumulate files.
 # ---------------------------------------------------------------------------
 
 @router.post("/{client_id}/upload-id-front", response_model=ClientOut)
@@ -29,23 +31,24 @@ async def upload_id_front(
     current_user: User = Depends(require_active_subscription),
 ):
     client = await get_authorized_client_async(client_id, current_user, db)
-    
-    # ✅ Use secure multi-tenant upload service
+
     file_url = await upload_file(
         file=file,
         tenant_id=client.tenant_id,
         category="compliance"
     )
-    
+
+    # ✅ SLOT UPSERT: delete the replaced file AFTER successful new upload
+    old_url = client.id_image_front
     client.id_image_front = file_url
     await db.commit()
     await db.refresh(client)
-    
+    if old_url and old_url != file_url:
+        delete_file(old_url, tenant_id=client.tenant_id)
+
     await ClientTaskService.on_client_created(db, client, client.tenant_id)
-    
-    # ✅ Invalidate cache
     await invalidate_client_cache(client.tenant_id)
-    
+
     return client
 
 
@@ -59,22 +62,23 @@ async def upload_id_back(
     current_user: User = Depends(require_active_subscription),
 ):
     client = await get_authorized_client_async(client_id, current_user, db)
-    
+
     file_url = await upload_file(
         file=file,
         tenant_id=client.tenant_id,
         category="compliance"
     )
-    
+
+    old_url = client.id_image_back
     client.id_image_back = file_url
     await db.commit()
     await db.refresh(client)
-    
+    if old_url and old_url != file_url:
+        delete_file(old_url, tenant_id=client.tenant_id)
+
     await ClientTaskService.on_client_created(db, client, client.tenant_id)
-    
-    # ✅ Invalidate cache
     await invalidate_client_cache(client.tenant_id)
-    
+
     return client
 
 
@@ -88,22 +92,23 @@ async def upload_dl_front(
     current_user: User = Depends(require_active_subscription),
 ):
     client = await get_authorized_client_async(client_id, current_user, db)
-    
+
     file_url = await upload_file(
         file=file,
         tenant_id=client.tenant_id,
         category="compliance"
     )
-    
+
+    old_url = client.dl_image_front
     client.dl_image_front = file_url
     await db.commit()
     await db.refresh(client)
-    
+    if old_url and old_url != file_url:
+        delete_file(old_url, tenant_id=client.tenant_id)
+
     await ClientTaskService.on_client_created(db, client, client.tenant_id)
-    
-    # ✅ Invalidate cache
     await invalidate_client_cache(client.tenant_id)
-    
+
     return client
 
 
@@ -117,18 +122,20 @@ async def upload_avatar(
     current_user: User = Depends(require_active_subscription),
 ):
     client = await get_authorized_client_async(client_id, current_user, db)
-    
+
     file_url = await upload_file(
         file=file,
         tenant_id=client.tenant_id,
         category="avatar"
     )
-    
+
+    old_url = client.avatar_image
     client.avatar_image = file_url
     await db.commit()
     await db.refresh(client)
-    
-    # ✅ Invalidate cache
+    if old_url and old_url != file_url:
+        delete_file(old_url, tenant_id=client.tenant_id)
+
     await invalidate_client_cache(client.tenant_id)
-    
+
     return client

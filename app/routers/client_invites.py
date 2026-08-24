@@ -24,7 +24,7 @@ from app.schemas.client_invite import (
     PublicInvitePreviewOut,
 )
 from app.services.client_identity import check_identity_conflicts, compute_risk_flags
-from app.services.storage import upload_file
+from app.services.storage import upload_file, delete_file
 
 router = APIRouter()
 
@@ -95,7 +95,17 @@ async def revoke_invite(
             detail="This invite was already used and cannot be revoked.",
         )
 
+    # ✅ ORPHAN CLEANUP: the client never completed onboarding, so any files
+    # uploaded against this live link are orphans. Delete them from storage.
+    uploaded = dict(invite.uploaded_files or {})
+    for field, url in uploaded.items():
+        try:
+            delete_file(url, tenant_id=invite.tenant_id)
+        except Exception:
+            pass  # idempotent — storage may already be gone
+
     invite.status = ClientInviteStatus.revoked
+    invite.uploaded_files = None
     await db.commit()
     return {"message": "Invite revoked."}
 
@@ -214,7 +224,7 @@ async def submit_invite(
         avatar_image=payload.avatar_image,
         id_image_front=payload.id_image_front,
         id_image_back=payload.id_image_back,
-        dl_image_front=payload.dl_image_front,
+        dl_image_front=payload.dl_front,
     )
     db.add(client)
 
@@ -222,6 +232,8 @@ async def submit_invite(
         await db.flush()  # get client.id without committing yet
         invite.status = ClientInviteStatus.accepted
         invite.accepted_client_id = client.id
+        # ✅ Clear upload tracking — URLs are now owned by the Client record
+        invite.uploaded_files = None
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -234,7 +246,7 @@ async def submit_invite(
     return client
 
 
-# ─── PUBLIC DOCUMENT UPLOADS (Token-Scoped) ─────────────────────────────────
+# ─── PUBLIC DOCUMENT UPLOADS (Token-Scoped, Slot-Upsert) ────────────────────
 
 @router.post("/clients/invite/{token}/upload", status_code=status.HTTP_201_CREATED)
 @limiter.limit("60/minute")  # 🚨 STRICT: public upload abuse prevention
@@ -247,7 +259,11 @@ async def upload_invite_document(
 ):
     """
     ✅ PUBLIC: Upload a document while the invite is live.
-    Returns the authenticated URL that will be stored on the client.
+
+    ✅ SLOT UPSERT: only one file per (invite, field) can exist.
+    Re-uploading a slot atomically deletes the replaced file from storage
+    before storing the new one. Clients can retry freely without accumulating
+    orphan files — the invite's `uploaded_files` JSONB tracks the active URL.
     """
     # Validate invite is live
     stmt = select(ClientInvite).where(ClientInvite.token == token)
@@ -270,17 +286,31 @@ async def upload_invite_document(
     if field not in valid_fields:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid field. Must be one of: {', '.join(valid_fields)}",
+            detail=f"Invalid field. Must be one of: {', '.join(sorted(valid_fields))}",
         )
 
     # Map field to category
     category = "avatar" if field == "avatar" else "compliance"
 
-    # Upload using the secure multi-tenant storage service
+    # ✅ Upload using the secure multi-tenant storage service (compression pipeline)
     file_url = await upload_file(
         file=file,
         tenant_id=invite.tenant_id,
         category=category
     )
+
+    # ✅ SLOT UPSERT: delete the replaced file AFTER successful new upload.
+    # If upload failed (exception above), the old file stays — never lose data.
+    uploaded = dict(invite.uploaded_files or {})
+    old_url = uploaded.get(field)
+    uploaded[field] = file_url
+    invite.uploaded_files = uploaded
+    await db.commit()
+
+    if old_url and old_url != file_url:
+        try:
+            delete_file(old_url, tenant_id=invite.tenant_id)
+        except Exception:
+            pass  # idempotent — storage may already be gone
 
     return {"url": file_url, "field": field}

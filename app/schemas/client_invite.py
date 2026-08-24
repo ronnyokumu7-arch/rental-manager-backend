@@ -39,6 +39,11 @@ class ClientInviteOut(BaseModel):
     Invite ledger row for the tenant UI.
     `is_expired` / `is_live` are read-time properties on the model —
     Pydantic picks them up via from_attributes, no cleanup job needed.
+
+    ✅ MILESTONE: `uploaded_files` exposes per-slot upload progress
+    (keys: avatar | id_front | id_back | dl_front) so the tenant can see
+    how far the invitee got before submitting. URLs are tenant-owned
+    (authenticated storage), safe to expose here.
     """
     id: int
     tenant_id: int
@@ -52,6 +57,9 @@ class ClientInviteOut(BaseModel):
     is_expired: bool = False
     is_live: bool = False
 
+    # ✅ MILESTONE: per-slot upload progress for the invite ledger
+    uploaded_files: Optional[dict] = None
+
     model_config = {"from_attributes": True}
 
 
@@ -59,7 +67,7 @@ class PublicInvitePreviewOut(BaseModel):
     """
     ✅ WHAT THE PUBLIC PAGE SEES for a VALID invite:
     agency branding + expiry notice. Nothing sensitive.
-    (expected_* are intentionally NOT exposed here — privacy.)
+    (expected_* and uploaded_files are intentionally NOT exposed here — privacy.)
     Invalid/expired/revoked invites → endpoint returns 410 Gone instead.
     """
     tenant_name: str
