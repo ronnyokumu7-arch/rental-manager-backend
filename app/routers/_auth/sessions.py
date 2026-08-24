@@ -7,6 +7,11 @@ Endpoints:
 - DELETE /sessions/{session_id} — Revoke a specific session
 - DELETE /sessions/all — Revoke all sessions except current (panic button)
 - GET /sessions/admin/{user_id} — Super admin view of a user's sessions
+
+✅ SECURITY MODEL (HttpOnly cookies):
+The current session is identified by reading the HttpOnly refresh cookie
+server-side. The token is NEVER passed via query params or request body,
+so it never appears in URLs, logs, referrer headers, or browser history.
 """
 import hashlib
 from datetime import datetime, timezone
@@ -27,6 +32,9 @@ from app.services.activity_log import ActivityLogService
 
 router = APIRouter()
 
+# ✅ Must match the cookie name set in session.py
+REFRESH_COOKIE_NAME = "rm_refresh_token"
+
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -37,6 +45,15 @@ def _get_current_token_hash(refresh_token: Optional[str]) -> Optional[str]:
     if not refresh_token:
         return None
     return hashlib.sha256(refresh_token.encode()).hexdigest()
+
+
+def _read_refresh_cookie(request: Request) -> Optional[str]:
+    """
+    ✅ Read the refresh token from the HttpOnly cookie.
+    The browser sends it automatically (withCredentials: true),
+    and JavaScript can never touch it.
+    """
+    return request.cookies.get(REFRESH_COOKIE_NAME)
 
 
 async def _get_user_sessions(
@@ -70,13 +87,9 @@ async def _get_user_sessions(
 @limiter.limit("30/minute")
 async def list_my_sessions(
     request: Request,
-    current_refresh_token: Optional[str] = Query(
-        None,
-        description="Pass your current refresh token to mark it as 'is_current' in the response",
-    ),
     include_revoked: bool = Query(False, description="Include revoked/expired sessions"),
-    page: int = Query(1, ge=1),                      # ✅ FIXED: was missing
-    page_size: int = Query(50, ge=1, le=200),        # ✅ FIXED: was missing
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -86,7 +99,7 @@ async def list_my_sessions(
     ✅ SECURITY:
     - Tenant-scoped (defense in depth)
     - Only returns sessions belonging to the authenticated user
-    - Optional `current_refresh_token` param marks the active session
+    - Current session identified via HttpOnly cookie (never via URL)
     
     ✅ USE CASE: "Where am I logged in?" UI
     """
@@ -97,8 +110,8 @@ async def list_my_sessions(
         active_only=not include_revoked,
     )
     
-    # Mark current session if token provided
-    current_hash = _get_current_token_hash(current_refresh_token)
+    # ✅ Mark current session using the HttpOnly cookie
+    current_hash = _get_current_token_hash(_read_refresh_cookie(request))
     
     session_items = [
         SessionOut(
@@ -184,10 +197,6 @@ async def revoke_session(
 @limiter.limit("5/minute")  # 🚨 STRICT: Panic button — limit to prevent abuse
 async def revoke_all_sessions_except_current(
     request: Request,
-    current_refresh_token: str = Query(
-        ...,
-        description="Your current refresh token — this session will be preserved",
-    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -195,17 +204,18 @@ async def revoke_all_sessions_except_current(
     Revoke ALL sessions except the current one (panic button for compromised accounts).
     
     ✅ SECURITY:
-    - Requires the current refresh token to identify which session to keep
+    - Current session identified via HttpOnly cookie (never via URL)
     - Tenant-scoped
     - Logs the mass revocation for audit trail
     
     ✅ USE CASE: "I think my account was compromised — log out everything else"
     """
-    current_hash = _get_current_token_hash(current_refresh_token)
+    # ✅ Identify the session to preserve from the HttpOnly cookie
+    current_hash = _get_current_token_hash(_read_refresh_cookie(request))
     if not current_hash:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid current refresh token",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No active session cookie found. Please log in again.",
         )
     
     now = datetime.now(timezone.utc)
