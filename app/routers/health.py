@@ -1,3 +1,4 @@
+# app/routers/health.py
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -22,7 +23,9 @@ async def system_health_check():
 @router.head("/health")
 async def system_health_check_head():
     """
-    HEAD request for health check (Render uses HEAD for monitoring).
+    HEAD request for health check (Uptime Robot uses HEAD).
     Returns 200 OK with no body.
     """
-    return JSONResponse(status_code=200)
+    # ✅ FIX: JSONResponse requires the `content` argument.
+    # Without it, every HEAD request raised TypeError → 500 → monitor red.
+    return JSONResponse(status_code=200, content={})
