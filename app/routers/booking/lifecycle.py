@@ -1,271 +1,103 @@
-# app/routers/bookings/lifecycle.py
-from datetime import datetime, timezone
-from decimal import Decimal
+# app/routers/booking/lifecycle.py
+"""
+Booking lifecycle endpoints — THIN delegation layer.
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+✅ ALL transition logic lives in BookingLifecycleService (tenant-scoped,
+row-locked, idempotent). Routers only handle auth, rate-limiting, and payload
+parsing. Route paths are unchanged so the existing frontend keeps working
+until Phase 5 updates labels/buttons.
+
+Endpoints:
+  POST /{id}/confirm    → service.confirm   (client-driven via quotation accept)
+  POST /{id}/activate   → service.start_trip (from pending|confirmed)
+  POST /{id}/complete   → service.complete  (sets actual_return_at + mileage_due)
+  POST /{id}/cancel     → service.cancel(reason)
+  POST /{id}/no-show    → alias for cancel(reason=no_show) [backward-compat]
+"""
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.subscription import require_active_subscription
 from app.dependencies.commission_lock import require_not_commission_locked
-from app.models.bookings import Booking, BookingStatus
-from app.models.clients import Client, ClientStatus
-from app.models.commission import CommissionEvent, CommissionStatus
-from app.models.platform_settings import PlatformSettings
-from app.models.tenants import Tenant
+from app.models.bookings import CancellationReason
 from app.models.users import User
-from app.models.vehicles import Vehicle, VehicleStatus
-from app.schemas.booking import BookingOut
-from app.services.cache import invalidate_booking_cache, invalidate_vehicle_cache
-from ._helpers import get_authorized_booking_async
+from app.schemas.booking import BookingOut, CancelBookingPayload
+from app.services.booking_lifecycle import BookingLifecycleService
 
 router = APIRouter()
-
-
-async def _reload_booking(db: AsyncSession, booking_id: int):
-    """
-    ✅ FIXED: Re-fetch with eager loading after commit so BookingOut
-    serialization (nested client/vehicle) can't trigger MissingGreenlet.
-    """
-    stmt = select(Booking).options(
-        selectinload(Booking.client),
-        selectinload(Booking.vehicle)
-    ).where(Booking.id == booking_id)
-    result = await db.execute(stmt)
-    return result.scalars().unique().first()
 
 
 @router.post("/{booking_id}/confirm", response_model=BookingOut)
 @limiter.limit("20/minute")
 async def confirm_booking(
     request: Request,
-    booking_id: int, 
-    db: AsyncSession = Depends(get_db), 
-    current_user: User = Depends(require_not_commission_locked)
+    booking_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_not_commission_locked),
 ):
-    booking = await get_authorized_booking_async(booking_id, current_user, db)
-    
-    if booking.status != BookingStatus.pending:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only pending bookings can be confirmed."
-        )
-        
-    booking.status = BookingStatus.confirmed
-    
-    await db.commit()
-    booking = await _reload_booking(db, booking.id)
-    
-    await invalidate_booking_cache(current_user.tenant_id)
-    
-    return booking
+    """Confirm a pending booking. (Dashboard button removed in Phase 5;
+    the public quotation-accept flow is the primary driver.)"""
+    return await BookingLifecycleService.confirm(db, booking_id, current_user)
 
 
 @router.post("/{booking_id}/activate", response_model=BookingOut)
 @limiter.limit("20/minute")
 async def activate_booking(
     request: Request,
-    booking_id: int, 
-    db: AsyncSession = Depends(get_db), 
-    current_user: User = Depends(require_active_subscription)
+    booking_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
 ):
-    booking = await get_authorized_booking_async(booking_id, current_user, db)
-    
-    if booking.status != BookingStatus.confirmed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only confirmed bookings can be activated."
-        )
-        
-    client_stmt = select(Client).where(
-        Client.id == booking.client_id,
-        Client.tenant_id == current_user.tenant_id
-    )
-    client_result = await db.execute(client_stmt)
-    client = client_result.scalars().first()
-    
-    if not client:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Client not found."
-        )
-    
-    if client.status != ClientStatus.active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Client must be active to activate a booking."
-        )
-        
-    vehicle_stmt = select(Vehicle).where(
-        Vehicle.id == booking.vehicle_id,
-        Vehicle.tenant_id == current_user.tenant_id
-    )
-    vehicle_result = await db.execute(vehicle_stmt)
-    vehicle = vehicle_result.scalars().first()
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found."
-        )
-    
-    if vehicle.status != VehicleStatus.available:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Vehicle is not available."
-        )
-
-    booking.status = BookingStatus.active
-    vehicle.status = VehicleStatus.rented
-
-    # ✅ TRIAL EXEMPTION: trips during the 30-day free trial are commission-free.
-    # trial_ends_at is NULL for legacy tenants → they are charged normally.
-    tenant = await db.get(Tenant, current_user.tenant_id)
-    now = datetime.now(timezone.utc)
-    in_trial = (
-        tenant is not None
-        and tenant.trial_ends_at is not None
-        and tenant.trial_ends_at > now
-    )
-
-    if not in_trial:
-        # ✅ PAYG COMMISSION TRIGGER: Trip started = commission owed to platform
-        # Amount snapshotted from PlatformSettings (super-admin configurable)
-        # booking_id is unique → this trip can NEVER be double-charged
-        settings = (
-            await db.execute(
-                select(PlatformSettings).where(PlatformSettings.id == 1)
-            )
-        ).scalars().first()
-        amount = Decimal(settings.commission_amount) if settings else Decimal("150.00")
-
-        commission_event = CommissionEvent(
-            tenant_id=current_user.tenant_id,
-            booking_id=booking.id,
-            amount=amount,
-            currency_code="KES",
-            status=CommissionStatus.unpaid,
-            created_by=current_user.id,
-        )
-        db.add(commission_event)
-    
-    await db.commit()
-    booking = await _reload_booking(db, booking.id)
-    
-    await invalidate_booking_cache(current_user.tenant_id)
-    await invalidate_vehicle_cache(current_user.tenant_id)
-    
-    return booking
+    """Start the trip (from pending OR confirmed). Sets vehicle→rented + commission."""
+    return await BookingLifecycleService.start_trip(db, booking_id, current_user)
 
 
 @router.post("/{booking_id}/complete", response_model=BookingOut)
 @limiter.limit("20/minute")
 async def complete_booking(
     request: Request,
-    booking_id: int, 
-    db: AsyncSession = Depends(get_db), 
-    current_user: User = Depends(require_active_subscription)
+    booking_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
 ):
-    booking = await get_authorized_booking_async(booking_id, current_user, db)
-    
-    if booking.status != BookingStatus.active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only active bookings can be completed."
-        )
-        
-    vehicle_stmt = select(Vehicle).where(
-        Vehicle.id == booking.vehicle_id,
-        Vehicle.tenant_id == current_user.tenant_id
-    )
-    vehicle_result = await db.execute(vehicle_stmt)
-    vehicle = vehicle_result.scalars().first()
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found."
-        )
-    
-    booking.status = BookingStatus.completed
-    vehicle.status = VehicleStatus.awaiting_mileage
-    
-    await db.commit()
-    booking = await _reload_booking(db, booking.id)
-    
-    await invalidate_booking_cache(current_user.tenant_id)
-    await invalidate_vehicle_cache(current_user.tenant_id)
-    
-    return booking
+    """Complete the trip. Sets actual_return_at; vehicle→available + mileage_due."""
+    return await BookingLifecycleService.complete(db, booking_id, current_user)
 
 
 @router.post("/{booking_id}/cancel", response_model=BookingOut)
 @limiter.limit("20/minute")
 async def cancel_booking(
     request: Request,
-    booking_id: int, 
-    db: AsyncSession = Depends(get_db), 
-    current_user: User = Depends(require_active_subscription)
+    booking_id: int,
+    payload: Optional[CancelBookingPayload] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
 ):
-    booking = await get_authorized_booking_async(booking_id, current_user, db)
-    
-    if booking.status in (BookingStatus.completed, BookingStatus.cancelled):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot cancel a {booking.status.value} booking."
-        )
-        
-    vehicle_stmt = select(Vehicle).where(
-        Vehicle.id == booking.vehicle_id,
-        Vehicle.tenant_id == current_user.tenant_id
-    )
-    vehicle_result = await db.execute(vehicle_stmt)
-    vehicle = vehicle_result.scalars().first()
-    
-    if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found."
-        )
-    
-    if booking.status == BookingStatus.active:
-        vehicle.status = VehicleStatus.available 
-        
-    booking.status = BookingStatus.cancelled
-    
-    await db.commit()
-    booking = await _reload_booking(db, booking.id)
-    
-    await invalidate_booking_cache(current_user.tenant_id)
-    await invalidate_vehicle_cache(current_user.tenant_id)
-    
-    return booking
+    """
+    Cancel with a reason. Body optional for backward compat — defaults to
+    agency_cancelled when omitted (operator-initiated).
+    """
+    reason = payload.reason if payload else CancellationReason.agency_cancelled
+    return await BookingLifecycleService.cancel(db, booking_id, current_user, reason)
 
 
 @router.post("/{booking_id}/no-show", response_model=BookingOut)
 @limiter.limit("20/minute")
 async def no_show_booking(
     request: Request,
-    booking_id: int, 
-    db: AsyncSession = Depends(get_db), 
-    current_user: User = Depends(require_active_subscription)
+    booking_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
 ):
-    booking = await get_authorized_booking_async(booking_id, current_user, db)
-    
-    if booking.status != BookingStatus.confirmed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only confirmed bookings can be marked as no-show."
-        )
-    
-    booking.status = BookingStatus.no_show
-    
-    await db.commit()
-    booking = await _reload_booking(db, booking.id)
-    
-    await invalidate_booking_cache(current_user.tenant_id)
-    
-    return booking
+    """
+    ✅ BACKWARD-COMPAT ALIAS: no_show is no longer a status — it's a cancel
+    reason. Existing frontend "Mark no-show" buttons keep working; Phase 5
+    migrates them to the cancel-with-reason modal.
+    """
+    return await BookingLifecycleService.cancel(
+        db, booking_id, current_user, CancellationReason.no_show,
+    )

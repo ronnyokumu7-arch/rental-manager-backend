@@ -1,5 +1,5 @@
-# app/routers/booking/management_create.py
-"""CREATE — validation, double-booking prevention, server-side pricing, tasks."""
+"""CREATE — validation, double-booking prevention, server-side pricing, tasks,
+and AUTO-QUOTATION (the price offer the client accepts on the public portal)."""
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -19,6 +19,7 @@ from app.models.vehicles import Vehicle, VehicleStatus
 from app.schemas.booking import BookingCreate, BookingOut
 from app.services.booking_tasks import BookingTaskService
 from app.services.cache import invalidate_booking_cache
+from app.services.invoices import create_quotation_for_booking  # ✅ LIFECYCLE
 from app.services.number_generator import generate_booking_number
 from app.services.pricing import SELFDRIVE, calculate, get_pricing_config, resolve_driver_fees, snapshot_fields
 
@@ -68,8 +69,7 @@ async def create_booking(
         Client.id == booking.client_id,
         Client.tenant_id == current_user.tenant_id,
     )
-    client_result = await db.execute(client_stmt)
-    client = client_result.scalars().first()
+    client = (await db.execute(client_stmt)).scalars().first()
 
     if not client:
         raise HTTPException(status_code=404, detail="Client not found.")
@@ -81,8 +81,7 @@ async def create_booking(
         Vehicle.id == booking.vehicle_id,
         Vehicle.tenant_id == current_user.tenant_id,
     )
-    vehicle_result = await db.execute(vehicle_stmt)
-    vehicle = vehicle_result.scalars().first()
+    vehicle = (await db.execute(vehicle_stmt)).scalars().first()
 
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found.")
@@ -95,7 +94,6 @@ async def create_booking(
     scheduled_return_at = getattr(booking, "scheduled_return_at", None) or booking.end_date
 
     # ✅ PAST-TIME GUARD: new bookings cannot be scheduled in the past.
-    # 2-minute buffer accounts for clock skew between client and server.
     now_naive = datetime.utcnow()
     pickup_naive = pickup_at.replace(tzinfo=None) if pickup_at.tzinfo else pickup_at
     if pickup_naive < (now_naive - timedelta(minutes=2)):
@@ -112,7 +110,6 @@ async def create_booking(
         )
 
     # ✅ MILESTONE 2: Validate Driver (tenant-scoped, eligibility-checked)
-    # Captures the driver object for fee resolution (zero extra queries later)
     driver = None
     if booking.driver_id is not None:
         driver = await validate_driver_assignment(db, current_user.tenant_id, booking.driver_id)
@@ -128,8 +125,7 @@ async def create_booking(
             func.coalesce(Booking.scheduled_return_at, Booking.end_date) > pickup_at,
         )
     )
-    overlap_result = await db.execute(overlap_stmt)
-    if overlap_result.scalars().first():
+    if (await db.execute(overlap_stmt)).scalars().first():
         raise HTTPException(
             status_code=409,
             detail=f"Vehicle {vehicle.plate_number} is already booked for these dates."
@@ -141,10 +137,8 @@ async def create_booking(
         raise HTTPException(status_code=400, detail="Vehicle has no daily rate configured.")
 
     config = await get_pricing_config(db, current_user.tenant_id, service_type)
-    
-    # ✅ MILESTONE 2: Resolve driver fees (per-driver → config → None)
     driver_fees = resolve_driver_fees(driver, config)
-    
+
     try:
         quote = calculate(
             service_type=service_type,
@@ -185,6 +179,13 @@ async def create_booking(
         booking_number=new_booking_number,
     )
     db.add(db_booking)
+    await db.flush()  # ✅ assign db_booking.id WITHOUT committing
+
+    # 4b. ✅ AUTO-QUOTATION (same transaction): the price offer the client
+    # accepts on the public portal. Atomic with the booking — they always
+    # exist together. Share link is ready to send immediately.
+    await create_quotation_for_booking(db_booking, db)
+
     await db.commit()
     await db.refresh(db_booking)
 
@@ -202,5 +203,4 @@ async def create_booking(
         selectinload(Booking.driver)
     ).where(Booking.id == db_booking.id)
 
-    result = await db.execute(stmt)
-    return result.scalars().first()
+    return (await db.execute(stmt)).scalars().first()

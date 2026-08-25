@@ -48,6 +48,11 @@ class InvoiceOut(BaseModel):
     booking_id: Optional[int] = None
     invoice_number: str
     status: InvoiceStatus
+
+    # ✅ LIFECYCLE: quotation | invoice (morphs to invoice on client accept).
+    # Legacy rows default to "invoice".
+    doc_type: str = "invoice"
+
     amount_due: Decimal
     amount_paid: Decimal
     currency_code: str
@@ -115,8 +120,8 @@ class PublicPaymentDetails(BaseModel):
 
     # ── Bank Transfer (from BankAccountConfig) ──────────────────────
     bank_name: Optional[str] = None
-    bank_account_number: Optional[str] = None  # ✅ ADDED: distinct from M-Pesa account_number
-    bank_account_name: Optional[str] = None    # ✅ ADDED
+    bank_account_number: Optional[str] = None
+    bank_account_name: Optional[str] = None
     branch_code: Optional[str] = None
     swift_code: Optional[str] = None
     currency: Optional[str] = None
@@ -138,19 +143,21 @@ class PublicPaymentCreate(BaseModel):
         method = info.data.get("method")
         if method in (PaymentMethod.mpesa, PaymentMethod.airtel_money) and not (v and v.strip()):
             raise ValueError("Transaction reference is required for M-Pesa and Airtel Money payments")
-        return v  # ✅ FIXED: Must return the validated value in Pydantic v2
+        return v
 
 
 class PublicInvoiceView(BaseModel):
     """
     ✅ CLEAN CONTRACT: Declares EVERY field the public router returns.
-    Previously undeclared fields were silently dropped by Pydantic
-    (extra='ignore'), which caused NaN balance, N/A vehicle, and
-    "Invalid Date" on the public invoice page.
+
+    ✅ LIFECYCLE: `doc_type` drives the morphing public page:
+      - "quotation" → [Accept & Confirm] [Cancel Booking] [Reschedule]
+      - "invoice"   → [Pay] / [Record Payment]
     """
     id: int
     invoice_number: str
     status: InvoiceStatus
+    doc_type: str = "invoice"
     amount_due: Decimal
     amount_paid: Decimal
     remaining_balance: Decimal
@@ -164,29 +171,26 @@ class PublicInvoiceView(BaseModel):
     client_name: Optional[str] = None
     client_phone: Optional[str] = None
     tenant_name: Optional[str] = None
-    
+
     # Vehicle (split for clean rendering)
     vehicle_description: Optional[str] = None
     vehicle_name: Optional[str] = None
     vehicle_plate: Optional[str] = None
-    
+
     # ✅ MILESTONE 2: Assigned driver (null for self-drive bookings)
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     driver_dl_number: Optional[str] = None
-    
+
     # Booking reference
     booking_number: Optional[str] = None
     booking_start_date: Optional[str] = None
     booking_end_date: Optional[str] = None
-    
+
     # ✅ Header Identity (from TenantProfile)
     tenant_logo_url: Optional[str] = None
     tenant_email: Optional[str] = None
     tenant_phone: Optional[str] = None
-    
+
     # ✅ Dynamic Payment Channels (from Gateway Config Tables)
     payment_details: Optional[PublicPaymentDetails] = None
-
-# ✅ DELETED: The bottom import of BookingOut and model_rebuild() 
-# are no longer needed and remove the circular dependency risk.

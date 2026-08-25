@@ -28,7 +28,7 @@ from app.routers import (
     drivers,
     files,
     financials,
-    health,             # ✅ NEW: System health endpoint (lightweight, no auth)
+    health,             # ✅ System health endpoint (lightweight, no auth)
     invoices,
     payment_verifications,
     payments,
@@ -46,6 +46,10 @@ from app.routers import (
     vehicles,
     vault,
 )
+
+# ✅ FIX: Agency Health router was orphaned in app/routers/endpoints/health.py
+# It was never imported, so FastAPI never registered /tenants/{id}/health → 404.
+from app.routers.endpoints.health import router as agency_health_router
 
 # ✅ Initialize settings early
 settings = get_settings()
@@ -127,7 +131,7 @@ def root():
     return {
         "message": "Rental Garage API is running",
         "docs": "/docs",
-        "health": "/api/v1/health"
+        "health": "/api/v1/health",
     }
 
 # ✅ Register all API routers
@@ -159,8 +163,14 @@ routers = [
     user_preferences,
     vault,
     files,
-    health,  # ✅ NEW: Register system health router
+    health,  # ✅ System health router → /api/v1/health
 ]
 
 for router in routers:
     app.include_router(router.router, prefix="/api/v1")
+
+# ✅ FIX: Register the Agency Health router (it carries its own /tenants prefix)
+# → GET /api/v1/tenants/{tenant_id}/health  (super_admin only, 30/min)
+# Registered AFTER the loop so its specific path can never be shadowed by
+# generic dynamic routes inside the tenants router.
+app.include_router(agency_health_router, prefix="/api/v1")

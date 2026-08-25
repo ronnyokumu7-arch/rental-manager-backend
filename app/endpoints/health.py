@@ -1,4 +1,4 @@
-# app/routers/tenants/health.py (or wherever this file lives)
+# app/routers/endpoints/health.py (or wherever this file lives)
 
 from datetime import datetime, timedelta, timezone
 

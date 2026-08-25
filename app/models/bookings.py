@@ -12,12 +12,37 @@ from app.db.database import Base, AuditMixin
 
 
 class BookingStatus(str, enum.Enum):
+    """
+    ✅ 5-state lifecycle (no_show removed — it was a redundant terminal state).
+
+    pending    → created, awaiting client quotation acceptance
+    confirmed  → client accepted the quotation (strong business signal)
+    active     → trip started (handover done)
+    completed  → returned, closed
+    cancelled  → voided (reason captured in cancellation_reason)
+    """
     pending = "pending"
     confirmed = "confirmed"
     active = "active"
     completed = "completed"
     cancelled = "cancelled"
-    no_show = "no_show"
+
+
+class CancellationReason(str, enum.Enum):
+    """
+    ✅ WHY a booking was cancelled — preserved as data (not a status) so the
+    refund-policy engine and analytics can distinguish outcomes.
+
+    ✅ STORED AS String(30) in the DB (not a native enum) — consistent with
+    service_type, so future reasons ship without ALTER TYPE migrations.
+    This class is the application-level validator: the lifecycle service
+    coerces via CancellationReason(value) (raises ValueError if invalid)
+    before writing to the column.
+    """
+    client_cancelled = "client_cancelled"   # client backed out in advance
+    agency_cancelled = "agency_cancelled"   # operator voided it
+    no_show = "no_show"                     # client never arrived (forfeit tier)
+    expired_unpaid = "expired_unpaid"       # quotation/invoice lapsed unpaid
 
 
 class Booking(Base, AuditMixin):
@@ -77,6 +102,17 @@ class Booking(Base, AuditMixin):
 
     # Status & Lifecycle
     status = Column(Enum(BookingStatus), default=BookingStatus.pending, nullable=False, index=True)
+
+    # ✅ CANCELLATION METADATA (replaces the removed no_show status).
+    # Terminal status is always `cancelled`; the reason preserves the business
+    # meaning for refund-policy tiers (lead_time × reason) and no-show analytics.
+    # Stored as String(30); validated app-side via CancellationReason(value).
+    cancellation_reason = Column(String(30), nullable=True)
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_by = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+
     is_archived = Column(Boolean, default=False, nullable=False)
     archived_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -98,7 +134,7 @@ class Booking(Base, AuditMixin):
     __table_args__ = (
         # ✅ NEW: document numbers must be unique PER TENANT (not globally)
         UniqueConstraint("tenant_id", "booking_number", name="uq_bookings_tenant_booking_number"),
-        
+
         # Data Integrity Check Constraints
         CheckConstraint("end_date > start_date", name="ck_bookings_valid_date_range"),
         CheckConstraint("total_amount >= 0", name="ck_bookings_total_amount_non_negative"),

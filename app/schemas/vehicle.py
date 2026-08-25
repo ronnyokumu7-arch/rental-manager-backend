@@ -74,6 +74,11 @@ class VehicleOut(VehicleBase):
     id: int
     tenant_id: int
     status: VehicleStatus
+
+    # ✅ LIFECYCLE: return mileage not yet logged (vehicle stays rentable).
+    # Replaces the removed awaiting_mileage status — no more stuck cars.
+    mileage_due: bool = False
+
     insurance_doc: Optional[str] = None
     registration_doc: Optional[str] = None
     inspection_doc: Optional[str] = None
@@ -81,25 +86,25 @@ class VehicleOut(VehicleBase):
     archived_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
-    
+
     model_config = {"from_attributes": True}
 
 
 # =============================================================================
-# ✅ MILEAGE UPDATE PAYLOAD: Resolves the awaiting_mileage lock
+# ✅ MILEAGE UPDATE PAYLOAD: logs return mileage + clears mileage_due
 # =============================================================================
 class MileageUpdatePayload(BaseModel):
     """
-    ✅ FIXED: Changed from gt=0 to ge=0.
-    Brand new vehicles can have 0 mileage.
+    ✅ Logs the return odometer reading and clears the mileage_due flag.
+    Brand new vehicles can have 0 mileage (ge=0).
     The "must be greater than current" validation happens in the router.
     """
     current_mileage: int = Field(
-        ge=0, 
-        description="New odometer reading (must be >= current mileage)"
+        ge=0,
+        description="New odometer reading (must be >= current mileage)",
     )
     next_service_km: Optional[int] = Field(
-        default=None, 
-        ge=0, 
-        description="Optional next service interval"
+        default=None,
+        ge=0,
+        description="Optional next service interval",
     )

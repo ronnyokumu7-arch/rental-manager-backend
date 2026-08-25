@@ -1,14 +1,17 @@
-# app/services/invoices.py
 """
-Invoice creation/update for bookings.
+Invoice + Quotation creation/update for bookings.
 
 ✅ SINGLE SOURCE OF TRUTH: totals ALWAYS come from the pricing engine
-(price_booking). No local day math anywhere in this file — the legacy
-inclusive "+1 day" formula is removed. custom_rate overrides re-price the
-booking through the engine (24h blocks + grace + overtime + driver stack),
-so booking page, invoice, and contract can never disagree again.
+(price_booking). No local day math anywhere in this file.
+
+✅ LIFECYCLE (quotation pipeline):
+  - create_quotation_for_booking  → auto-called on booking create (doc_type=quotation)
+  - morph_quotation_to_invoice    → called on client accept (quotation → invoice,
+                                    due_date = rental start)
+  New functions flush (don't commit) so callers commit atomically.
 """
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -21,7 +24,27 @@ from app.services.number_generator import generate_invoice_number
 from app.services.cache import invalidate_booking_cache
 from app.services.pricing import price_booking
 
+# Quotation public link validity (days)
+QUOTATION_VALID_DAYS = 7
 
+
+def _rental_start(booking: Booking) -> datetime:
+    """Exact pickup time, falling back to start_date."""
+    return booking.pickup_at or booking.start_date
+
+
+def _ensure_share_token(invoice: Invoice, days: int = QUOTATION_VALID_DAYS) -> None:
+    now = datetime.now(timezone.utc)
+    if not invoice.share_token or (
+        invoice.share_token_expires_at and invoice.share_token_expires_at < now
+    ):
+        invoice.share_token = str(uuid.uuid4())
+        invoice.share_token_expires_at = now + timedelta(days=days)
+
+
+# =============================================================================
+# EXISTING: manual invoice generation (unchanged behaviour)
+# =============================================================================
 async def create_invoice_for_booking(
     booking: Booking,
     db: AsyncSession,
@@ -38,36 +61,26 @@ async def create_invoice_for_booking(
 
     Precedence for the invoice amount:
       custom_amount  >  engine total (after custom_rate override)  >  booking.total_amount
-
-    When custom_rate is provided:
-      - Writes booking.daily_rate (the override slot)
-      - Re-prices via the pricing engine → booking.total_amount
-      - Existing invoices follow the new total (Rate → Total mode)
     """
-    # ✅ ASYNC: Check for existing invoice
     existing_stmt = select(Invoice).where(Invoice.booking_id == booking.id)
     existing_result = await db.execute(existing_stmt)
     existing_invoice = existing_result.scalars().first()
 
-    # ✅ Rate override → engine re-price (never local day math)
     if custom_rate is not None:
         booking.daily_rate = custom_rate
         try:
             quote = await price_booking(db, booking, Decimal(custom_rate))
             booking.total_amount = quote.total
         except ValueError:
-            # Invalid schedule edge case: keep last engine-priced total.
             pass
         await db.commit()
         await db.refresh(booking)
         await invalidate_booking_cache(booking.tenant_id)
 
-    # If invoice already exists, update it with new values
     if existing_invoice:
         if custom_amount is not None:
             existing_invoice.amount_due = custom_amount
         elif custom_rate is not None:
-            # ✅ Rate → Total: invoice follows the engine-recomputed total
             existing_invoice.amount_due = booking.total_amount
         if custom_currency is not None:
             existing_invoice.currency_code = custom_currency
@@ -84,11 +97,8 @@ async def create_invoice_for_booking(
         await db.refresh(existing_invoice)
         return existing_invoice
 
-    # Generate invoice number (Centralized, tenant-scoped, monthly-resetting)
-    # Format: I{YYYY}{MM}{###} (e.g., I202607001)
     invoice_number = await generate_invoice_number(db, booking.tenant_id)
 
-    # ✅ Determine final amount: custom_amount > engine-priced booking total
     if custom_amount is not None:
         final_amount = custom_amount
     else:
@@ -112,7 +122,86 @@ async def create_invoice_for_booking(
     )
     db.add(db_invoice)
 
-    # ✅ ASYNC: Commit and refresh
     await db.commit()
     await db.refresh(db_invoice)
     return db_invoice
+
+
+# =============================================================================
+# ✅ LIFECYCLE: Quotation pipeline (flush-only — caller commits atomically)
+# =============================================================================
+async def get_booking_quotation(db: AsyncSession, booking_id: int) -> Optional[Invoice]:
+    """Return the booking's live quotation (doc_type=quotation), if any."""
+    stmt = (
+        select(Invoice)
+        .where(Invoice.booking_id == booking_id, Invoice.doc_type == "quotation")
+        .order_by(Invoice.created_at.desc())
+    )
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def create_quotation_for_booking(
+    booking: Booking,
+    db: AsyncSession,
+    notes: Optional[str] = None,
+) -> Invoice:
+    """
+    ✅ AUTO-CALLED on booking create. Creates the price offer the client accepts.
+
+    - doc_type=quotation, status=sent (shareable immediately)
+    - due_date = rental start (tentative; becomes the real due date on morph)
+    - share_token generated so the public link is ready to send
+    - Idempotent: returns the existing quotation if one already exists
+    - FLUSH only — the caller (booking create) commits atomically
+    """
+    existing = await get_booking_quotation(db, booking.id)
+    if existing:
+        return existing
+
+    invoice_number = await generate_invoice_number(db, booking.tenant_id)
+
+    quotation = Invoice(
+        tenant_id=booking.tenant_id,
+        booking_id=booking.id,
+        invoice_number=invoice_number,
+        doc_type="quotation",
+        status=InvoiceStatus.sent,
+        amount_due=booking.total_amount,
+        amount_paid=Decimal("0"),
+        currency_code=booking.currency_code or "KES",
+        discount_amount=Decimal("0"),
+        due_date=_rental_start(booking),
+        notes=notes,
+    )
+    _ensure_share_token(quotation)
+    db.add(quotation)
+    await db.flush()      # caller commits
+    return quotation
+
+
+async def morph_quotation_to_invoice(
+    booking: Booking,
+    db: AsyncSession,
+) -> Optional[Invoice]:
+    """
+    ✅ CALLED on client accept. The quotation becomes the payable invoice.
+
+    - doc_type: quotation → invoice
+    - due_date = rental start (the initial payment due date)
+    - amount re-synced from booking.total_amount (in case of re-pricing)
+    - FLUSH only — the caller (accept flow) commits atomically
+    Returns None if no quotation exists (nothing to morph).
+    """
+    quotation = await get_booking_quotation(db, booking.id)
+    if not quotation:
+        return None
+
+    quotation.doc_type = "invoice"
+    quotation.due_date = _rental_start(booking)
+    quotation.amount_due = booking.total_amount
+    if quotation.status == InvoiceStatus.draft:
+        quotation.status = InvoiceStatus.sent
+    _ensure_share_token(quotation)
+
+    await db.flush()      # caller commits
+    return quotation

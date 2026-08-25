@@ -4,11 +4,19 @@ from sqlalchemy.orm import relationship
 from app.db.database import Base, AuditMixin
 
 class VehicleStatus(str, enum.Enum):
+    """
+    ✅ 5-state fleet lifecycle (awaiting_mileage removed — it caused stuck vehicles).
+
+    pending_activation → new vehicle, not yet live (insurance gate)
+    available          → ready to rent
+    rented             → out with a client (owned ONLY by booking transitions)
+    maintenance        → out of service (manual)
+    retired            → removed from fleet (manual)
+    """
     pending_activation = "pending_activation"
     available = "available"
     rented = "rented"
     maintenance = "maintenance"
-    awaiting_mileage = "awaiting_mileage"
     retired = "retired"
 
 class Vehicle(Base, AuditMixin):
@@ -35,6 +43,14 @@ class Vehicle(Base, AuditMixin):
     daily_rate = Column(Numeric(10, 2), nullable=False)
     current_mileage = Column(Integer, nullable=False, default=0, server_default="0")
     next_service_km = Column(Integer, nullable=True)
+
+    # ✅ MILEAGE TRACKING (replaces the removed awaiting_mileage status).
+    # True = vehicle returned from a trip but return mileage not yet logged.
+    # The vehicle STAYS rentable (available) — no more stuck cars. A task/alert
+    # prompts the operator to log mileage; logging clears the flag.
+    mileage_due = Column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     
     # Compliance & Documentation (URLs bounded to 500 chars)
     insurance_number = Column(String(100), nullable=True)
@@ -87,4 +103,8 @@ class Vehicle(Base, AuditMixin):
         # 7. Single Vehicle Lookup with Tenant Scoping
         # Query: WHERE tenant_id = ? AND id = ?
         Index("ix_vehicles_tenant_id", "tenant_id", "id"),
+
+        # 8. Mileage-due fleet view (operators see which returned cars need logging)
+        # Query: WHERE tenant_id = ? AND mileage_due = true
+        Index("ix_vehicles_tenant_mileage_due", "tenant_id", "mileage_due"),
     )

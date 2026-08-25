@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from pydantic import BaseModel, Field, model_validator
-from app.models.bookings import BookingStatus
+from app.models.bookings import BookingStatus, CancellationReason
 
 # 💡 Import nested schemas so Pydantic serializes joined relations
 from app.schemas.client import ClientOut
@@ -21,7 +21,7 @@ class BookingBase(BaseModel):
     daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
     total_amount: Decimal = Field(gt=0, decimal_places=2)
     currency_code: str = Field(default="KES", min_length=3, max_length=3)
-    
+
     # ✅ MILESTONE 1: Service type + exact times
     service_type: str = "selfdrive"
     pickup_at: Optional[datetime] = None
@@ -32,10 +32,6 @@ class BookingBase(BaseModel):
 
     @model_validator(mode="after")
     def check_dates(self):
-        # ✅ MILESTONE 2 LOCKDOWN: same-day rentals are legal (chauffeur day trips,
-        # weddings, airport runs). Exact-time ordering is enforced by the pricing
-        # engine (return_at must be strictly after pickup_at); here we only reject
-        # a return BEFORE the pickup day.
         if self.end_date < self.start_date:
             raise ValueError("end_date cannot be before start_date")
         return self
@@ -49,9 +45,8 @@ class BookingUpdate(BaseModel):
     """
     ✅ SECURITY: Removed 'status' field.
     Status transitions are controlled by business logic (vehicle pickup, return, cancellation).
-    
+
     ✅ IMMUTABLE FIELDS: 'client_id', 'vehicle_id', and 'original_end_date' are excluded.
-    These are set at creation or by the extension logic, not by direct updates.
     """
     destination: Optional[str] = Field(default=None, max_length=255)
     start_date: Optional[datetime] = None
@@ -61,23 +56,31 @@ class BookingUpdate(BaseModel):
     daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
     total_amount: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
     currency_code: Optional[str] = Field(default=None, min_length=3, max_length=3)
-    
-    # ✅ MILESTONE 1: Service type + exact times
+
     service_type: Optional[str] = None
     pickup_at: Optional[datetime] = None
     scheduled_return_at: Optional[datetime] = None
 
-    # ✅ MILESTONE 2: Staff driver assignment / reassignment / unassignment (null clears)
     driver_id: Optional[int] = None
 
     @model_validator(mode="after")
     def check_dates(self):
-        """Validate date range if both dates are provided."""
         if self.start_date and self.end_date:
-            # ✅ MILESTONE 2 LOCKDOWN: allow same-day updates
             if self.end_date < self.start_date:
                 raise ValueError("end_date cannot be before start_date")
         return self
+
+
+class CancelBookingPayload(BaseModel):
+    """
+    ✅ LIFECYCLE: cancel-with-reason. `reason` is validated against the
+    CancellationReason enum (str-enum → Pydantic coerces + rejects invalid).
+    Terminal status is always `cancelled`; the reason preserves business meaning.
+    """
+    reason: CancellationReason = Field(
+        ..., description="client_cancelled | agency_cancelled | no_show | expired_unpaid",
+    )
+    note: Optional[str] = Field(default=None, max_length=500)
 
 
 class BookingOut(BaseModel):
@@ -100,14 +103,20 @@ class BookingOut(BaseModel):
     archived_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
-    
+
     # ✅ MILESTONE 1: Service type + exact times + pricing snapshot
     service_type: str
     pickup_at: Optional[datetime] = None
     scheduled_return_at: Optional[datetime] = None
+    actual_return_at: Optional[datetime] = None  # ✅ set on complete (late-return reconciliation)
     pricing_day_hours: Optional[int] = None
     pricing_grace_minutes: Optional[int] = None
     pricing_overtime_hourly_rate: Optional[Decimal] = None
+
+    # ✅ LIFECYCLE: cancellation metadata (replaces removed no_show status)
+    cancellation_reason: Optional[CancellationReason] = None
+    cancelled_at: Optional[datetime] = None
+    cancelled_by: Optional[int] = None
 
     # ✅ MILESTONE 2: Staff driver link
     driver_id: Optional[int] = None
@@ -120,7 +129,7 @@ class BookingOut(BaseModel):
     # 💡 NESTED RELATIONSHIPS:
     client: Optional[ClientOut] = None
     vehicle: Optional[VehicleOut] = None
-    driver: Optional[DriverOut] = None  # ✅ MILESTONE 2: nested driver (full detail)
+    driver: Optional[DriverOut] = None
 
     model_config = {"from_attributes": True}
 
@@ -131,19 +140,13 @@ class BookingQuote(BaseModel):
     service_type: str = "selfdrive"
     pickup_at: datetime
     return_at: datetime
-    # ✅ MILESTONE 2: Optional driver for per-driver fee resolution
     driver_id: Optional[int] = None
-    # ✅ Future-proof for distance_time, fixed_route, route_stops
     distance_km: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     route_key: Optional[str] = Field(default=None, max_length=100)
     stops: Optional[int] = Field(default=None, ge=0)
 
 
-# ✅ EXTENSION PAYLOAD: For Milestone 2 Booking Extensions
+# ✅ EXTENSION PAYLOAD
 class ExtendBookingPayload(BaseModel):
-    """
-    ✅ VALIDATION: Ensures new_end_date is after the CURRENT end_date.
-    The router will compare this against the booking's actual end_date.
-    """
     new_end_date: datetime = Field(..., description="Must be after the current end_date")
     extension_reason: Optional[str] = Field(default=None, max_length=500)
