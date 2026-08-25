@@ -107,3 +107,4 @@ websockets==10.4
 wrapt==2.2.2
 zipp==4.1.0
 zopfli==0.4.3
+httpx==0.28.1

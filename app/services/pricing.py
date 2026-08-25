@@ -1,10 +1,13 @@
-# app/services/pricing.py
 """
 Time-Aware Pricing Engine — strategy dispatch over a shared rate card.
 
 Billing models (selected via tenant config override or catalog default):
-  rolling_24h    24h countdown from pickup; grace; hourly OT (capped at day rate);
-                 driver fee stack (daily + OT + accommodation).
+  rolling_24h    ANY part of a 24h block bills as 1 FULL day (min 1 day).
+                 30 min, 10 h, 24 h → 1 day. 24h01m → 2 days. 47h → 2 days.
+                 ✅ NO hourly proration, NO grace in pricing.
+                 grace_minutes is OPERATIONAL ONLY (overdue alerts on the
+                 frontend/dashboard), never part of the rental price.
+                 Driver fee stack (daily + accommodation) applies.
   event_base     single event: flat base (base_hours, e.g. 12h wedding) +
                  hourly add-ons (waivable); driver stack applies.
   hourly         rate × hours with min_charge_hours; all-inclusive (no driver stack).
@@ -170,7 +173,6 @@ def calculate(
 
     elapsed_seconds = (return_at - pickup_at).total_seconds()
     day_seconds = day_hours * 3600
-    grace_seconds = grace_minutes * 60
 
     ZERO = Decimal("0.00")
     included_days = 0
@@ -183,31 +185,22 @@ def calculate(
 
     # ── rolling_24h ─────────────────────────────────────────────
     if model == BillingModel.rolling_24h.value:
-        full_days = int(elapsed_seconds // day_seconds)
-        remainder = elapsed_seconds - (full_days * day_seconds)
-        included_days = max(1, full_days)
-        if full_days >= 1 and remainder > 0:
-            grace_used_seconds = min(remainder, grace_seconds)
-            overtime_seconds = max(0.0, remainder - grace_seconds)
-            extra_hours = math.ceil(overtime_seconds / 3600) if overtime_seconds else 0
+        # ✅ ANY part of a 24h block bills as 1 FULL day (min 1 day).
+        # 30 min, 10 h, 24 h → 1 day. 24h01m → 2 days. 47h → 2 days.
+        # NO hourly proration, NO grace in pricing.
+        included_days = max(1, math.ceil(elapsed_seconds / day_seconds))
         base_charge = _q(daily_rate * included_days)
         lines.append(PricingLine(
             f"{definition.display_name} rental",
             f"{included_days} day(s) x {day_hours}h", base_charge))
-        if extra_hours:
-            raw = per_hour * extra_hours
-            if cap_overtime_at_day_rate:
-                raw = min(raw, daily_rate)
-            overtime_charge = _q(raw)
-            lines.append(PricingLine("Vehicle overtime (after grace)",
-                                     f"{extra_hours} hr(s)", overtime_charge))
+        # extra_hours, overtime_charge stay 0 for rolling_24h
 
     # ── event_base (wedding) ────────────────────────────────────
     elif model == BillingModel.event_base.value:
         included_days = 1
         base_seconds = day_hours * 3600
         extra_seconds = max(0.0, elapsed_seconds - base_seconds)
-        grace_used_seconds = min(extra_seconds, grace_seconds)
+        grace_used_seconds = min(extra_seconds, grace_minutes * 60)
         overtime_seconds = max(0.0, extra_seconds - grace_seconds)
         extra_hours = math.ceil(overtime_seconds / 3600) if overtime_seconds else 0
         base_charge = _q(daily_rate)   # flat event package (12h base)

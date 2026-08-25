@@ -147,6 +147,23 @@ class Settings(BaseSettings):
     cloudinary_api_secret: str = ""         # from Cloudinary dashboard
     
     # ─────────────────────────────────────────────────────────────────────────
+    # 📱 M-PESA (DARAJA) PAYMENT INTEGRATION
+    # ─────────────────────────────────────────────────────────────────────────
+    # Base URL: https://sandbox.safaricom.co.ke (dev) or https://api.safaricom.co.ke (prod)
+    mpesa_base_url: str = "https://sandbox.safaricom.co.ke"
+    # OAuth credentials from Daraja dashboard (My Apps tab)
+    mpesa_consumer_key: str = ""
+    mpesa_consumer_secret: str = ""
+    # Business shortcode: 174379 (sandbox) or your real Pochi/Paybill number (production)
+    mpesa_shortcode: str = "174379"
+    # Passkey for STK Push: public sandbox value or your production passkey
+    mpesa_passkey: str = ""
+    # Security credential for refunds/B2C (encrypted initiator password)
+    mpesa_security_credential: str = ""
+    # Callback URL where Safaricom posts payment results
+    mpesa_callback_url: str = "https://rental-manager-backend-live.onrender.com/api/v1/payments/mpesa/callback"
+    
+    # ─────────────────────────────────────────────────────────────────────────
     # 🔒 FILE UPLOAD SECURITY
     # ─────────────────────────────────────────────────────────────────────────
     # Maximum file size in bytes (default: 10MB)
@@ -372,6 +389,25 @@ class Settings(BaseSettings):
         if v < 0:
             raise ValueError("max_concurrent_sessions cannot be negative")
         return v
+    
+    # ✅ M-PESA VALIDATORS
+    @field_validator("mpesa_base_url", "mpesa_callback_url")
+    @classmethod
+    def validate_mpesa_urls(cls, v: str) -> str:
+        """Ensure M-Pesa URLs are properly formatted."""
+        if not v or not v.strip():
+            return v  # Allow empty for optional fields
+        if not v.startswith(("http://", "https://")):
+            raise ValueError(f"M-Pesa URL must start with http:// or https://, got: {v}")
+        return v.strip()
+    
+    @field_validator("mpesa_consumer_key", "mpesa_consumer_secret", "mpesa_passkey")
+    @classmethod
+    def validate_mpesa_credentials(cls, v: str) -> str:
+        """Ensure M-Pesa credentials are properly formatted strings."""
+        if v is None:
+            return ""
+        return v.strip()
 
 
 @lru_cache
@@ -464,5 +500,10 @@ def get_security_config_summary() -> dict:
         "file_upload": {
             "max_size_bytes": settings.max_upload_size,
             "allowed_extensions": settings.allowed_file_extensions,
+        },
+        "mpesa": {
+            "base_url": settings.mpesa_base_url,
+            "shortcode": settings.mpesa_shortcode,
+            "callback_url": settings.mpesa_callback_url,
         },
     }

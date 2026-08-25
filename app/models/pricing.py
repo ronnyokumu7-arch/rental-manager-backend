@@ -1,4 +1,3 @@
-# app/models/pricing.py
 """
 Service Pricing Configuration (tenant-scoped).
 
@@ -13,7 +12,11 @@ Pricing architecture (Milestone 1.1):
     New pricing models ship WITHOUT schema migrations.
 
 Billing models (strategies in app/services/pricing.py):
-  rolling_24h    24h countdown from pickup; grace; hourly OT (capped).
+  rolling_24h    ANY part of a 24h block bills as 1 FULL day (min 1 day).
+                 30 min, 10 h, 24 h → 1 day. 24h01m → 2 days. 47h → 2 days.
+                 ✅ NO hourly proration, NO grace in pricing.
+                 grace_minutes is OPERATIONAL ONLY (overdue alerts on the
+                 frontend/dashboard), never part of the rental price.
   event_base     flat base hours (12h wedding) + hourly add-ons.
   hourly         rate × hours with min charge.
   package        half-day / full-day blocks + extra hours.
@@ -69,16 +72,22 @@ class ServicePricingConfig(Base, AuditMixin):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
 
-    # Hours that constitute one billable day (24 selfdrive/pro_driver, 12 wedding)
+    # Hours that constitute one billable day (24 selfdrive/pro_driver, 12 wedding).
+    # rolling_24h: billable_days = max(1, ceil(duration / day_hours)).
     day_hours = Column(Integer, nullable=False, default=24)
 
-    # Free buffer after the rental period exhausts, in minutes (standard: 60)
+    # ✅ OPERATIONAL ONLY: buffer after rental end used for OVERDUE ALERTS
+    # (frontend/dashboard flags a trip overdue grace_minutes after return time).
+    # NEVER used in rental price calculation.
     grace_minutes = Column(Integer, nullable=False, default=60)
 
-    # Hourly overtime rate for the VEHICLE. NULL → derived: daily_rate / day_hours
+    # Hourly rate used ONLY by non-rolling models (event_base/hourly/package
+    # add-ons). NOT used by rolling_24h — partial blocks bill as full days.
+    # NULL → derived: daily_rate / day_hours
     overtime_hourly_rate = Column(Numeric(10, 2), nullable=True)
 
-    # ✅ Safety valve: vehicle overtime can never exceed one full day rate
+    # ✅ Safety valve for the models that DO charge hourly: overtime can never
+    # exceed one full day rate. Irrelevant for rolling_24h.
     overtime_cap_at_day_rate = Column(Boolean, nullable=False, default=True)
 
     # ✅ MILESTONE 1: DRIVER FEE STACK (chauffeur services when configured)

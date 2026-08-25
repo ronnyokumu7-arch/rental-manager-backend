@@ -7,3 +7,4 @@ __pycache__/
 .pytest_cache/
 storage/
 uploads/
+test_stk.py
