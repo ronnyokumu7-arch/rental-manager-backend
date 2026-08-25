@@ -49,7 +49,7 @@ from app.routers import (
 
 # ✅ FIX: Agency Health router was orphaned in app/routers/endpoints/health.py
 # It was never imported, so FastAPI never registered /tenants/{id}/health → 404.
-from app.routers.endpoints.health import router as agency_health_router
+from app.endpoints.health import router as agency_health_router
 
 # ✅ Initialize settings early
 settings = get_settings()
