@@ -16,7 +16,7 @@ import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -168,4 +168,16 @@ async def get_signed_file_url(
             detail="Signed URLs unavailable for this storage backend"
         )
 
-    return {"url": signed, "ttl_seconds": SIGNED_URL_TTL_SECONDS}
+    
+    return JSONResponse(
+        content={"url": signed, "ttl_seconds": SIGNED_URL_TTL_SECONDS},
+        headers={
+            # ✅ MOBILE CORS: Some mobile browsers reject responses without explicit CORS
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+            # ✅ Prevent carrier proxy caching (critical for signed URLs)
+            "Cache-Control": "no-store, no-cache, must-revalidate, private",
+            "Pragma": "no-cache",
+        },
+    )
