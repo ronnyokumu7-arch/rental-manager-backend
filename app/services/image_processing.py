@@ -86,13 +86,37 @@ async def process_upload(file: UploadFile, category: str = "compliance") -> Tupl
     except Exception:
         pass  # no EXIF or unparseable — keep original orientation
 
-    # 2. Flatten alpha to white background (PNG/WebP transparency → clean JPEG)
+    # 2. Handle alpha channel (signature vs photo detection)
     if img.mode in ("RGBA", "LA", "P"):
-        bg = Image.new("RGB", img.size, (255, 255, 255))
+        # Convert palette mode to RGBA for consistent alpha access
         if img.mode == "P":
             img = img.convert("RGBA")
-        bg.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
-        img = bg
+        
+        # ✅ SIGNATURE DETECTION: if >85% of pixels are transparent, this is a
+        # signature (ink on transparent background) — preserve as PNG.
+        # Photos with alpha (rare) have <50% transparency → flatten to white.
+        alpha = img.split()[-1]  # Extract alpha channel
+        transparent_pixels = sum(1 for px in alpha.getdata() if px < 128)
+        total_pixels = img.width * img.height
+        transparency_ratio = transparent_pixels / total_pixels
+        
+        if transparency_ratio > 0.85:
+            # ✅ SIGNATURE PATH: preserve transparency, save as PNG
+            w, h = img.size
+            longest = max(w, h)
+            if longest > MAX_LONG_EDGE:
+                scale = MAX_LONG_EDGE / longest
+                new_size = (int(w * scale), int(h * scale))
+                img = img.resize(new_size, Image.LANCZOS)
+            
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            return buf.getvalue(), "png"
+        else:
+            # ✅ PHOTO PATH: flatten alpha to white (existing behavior)
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            bg.paste(img, mask=alpha)
+            img = bg
     elif img.mode != "RGB":
         img = img.convert("RGB")
 
