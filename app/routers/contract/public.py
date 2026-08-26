@@ -115,14 +115,9 @@ async def sign_contract_public(
     now = datetime.now(timezone.utc)
     booking = await _load_booking_locked(db, contract.booking_id)
 
-    # ✅ GATE: signing is the final handover step — only live at/after pickup.
-    pickup = booking.pickup_at or booking.start_date
-    pickup_aware = pickup if pickup.tzinfo else pickup.replace(tzinfo=timezone.utc)
-    if now < pickup_aware:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Signing opens at the scheduled pickup time.",
-        )
+    # ✅ SIGNING IS ALWAYS AVAILABLE — no time gate.
+    # Clients can sign immediately to lock in the booking.
+    # Auto-start is handled separately by the scheduler at pickup time.
 
     # ✅ Signature upload (Cloudinary via storage service)
     signature_b64 = payload.signature.split(",")[1] if "," in payload.signature else payload.signature
@@ -141,11 +136,12 @@ async def sign_contract_public(
     contract.pdf_path = None   # force fresh render with signature
     await db.flush()
 
-    # ✅ SIGNED ⇒ AUTO-START (handover happened). Manual "Start Trip" = fallback.
+    # ✅ Best-effort auto-start attempt. If preconditions aren't met (e.g., vehicle not ready),
+    # the operator can manually start the trip, and the scheduler will retry at pickup time.
     try:
         await BookingLifecycleService.start_trip_auto(db, booking)
-    except HTTPException:
-        pass  # preconditions not met → operator starts the trip manually
+    except Exception:
+        pass  # Precondition not met → handled by manual action or scheduler
 
     await db.commit()
     await db.refresh(contract)
