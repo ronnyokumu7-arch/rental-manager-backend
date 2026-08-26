@@ -153,7 +153,7 @@ async def retire_vehicle(
 
 
 # =============================================================================
-# ✅ MILEAGE UPDATE: Resolves the awaiting_mileage lock
+# ✅ MILEAGE UPDATE: Uses mileage_due flag (awaiting_mileage removed)
 # =============================================================================
 
 @router.patch("/{vehicle_id}/update-mileage", response_model=VehicleOut)
@@ -167,18 +167,21 @@ async def update_vehicle_mileage(
 ):
     vehicle = await get_authorized_vehicle_async(vehicle_id, current_user, db)
     
-    # 1. Enforce State: Only vehicles awaiting mileage can use this endpoint
-    if vehicle.status != VehicleStatus.awaiting_mileage:
+    # 1. Enforce State: Accept when mileage_due=True (trip return) OR status is operational
+    if not vehicle.mileage_due and vehicle.status not in (
+        VehicleStatus.available, 
+        VehicleStatus.maintenance
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Mileage can only be updated for vehicles currently awaiting mileage."
+            detail="Mileage can only be updated for vehicles with pending mileage or in operational status."
         )
         
     # 2. Validate Logic: Odometer must move forward
-    if payload.current_mileage <= vehicle.current_mileage:
+    if payload.current_mileage < vehicle.current_mileage:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New mileage must be strictly greater than the current mileage."
+            detail=f"New mileage ({payload.current_mileage} km) must be greater than or equal to current mileage ({vehicle.current_mileage} km)."
         )
         
     # 3. Apply Updates
@@ -186,8 +189,8 @@ async def update_vehicle_mileage(
     if payload.next_service_km is not None:
         vehicle.next_service_km = payload.next_service_km
         
-    # 4. Unlock the Fleet: Flip status back to available
-    vehicle.status = VehicleStatus.available
+    # 4. Clear the mileage_due flag (operator has logged the return)
+    vehicle.mileage_due = False
     
     await db.commit()
     await db.refresh(vehicle)
