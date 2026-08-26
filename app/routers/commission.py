@@ -82,9 +82,16 @@ async def commission_summary(
     today_start = _today_start()
 
     # 1) Today's counter (resets at 00:00H)
+    # ✅ Count shows ALL trips (informational); money sums only NON-WAIVED
+    # (manually-waived events must never inflate what's owed).
     stmt_today = select(
         func.count(CommissionEvent.id),
-        func.coalesce(func.sum(CommissionEvent.amount), 0),
+        func.coalesce(
+            func.sum(CommissionEvent.amount).filter(
+                CommissionEvent.status != CommissionStatus.waived
+            ),
+            0,
+        ),
     ).where(
         CommissionEvent.tenant_id == target,
         CommissionEvent.trip_started_at >= today_start,

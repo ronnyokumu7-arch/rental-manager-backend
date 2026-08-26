@@ -1,3 +1,4 @@
+# app/services/booking_lifecycle.py
 """
 BookingLifecycleService — SINGLE SOURCE OF TRUTH for booking + vehicle transitions.
 
@@ -7,6 +8,7 @@ BookingLifecycleService — SINGLE SOURCE OF TRUTH for booking + vehicle transit
   - Idempotent: re-calling a completed transition returns current state, never corrupts.
   - Status-respecting: each transition only fires from its allowed source states.
   - Vehicle sync owned HERE: `rented` is set only by booking transitions, atomically.
+  - Commission owned HERE: trial-exempt, rate from PlatformSettings, fires once per trip.
 
 Routers delegate to this service; they no longer set booking.status / vehicle.status
 directly.
@@ -107,7 +109,8 @@ class BookingLifecycleService:
         booking.status = BookingStatus.active
         vehicle.status = VehicleStatus.rented   # ✅ owned exclusively by this transition
 
-        await cls._create_commission_event(db, booking, current_user)
+        # ✅ Commission (trial-exempt, operator-triggered)
+        await cls._create_commission_event(db, booking, current_user.tenant_id, current_user.id)
 
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
@@ -170,12 +173,21 @@ class BookingLifecycleService:
         await cls._invalidate(db, current_user.tenant_id)
         return await cls._reload(db, booking.id)
 
-    # ─── COMMISSION (fires once per trip) ──────────────────────────────────
+    # ─── COMMISSION (fires once per trip — SINGLE SOURCE OF TRUTH) ─────────
     @staticmethod
     async def _create_commission_event(
-        db: AsyncSession, booking: Booking, current_user: User,
+        db: AsyncSession,
+        booking: Booking,
+        tenant_id: int,
+        created_by: Optional[int],
     ) -> None:
-        tenant = await db.get(Tenant, current_user.tenant_id)
+        """
+        ✅ TRIAL RULE: trips started during the free trial create NO event —
+        the tenant owes nothing and nothing is counted.
+        ✅ RATE: read from PlatformSettings (super-admin configurable).
+        ✅ booking_id is unique → a trip can never be double-charged.
+        """
+        tenant = await db.get(Tenant, tenant_id)
         now = datetime.now(timezone.utc)
         in_trial = (
             tenant is not None
@@ -191,14 +203,13 @@ class BookingLifecycleService:
         amount = Decimal(settings.commission_amount) if settings else Decimal("150.00")
 
         db.add(CommissionEvent(
-            tenant_id=current_user.tenant_id,
-            booking_id=booking.id,          # unique → never double-charged
+            tenant_id=tenant_id,
+            booking_id=booking.id,
             amount=amount,
             currency_code="KES",
             status=CommissionStatus.unpaid,
-            created_by=current_user.id,
+            created_by=created_by,
         ))
-
 
     # ─── CLIENT-DRIVEN (public, no authenticated user) — flush-only ────────
     @classmethod
@@ -237,12 +248,11 @@ class BookingLifecycleService:
         await db.flush()
         return booking
 
-
     @classmethod
     async def start_trip_auto(cls, db: AsyncSession, booking: Booking) -> Booking:
         """
         ✅ Signed-at-handover ⇒ auto-start. FLUSH only — caller commits.
-        No authenticated user (public sign); commission created_by=None.
+        No authenticated user (public sign) → commission created_by=None.
         Raises if preconditions fail — caller falls back to manual Start Trip.
         """
         if booking.status == BookingStatus.active:
@@ -263,19 +273,8 @@ class BookingLifecycleService:
         booking.status = BookingStatus.active
         vehicle.status = VehicleStatus.rented
 
-        # Commission (trial-exempt); system-triggered → created_by=None
-        tenant = await db.get(Tenant, booking.tenant_id)
-        now = datetime.now(timezone.utc)
-        in_trial = tenant is not None and tenant.trial_ends_at is not None and tenant.trial_ends_at > now
-        if not in_trial:
-            settings = (await db.execute(
-                select(PlatformSettings).where(PlatformSettings.id == 1)
-            )).scalars().first()
-            amount = Decimal(settings.commission_amount) if settings else Decimal("150.00")
-            db.add(CommissionEvent(
-                tenant_id=booking.tenant_id, booking_id=booking.id, amount=amount,
-                currency_code="KES", status=CommissionStatus.unpaid, created_by=None,
-            ))
+        # ✅ Commission (trial-exempt); system-triggered → created_by=None
+        await cls._create_commission_event(db, booking, booking.tenant_id, None)
 
         await db.flush()
         return booking
