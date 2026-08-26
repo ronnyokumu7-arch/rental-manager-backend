@@ -22,7 +22,7 @@ from app.core.permissions import ALL_PERMISSION_KEYS
 from app.schemas.user import UserOut, UserUpdate, SuperAdminUserCreate, SuperAdminUserUpdate, UserInviteCreate, UserCreateResponse
 from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.services.email import send_welcome_email
-from app.services.cache import get_cached_user_list, set_cached_user_list, invalidate_user_cache
+from app.services.cache import get_cached_user_list, set_cached_user_list, invalidate_user_cache, invalidate_tenant_cache
 from app.services.activity_log import ActivityLogService
 from ._helpers import (
     _validate_job_title_and_department,
@@ -262,7 +262,7 @@ async def update_user(
             # Only commit and invalidate if we actually changed something
             if sync_needed:
                 await db.commit()
-                await invalidate_tenant_cache(user.tenant_id)
+                await invalidate_tenant_cache()
         
     await ActivityLogService.log(
         db=db, tenant_id=user.tenant_id or 0, user_id=current_user.id,
