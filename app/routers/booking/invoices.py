@@ -37,7 +37,7 @@ class GenerateInvoicePayload(BaseModel):
     )
     due_date: Optional[datetime] = Field(
         default=None, 
-        description="Optional due date (must be in the future)"
+        description="Optional due date (today or later)"
     )
     notes: Optional[str] = Field(
         default=None, 
@@ -58,12 +58,14 @@ async def generate_invoice(
     # ✅ FIX: Use correct helper signature (booking_id, user, db)
     booking = await get_authorized_booking_async(booking_id, current_user, db)
     
-    # ✅ Validate due_date if provided
+    # ✅ Validate due_date ONLY when provided (payload body is optional).
+    # Due date is a calendar day — today is valid (pay-on-delivery, same-day
+    # settlements). Only past days are rejected.
     if payload and payload.due_date:
-        if payload.due_date <= datetime.now(timezone.utc):
+        if payload.due_date.date() < datetime.now(timezone.utc).date():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Due date must be in the future."
+                detail="Due date cannot be in the past."
             )
 
     # ✅ Pass customizations (including rate override) to the robust service
