@@ -36,14 +36,18 @@ class BookingLifecycleService:
 
     # ─── LOCKED LOADERS (tenant-scoped) ────────────────────────────────────
     @staticmethod
-    async def _load_booking_locked(
-        db: AsyncSession, booking_id: int, tenant_id: int,
-    ) -> Booking:
-        stmt = select(Booking).where(Booking.id == booking_id).with_for_update()
-        booking = (await db.execute(stmt)).scalars().first()
-        if not booking or booking.tenant_id != tenant_id:
-            raise HTTPException(status_code=404, detail="Booking not found.")
-        return booking
+    async def _reload(db: AsyncSession, booking_id: int) -> Booking:
+        from sqlalchemy.orm import selectinload
+        stmt = (
+            select(Booking)
+            .options(
+                selectinload(Booking.client),
+                selectinload(Booking.vehicle),
+                selectinload(Booking.driver),   # ✅ FIXED: was missing → MissingGreenlet on serialize
+            )
+            .where(Booking.id == booking_id)
+        )
+        return (await db.execute(stmt)).scalars().unique().first()
 
     @staticmethod
     async def _load_vehicle_locked(
