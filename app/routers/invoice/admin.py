@@ -20,11 +20,11 @@ from app.schemas.pagination import PaginatedResponse, paginate_items
 from app.services.cache import (
     get_cached_invoice_list, set_cached_invoice_list,
     invalidate_invoice_cache, invalidate_subscription_cache,
-    invalidate_booking_cache,  # ✅ PHASE 1: booking totals can move with invoice edits
+    invalidate_booking_cache,
 )
 from app.services.invoice_pdf import generate_invoice_pdf
 from app.services.invoices import create_invoice_for_booking
-from app.services.invoice_sync import sync_invoice_to_booking  # ✅ PHASE 1
+from app.services.invoice_sync import sync_invoice_to_booking
 
 router = APIRouter()
 settings = get_settings()
@@ -33,18 +33,38 @@ settings = get_settings()
 # ✅ NEW: Helper to safely convert Invoice → InvoiceOut with denormalized UI fields
 def serialize_invoice(invoice: Invoice) -> InvoiceOut:
     """Manually populate denormalized UI fields to prevent MissingGreenlet errors."""
-    data = InvoiceOut.model_validate(invoice)  # Base serialization (handles nested objects)
-    
-    # ✅ Safely populate flat fields using getattr (avoids lazy-loading)
-    # Invoice has a relationship: invoice.booking -> booking.client
     booking = invoice.booking
     client = getattr(booking, "client", None) if booking else None
     
-    data.client_name = getattr(client, "full_name", None) if client else None
-    data.client_phone = getattr(client, "phone", None) if client else None
-    data.booking_number = getattr(booking, "booking_number", None) if booking else None
-    
-    return data
+    return InvoiceOut(
+        id=invoice.id,
+        tenant_id=invoice.tenant_id,
+        booking_id=invoice.booking_id,
+        invoice_number=invoice.invoice_number,
+        status=invoice.status,
+        doc_type=invoice.doc_type,
+        share_token=invoice.share_token,
+        share_token_expires_at=invoice.share_token_expires_at,
+        amount_due=invoice.amount_due,
+        amount_paid=invoice.amount_paid,
+        discount_amount=invoice.discount_amount,
+        discount_reason=invoice.discount_reason,
+        currency_code=invoice.currency_code,
+        due_date=invoice.due_date,
+        paid_at=invoice.paid_at,
+        pdf_path=invoice.pdf_path,
+        notes=invoice.notes,
+        created_at=invoice.created_at,
+        updated_at=invoice.updated_at,
+        
+        # ✅ Manually set denormalized fields
+        booking_number=getattr(booking, "booking_number", None) if booking else None,
+        client_id=client.id if client else None,
+        client_name=getattr(client, "full_name", None) if client else None,
+        client_phone=getattr(client, "phone", None) if client else None,
+        vehicle_plate=getattr(booking.vehicle, "plate_number", None) if booking and booking.vehicle else None,
+        vehicle_name=f"{booking.vehicle.make} {booking.vehicle.model}" if booking and booking.vehicle else None,
+    )
 
 
 @router.get("/", response_model=PaginatedResponse[InvoiceOut])

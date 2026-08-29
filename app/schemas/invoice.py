@@ -73,31 +73,19 @@ class InvoiceOut(BaseModel):
     # and only feeds the computed fields below, so Any is correct and safe.
     booking: Optional[Any] = Field(default=None, exclude=True)
 
+    # ✅ CHANGED: Converted from @computed_field to regular mutable fields
+    # (so we can set them manually in serialize_invoice)
+    booking_number: Optional[str] = None
+    client_id: Optional[int] = None
+    client_name: Optional[str] = None
+    client_phone: Optional[str] = None
+    vehicle_plate: Optional[str] = None
+    vehicle_name: Optional[str] = None
+
     @computed_field
     @property
     def remaining_balance(self) -> Decimal:
         return max(Decimal("0"), self.amount_due - (self.amount_paid or Decimal("0")))
-
-    @computed_field
-    @property
-    def booking_number(self) -> Optional[str]:
-        if self.booking and hasattr(self.booking, 'booking_number'):
-            return self.booking.booking_number
-        return None
-
-    @computed_field
-    @property
-    def client_id(self) -> Optional[int]:
-        if self.booking and hasattr(self.booking, 'client') and self.booking.client:
-            return getattr(self.booking.client, 'id', None)
-        return None
-
-    @computed_field
-    @property
-    def client_name(self) -> Optional[str]:
-        if self.booking and hasattr(self.booking, 'client') and self.booking.client:
-            return getattr(self.booking.client, 'full_name', None)
-        return None
 
     model_config = {"from_attributes": True}
 
