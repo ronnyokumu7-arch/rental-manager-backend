@@ -18,8 +18,13 @@ class BookingBase(BaseModel):
     destination: Optional[str] = Field(default=None, max_length=255)
     pickup_location: Optional[str] = Field(default=None, max_length=255)
     return_location: Optional[str] = Field(default=None, max_length=255)
+    
+    # ✅ PHASE 1: daily_rate is now optional (server uses vehicle.daily_rate if not provided)
+    # If client sends a value, it becomes the effective rate for THIS booking only
     daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
-    total_amount: Decimal = Field(gt=0, decimal_places=2)
+    
+    # ✅ PHASE 1: total_amount is now optional (server computes it via pricing engine)
+    total_amount: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     currency_code: str = Field(default="KES", min_length=3, max_length=3)
 
     # ✅ MILESTONE 1: Service type + exact times
@@ -104,14 +109,22 @@ class BookingOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    # ✅ MILESTONE 1: Service type + exact times + pricing snapshot
+    # ✅ MILESTONE 1: Service type + exact times
     service_type: str
     pickup_at: Optional[datetime] = None
     scheduled_return_at: Optional[datetime] = None
     actual_return_at: Optional[datetime] = None  # ✅ set on complete (late-return reconciliation)
+    
+    # ✅ LEGACY PRICING SNAPSHOT (kept for old data, no longer used in Phase 1)
     pricing_day_hours: Optional[int] = None
     pricing_grace_minutes: Optional[int] = None
     pricing_overtime_hourly_rate: Optional[Decimal] = None
+    
+    # ✅ PHASE 1: Self-Drive Pricing Snapshot (immutable after creation)
+    billable_days: Optional[int] = None
+    computed_total: Optional[Decimal] = None
+    manually_adjusted: bool = False
+    price_note: Optional[str] = None
 
     # ✅ LIFECYCLE: cancellation metadata (replaces removed no_show status)
     cancellation_reason: Optional[CancellationReason] = None
@@ -134,16 +147,18 @@ class BookingOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# ✅ MILESTONE 1: Live pricing preview request (no DB writes)
+# ✅ PHASE 1: Self-Drive Quote Request (simplified for Phase 1)
 class BookingQuote(BaseModel):
     vehicle_id: int
-    service_type: str = "selfdrive"
     pickup_at: datetime
     return_at: datetime
     driver_id: Optional[int] = None
-    distance_km: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
-    route_key: Optional[str] = Field(default=None, max_length=100)
-    stops: Optional[int] = Field(default=None, ge=0)
+    daily_rate_override: Optional[Decimal] = Field(
+        default=None, 
+        gt=0, 
+        decimal_places=2,
+        description="Override vehicle daily rate for this quote only"
+    )
 
 
 # ✅ EXTENSION PAYLOAD

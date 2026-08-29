@@ -21,7 +21,6 @@ from app.models.tenants import Tenant
 from app.models.tenant_profile import TenantProfile
 from app.services.browser_pool import browser_pool
 from app.services.storage import get_backend
-from app.services.pricing import calculate, get_pricing_config, resolve_driver_fees  # ✅ MILESTONE 2
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 template_env = Environment(
@@ -155,63 +154,46 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "LATE RETURNS: Returns over 2 hours late are treated as a new rental day (daily rates apply)."
     ]
 
-    # ✅ FIXED: Priority order for daily rate:
-    # 1. booking.daily_rate (admin-set override via invoice modal) — WINS if set
-    # 2. vehicle.daily_rate (vehicle's standard rate) — fallback
-    # 3. Derived from booking.total_amount — last-resort
-    # Rental days are inclusive of pickup AND return day (Aug 13 → Aug 14 = 2 days),
-    # so Total = daily_rate × days (6500 × 2 = 13000).
-    daily_rate = 0
-    if booking and booking.daily_rate:
-        daily_rate = booking.daily_rate            # ✅ BOOKING-SPECIFIC OVERRIDE WINS (set via invoice modal)
-    elif vehicle and vehicle.daily_rate:
-        daily_rate = vehicle.daily_rate            # fallback: vehicle's standard rate
-    elif booking and booking.total_amount and booking.start_date and booking.end_date:
-        days = (booking.end_date - booking.start_date).days + 1
-        daily_rate = booking.total_amount / days   # last-resort derivation (13000 / 2 = 6500)
+    # ✅ PHASE 1: Booking snapshot is the source of truth.
+    # Priority:
+    # 1. booking.daily_rate = effective booking-specific rate
+    # 2. vehicle.daily_rate = legacy fallback
+    # 3. derive from booking.total_amount / billable_days as last resort
+    daily_rate = Decimal("0.00")
+    rental_days = 1
 
-    # ✅ MILESTONE 2: Calculate driver fee breakdown for contract line items
+    if booking:
+        rental_days = (
+            booking.billable_days
+            if booking.billable_days is not None
+            else (booking.end_date - booking.start_date).days + 1
+        )
+        rental_days = max(1, rental_days)
+
+        if booking.daily_rate:
+            daily_rate = Decimal(str(booking.daily_rate))
+        elif vehicle and vehicle.daily_rate:
+            daily_rate = Decimal(str(vehicle.daily_rate))
+        elif booking.total_amount:
+            daily_rate = Decimal(str(booking.total_amount)) / Decimal(rental_days)
+
+    # ✅ PHASE 1: Driver fees from snapshot, no config lookup.
+    # Driver portion = booking total - vehicle subtotal.
+    # This preserves what the user actually charged, including manual adjustments.
+    driver_total = Decimal("0.00")
+    if booking and booking.total_amount and daily_rate:
+        vehicle_subtotal = daily_rate * Decimal(rental_days)
+        driver_total = max(
+            Decimal("0.00"),
+            Decimal(str(booking.total_amount)) - vehicle_subtotal,
+        )
+
     driver_fees_breakdown = {
-        "driver_daily": Decimal("0.00"),
+        "driver_daily": driver_total,
         "driver_overtime": Decimal("0.00"),
         "driver_accommodation": Decimal("0.00"),
-        "driver_total": Decimal("0.00"),
+        "driver_total": driver_total,
     }
-    
-    if booking and driver and booking.service_type != "selfdrive":
-        try:
-            config = await get_pricing_config(db, booking.tenant_id, booking.service_type)
-            fees = resolve_driver_fees(driver, config)
-            
-            # Calculate days (same logic as pricing engine)
-            pickup = booking.pickup_at or booking.start_date
-            return_at = booking.scheduled_return_at or booking.end_date
-            if pickup and return_at:
-                elapsed_seconds = (return_at - pickup).total_seconds()
-                day_hours = booking.pricing_day_hours or (config.day_hours if config else 24)
-                day_seconds = day_hours * 3600
-                full_days = int(elapsed_seconds // day_seconds)
-                included_days = max(1, full_days)
-                
-                # Driver daily fee
-                if fees["driver_daily_fee"]:
-                    driver_fees_breakdown["driver_daily"] = Decimal(str(fees["driver_daily_fee"])) * included_days
-                
-                # Driver overtime (only if extra_hours > 0, which we don't track on booking)
-                # Skip for now — would require re-running full pricing calculation
-                
-                # Driver accommodation (nights = included_days - 1)
-                nights = max(0, included_days - 1)
-                if fees["driver_night_accommodation_fee"] and nights:
-                    driver_fees_breakdown["driver_accommodation"] = Decimal(str(fees["driver_night_accommodation_fee"])) * nights
-                
-                driver_fees_breakdown["driver_total"] = (
-                    driver_fees_breakdown["driver_daily"] +
-                    driver_fees_breakdown["driver_overtime"] +
-                    driver_fees_breakdown["driver_accommodation"]
-                )
-        except Exception as e:
-            print(f"⚠️ Failed to calculate driver fees for contract: {e}")
 
     # 3. PREPARE CONTEXT FOR JINJA2 TEMPLATE
     context = {
@@ -225,7 +207,7 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "signature_data_uri": signature_data_uri,
         "policies": default_policies,
         "daily_rate": daily_rate,
-        "driver_fees": driver_fees_breakdown,  # ✅ MILESTONE 2: Driver fee breakdown
+        "driver_fees": driver_fees_breakdown,
     }
 
     # 4. RENDER HTML

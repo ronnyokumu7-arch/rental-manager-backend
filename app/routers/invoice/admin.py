@@ -17,9 +17,14 @@ from app.models.invoices import Invoice, InvoiceStatus
 from app.models.users import User
 from app.schemas.invoice import InvoiceCreate, InvoiceOut, InvoiceUpdate
 from app.schemas.pagination import PaginatedResponse, paginate_items
-from app.services.cache import get_cached_invoice_list, set_cached_invoice_list, invalidate_invoice_cache, invalidate_subscription_cache
+from app.services.cache import (
+    get_cached_invoice_list, set_cached_invoice_list,
+    invalidate_invoice_cache, invalidate_subscription_cache,
+    invalidate_booking_cache,  # ✅ PHASE 1: booking totals can move with invoice edits
+)
 from app.services.invoice_pdf import generate_invoice_pdf
 from app.services.invoices import create_invoice_for_booking
+from app.services.invoice_sync import sync_invoice_to_booking  # ✅ PHASE 1
 
 router = APIRouter()
 settings = get_settings()
@@ -160,6 +165,13 @@ async def update_invoice(
     for field, value in update_data.items():
         setattr(invoice, field, value)
 
+    # ✅ PHASE 1: human price override propagates to the linked booking.
+    # Runs BEFORE commit so invoice + booking persist atomically —
+    # the backend always knows the booking's real, adjusted total.
+    booking_synced = False
+    if "amount_due" in update_data:
+        booking_synced = (await sync_invoice_to_booking(db, invoice)) is not None
+
     await db.commit()
     
     # ✅ FIXED: Re-fetch with eager loading so InvoiceOut computed fields don't crash
@@ -169,8 +181,10 @@ async def update_invoice(
     result = await db.execute(stmt)
     invoice = result.scalars().unique().first()
     
-    # ✅ Invalidate cache
+    # ✅ Invalidate caches (booking cache too when its total moved)
     await invalidate_invoice_cache(current_user.tenant_id)
+    if booking_synced:
+        await invalidate_booking_cache(current_user.tenant_id)
     return invoice
 
 

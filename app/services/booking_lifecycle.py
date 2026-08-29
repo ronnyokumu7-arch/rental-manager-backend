@@ -9,9 +9,7 @@ BookingLifecycleService — SINGLE SOURCE OF TRUTH for booking + vehicle transit
   - Status-respecting: each transition only fires from its allowed source states.
   - Vehicle sync owned HERE: `rented` is set only by booking transitions, atomically.
   - Commission owned HERE: trial-exempt, rate from PlatformSettings, fires once per trip.
-
-Routers delegate to this service; they no longer set booking.status / vehicle.status
-directly.
+  - ✅ Activity Logs owned HERE: Snapshot pattern prevents MissingGreenlet errors.
 """
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -30,13 +28,19 @@ from app.models.users import User
 from app.models.vehicles import Vehicle, VehicleStatus
 from app.services.cache import invalidate_booking_cache, invalidate_vehicle_cache
 
+# ✅ NEW: Activity Loggers
+from app.services.activity_logs.booking import BookingActivityLogger
+from app.services.activity_logs.vehicle import VehicleActivityLogger
+
 
 class BookingLifecycleService:
     """All booking + vehicle state transitions live here."""
 
     # ─── LOCKED LOADERS (tenant-scoped) ────────────────────────────────────
     @staticmethod
-    async def _reload(db: AsyncSession, booking_id: int) -> Booking:
+    async def _load_booking_locked(
+        db: AsyncSession, booking_id: int, tenant_id: int,
+    ) -> Booking:
         from sqlalchemy.orm import selectinload
         stmt = (
             select(Booking)
@@ -45,9 +49,13 @@ class BookingLifecycleService:
                 selectinload(Booking.vehicle),
                 selectinload(Booking.driver),   # ✅ FIXED: was missing → MissingGreenlet on serialize
             )
-            .where(Booking.id == booking_id)
+            .where(Booking.id == booking_id, Booking.tenant_id == tenant_id)
+            .with_for_update()
         )
-        return (await db.execute(stmt)).scalars().unique().first()
+        booking = (await db.execute(stmt)).scalars().unique().first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found.")
+        return booking
 
     @staticmethod
     async def _load_vehicle_locked(
@@ -64,7 +72,11 @@ class BookingLifecycleService:
         from sqlalchemy.orm import selectinload
         stmt = (
             select(Booking)
-            .options(selectinload(Booking.client), selectinload(Booking.vehicle))
+            .options(
+                selectinload(Booking.client),
+                selectinload(Booking.vehicle),
+                selectinload(Booking.driver),
+            )
             .where(Booking.id == booking_id)
         )
         return (await db.execute(stmt)).scalars().unique().first()
@@ -87,6 +99,20 @@ class BookingLifecycleService:
         booking.status = BookingStatus.confirmed
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
+
+        # ✅ NEW: Log booking confirmed
+        try:
+            await BookingActivityLogger.on_status_changed(
+                db=db,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user.id,
+                booking=booking,
+                old_status="pending",
+                new_status="confirmed",
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log booking confirmation: {e}")
+
         return await cls._reload(db, booking.id)
 
     # ─── START TRIP (activate) ─────────────────────────────────────────────
@@ -110,6 +136,7 @@ class BookingLifecycleService:
         if vehicle.status != VehicleStatus.available:
             raise HTTPException(status_code=409, detail="Vehicle is not available.")
 
+        old_status = booking.status
         booking.status = BookingStatus.active
         vehicle.status = VehicleStatus.rented   # ✅ owned exclusively by this transition
 
@@ -118,6 +145,33 @@ class BookingLifecycleService:
 
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
+
+        # ✅ NEW: Log the vehicle rental (Revenue Event)
+        try:
+            await VehicleActivityLogger.on_rented(
+                db=db,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user.id,
+                vehicle=vehicle,
+                booking_number=booking.booking_number,
+                client_name=booking.client.full_name if booking.client else None,
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log vehicle rented: {e}")
+
+        # ✅ NEW: Log the booking status change
+        try:
+            await BookingActivityLogger.on_status_changed(
+                db=db,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user.id,
+                booking=booking,
+                old_status=old_status,
+                new_status="active",
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log booking start: {e}")
+
         return await cls._reload(db, booking.id)
 
     # ─── COMPLETE (return) ─────────────────────────────────────────────────
@@ -141,6 +195,33 @@ class BookingLifecycleService:
 
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
+
+        # ✅ NEW: Log the vehicle return (Normal Event)
+        try:
+            await VehicleActivityLogger.on_returned(
+                db=db,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user.id,
+                vehicle=vehicle,
+                booking_number=booking.booking_number,
+                client_name=booking.client.full_name if booking.client else None,
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log vehicle returned: {e}")
+
+        # ✅ NEW: Log the booking status change
+        try:
+            await BookingActivityLogger.on_status_changed(
+                db=db,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user.id,
+                booking=booking,
+                old_status="active",
+                new_status="completed",
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log booking completion: {e}")
+
         return await cls._reload(db, booking.id)
 
     # ─── CANCEL (with reason) ──────────────────────────────────────────────
@@ -160,6 +241,7 @@ class BookingLifecycleService:
         if booking.status == BookingStatus.completed:
             raise HTTPException(status_code=400, detail="Cannot cancel a completed booking.")
 
+        old_status = booking.status
         was_active = booking.status == BookingStatus.active
 
         booking.status = BookingStatus.cancelled
@@ -173,8 +255,35 @@ class BookingLifecycleService:
             vehicle.status = VehicleStatus.available
             vehicle.mileage_due = True
 
+            # ✅ NEW: Log vehicle return if trip was active
+            try:
+                await VehicleActivityLogger.on_returned(
+                    db=db,
+                    tenant_id=current_user.tenant_id,
+                    user_id=current_user.id,
+                    vehicle=vehicle,
+                    booking_number=booking.booking_number,
+                    client_name=booking.client.full_name if booking.client else None,
+                )
+            except Exception as e:
+                print(f"⚠️ Warning: Failed to log vehicle return on cancel: {e}")
+
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
+
+        # ✅ NEW: Log the booking status change
+        try:
+            await BookingActivityLogger.on_status_changed(
+                db=db,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user.id,
+                booking=booking,
+                old_status=old_status,
+                new_status="cancelled",
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log booking cancel: {e}")
+
         return await cls._reload(db, booking.id)
 
     # ─── COMMISSION (fires once per trip — SINGLE SOURCE OF TRUTH) ─────────
@@ -226,6 +335,20 @@ class BookingLifecycleService:
             raise HTTPException(status_code=400, detail="This booking can no longer be confirmed.")
         booking.status = BookingStatus.confirmed
         await db.flush()
+
+        # ✅ NEW: Log the booking confirmed (system/event driven)
+        try:
+            await BookingActivityLogger.on_status_changed(
+                db=db,
+                tenant_id=booking.tenant_id,
+                user_id=None,
+                booking=booking,
+                old_status="pending",
+                new_status="confirmed",
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log client booking confirmation: {e}")
+
         return booking
 
     @classmethod
@@ -238,6 +361,7 @@ class BookingLifecycleService:
         if booking.status == BookingStatus.completed:
             raise HTTPException(status_code=400, detail="Cannot cancel a completed booking.")
 
+        old_status = booking.status
         was_active = booking.status == BookingStatus.active
         booking.status = BookingStatus.cancelled
         booking.cancellation_reason = reason.value
@@ -249,7 +373,34 @@ class BookingLifecycleService:
             vehicle.status = VehicleStatus.available
             vehicle.mileage_due = True
 
+            # ✅ NEW: Log vehicle return on client cancel
+            try:
+                await VehicleActivityLogger.on_returned(
+                    db=db,
+                    tenant_id=booking.tenant_id,
+                    user_id=None,
+                    vehicle=vehicle,
+                    booking_number=booking.booking_number,
+                    client_name=booking.client.full_name if booking.client else None,
+                )
+            except Exception as e:
+                print(f"⚠️ Warning: Failed to log vehicle return on client cancel: {e}")
+
         await db.flush()
+
+        # ✅ NEW: Log the booking status change
+        try:
+            await BookingActivityLogger.on_status_changed(
+                db=db,
+                tenant_id=booking.tenant_id,
+                user_id=None,
+                booking=booking,
+                old_status=old_status,
+                new_status="cancelled",
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log client booking cancel: {e}")
+
         return booking
 
     @classmethod
@@ -274,6 +425,7 @@ class BookingLifecycleService:
         if vehicle.status != VehicleStatus.available:
             raise HTTPException(status_code=409, detail="Vehicle is not available.")
 
+        old_status = booking.status
         booking.status = BookingStatus.active
         vehicle.status = VehicleStatus.rented
 
@@ -281,4 +433,31 @@ class BookingLifecycleService:
         await cls._create_commission_event(db, booking, booking.tenant_id, None)
 
         await db.flush()
+
+        # ✅ NEW: Log the vehicle rental (system-triggered)
+        try:
+            await VehicleActivityLogger.on_rented(
+                db=db,
+                tenant_id=booking.tenant_id,
+                user_id=None,
+                vehicle=vehicle,
+                booking_number=booking.booking_number,
+                client_name=booking.client.full_name if booking.client else None,
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log auto vehicle rented: {e}")
+
+        # ✅ NEW: Log the booking status change
+        try:
+            await BookingActivityLogger.on_status_changed(
+                db=db,
+                tenant_id=booking.tenant_id,
+                user_id=None,
+                booking=booking,
+                old_status=old_status,
+                new_status="active",
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log auto booking start: {e}")
+
         return booking

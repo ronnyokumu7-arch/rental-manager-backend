@@ -1,15 +1,68 @@
+# app/services/activity_logs/vehicle.py
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from .service import ActivityLogService
 
+
 class VehicleActivityLogger:
-    @staticmethod
-    async def on_created(db: AsyncSession, tenant_id: int, user_id: int, vehicle) -> None:
-        await ActivityLogService.log(db=db, tenant_id=tenant_id, user_id=user_id, action="create_vehicle", target_type="vehicle", target_id=vehicle.id, details={"make": vehicle.make, "model": vehicle.model, "plate_number": vehicle.plate_number})
+    """Activity logging helpers for vehicle lifecycle and operational events."""
 
     @staticmethod
-    async def on_status_changed(db: AsyncSession, tenant_id: int, user_id: int, vehicle, old_status: str, new_status: str) -> None:
-        await ActivityLogService.log(db=db, tenant_id=tenant_id, user_id=user_id, action="update_vehicle_status", target_type="vehicle", target_id=vehicle.id, details={"plate_number": vehicle.plate_number, "old_status": old_status, "new_status": new_status})
+    async def on_rented(db: AsyncSession, tenant_id: int, user_id: int, vehicle, booking_number: str, client_name: str = None) -> None:
+        """
+        Log a vehicle rental event.
+
+        ✅ CRITICAL: New rentals are High Priority (Revenue).
+        """
+        summary = {
+            "vehicle_name": f"{vehicle.make} {vehicle.model}",
+            "plate_number": vehicle.plate_number,
+            "booking_number": booking_number,
+            "client_name": client_name,
+        }
+
+        await ActivityLogService.log(
+            db=db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="vehicle_rented",
+            label="Vehicle Rented",
+            target_type="vehicle",
+            target_id=vehicle.id,
+            summary=summary,
+            details={
+                "plate_number": vehicle.plate_number,
+                "booking_number": booking_number,
+                "client_name": client_name,
+            },
+            priority=3,  # High (Revenue)
+        )
 
     @staticmethod
-    async def on_archived(db: AsyncSession, tenant_id: int, user_id: int, vehicle) -> None:
-        await ActivityLogService.log(db=db, tenant_id=tenant_id, user_id=user_id, action="archive_vehicle", target_type="vehicle", target_id=vehicle.id, details={"plate_number": vehicle.plate_number})
+    async def on_returned(db: AsyncSession, tenant_id: int, user_id: int, vehicle, booking_number: str, client_name: str = None) -> None:
+        """
+        Log a vehicle return event.
+        """
+        summary = {
+            "vehicle_name": f"{vehicle.make} {vehicle.model}",
+            "plate_number": vehicle.plate_number,
+            "booking_number": booking_number,
+            "client_name": client_name,
+        }
+
+        await ActivityLogService.log(
+            db=db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="vehicle_returned",
+            label="Vehicle Returned",
+            target_type="vehicle",
+            target_id=vehicle.id,
+            summary=summary,
+            details={
+                "plate_number": vehicle.plate_number,
+                "booking_number": booking_number,
+                "client_name": client_name,
+            },
+            priority=2,  # Normal
+        )

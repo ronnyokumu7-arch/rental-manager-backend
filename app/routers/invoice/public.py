@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.models.bookings import Booking, BookingStatus, CancellationReason
+from app.models.drivers import Driver
 from app.models.invoices import Invoice, InvoiceStatus
 from app.models.payments import Payment, PaymentStatus
 from app.models.tenants import Tenant
@@ -26,7 +27,7 @@ from app.services.cache import (
     invalidate_invoice_cache, invalidate_subscription_cache, invalidate_booking_cache,
 )
 from app.services.invoice_pdf import generate_invoice_pdf
-from app.services.pricing import price_booking
+from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure engine
 
 router = APIRouter()
 
@@ -236,12 +237,36 @@ async def reschedule_booking_public(
     booking.start_date = payload.pickup_at
     booking.end_date = payload.scheduled_return_at
 
-    # ✅ Re-price server-side (source of truth)
+    # ✅ PHASE 1: Re-price server-side via the pure self-drive engine
+    rate = Decimal(booking.daily_rate or 0)
+    if rate <= 0:
+        raise HTTPException(status_code=422, detail="Booking has no daily rate configured")
+
     try:
-        quote = await price_booking(db, booking, Decimal(booking.daily_rate or 0))
-        booking.total_amount = quote.total
+        # Driver fee via explicit query (never lazy-load in async context)
+        driver_daily_fee = None
+        if booking.driver_id:
+            driver = (await db.execute(
+                select(Driver).where(Driver.id == booking.driver_id)
+            )).scalars().first()
+            if driver:
+                driver_daily_fee = driver.daily_fee
+
+        quote = quote_selfdrive(
+            pickup_at=payload.pickup_at,
+            return_at=payload.scheduled_return_at,
+            daily_rate=rate,
+            driver_daily_fee=Decimal(driver_daily_fee) if driver_daily_fee else None,
+        )
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid schedule")
+
+    # New terms → engine truth (operator can re-adjust via invoice afterwards)
+    booking.billable_days = quote.billable_days
+    booking.computed_total = quote.total
+    booking.total_amount = quote.total
+    booking.manually_adjusted = False
+    booking.price_note = None
 
     # Back to quotation + pending → client must re-accept the new terms
     invoice.doc_type = "quotation"

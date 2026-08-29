@@ -32,6 +32,7 @@ from app.routers import (
     invoices,
     payment_verifications,
     payments,
+    pricing,            # ✅ Phase 1: Self-drive quote endpoint
     reports,
     role_templates,
     services,
@@ -149,6 +150,7 @@ routers = [
     invoices,
     payments,
     payment_verifications,
+    pricing,            # ✅ Phase 1: Self-drive quote → POST /api/v1/pricing/self-drive/quote
     tenant_profile,
     tenant_policies,
     role_templates,

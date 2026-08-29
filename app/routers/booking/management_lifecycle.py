@@ -1,206 +1,263 @@
-# app/routers/booking/management_create.py
-"""CREATE — validation, double-booking prevention, server-side pricing, tasks."""
-from datetime import datetime, timedelta
+# app/routers/booking/management_lifecycle.py
+"""UPDATE / ARCHIVE / RESTORE / DELETE — post-creation lifecycle.
+
+✅ PHASE 1: re-pricing on schedule/rate change via the pure self-drive engine
+(quote_selfdrive). Manual total overrides via PATCH are tracked as
+manually_adjusted with an audit note.
+"""
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select, func, and_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.limiter import limiter
 from app.db.database import get_db
-from app.dependencies.commission_lock import require_not_commission_locked
+from app.dependencies.auth import get_current_user
 from app.models.bookings import Booking, BookingStatus
-from app.models.clients import Client, ClientStatus
-from app.models.drivers import Driver, DriverStatus
+from app.models.drivers import Driver
 from app.models.users import User
-from app.models.vehicles import Vehicle, VehicleStatus
-from app.schemas.booking import BookingCreate, BookingOut
-from app.services.booking_tasks import BookingTaskService
+from app.models.vehicles import Vehicle
+from app.schemas.booking import BookingOut, BookingUpdate
 from app.services.cache import invalidate_booking_cache
-from app.services.number_generator import generate_booking_number
-from app.services.pricing import SELFDRIVE, calculate, get_pricing_config, resolve_driver_fees, snapshot_fields
+from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure engine
+from ._helpers import get_authorized_booking_async
+# ✅ MILESTONE 2: shared tenant-scoped driver validator (defined in create)
+from .management_create import validate_driver_assignment
+# ✅ NEW: Activity Logger for booking updates/archives
+from app.services.activity_logs.booking import BookingActivityLogger
 
 router = APIRouter()
 
 
-async def validate_driver_assignment(
-    db: AsyncSession, tenant_id: int, driver_id: int,
-) -> Driver:
-    """
-    ✅ MILESTONE 2 SECURITY: driver must exist, belong to THIS tenant,
-    not be archived, and not be suspended. Shared with lifecycle next.
-    """
-    stmt = select(Driver).where(
-        Driver.id == driver_id,
-        Driver.tenant_id == tenant_id,
-    )
-    driver = (await db.execute(stmt)).scalars().first()
-    if not driver:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Driver not found.",
-        )
-    if driver.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Driver is archived and cannot be assigned.",
-        )
-    if driver.status == DriverStatus.suspended:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Driver is suspended and cannot be assigned.",
-        )
-    return driver
-
-
-@router.post("/", response_model=BookingOut, status_code=status.HTTP_201_CREATED)
-@limiter.limit("20/minute")
-async def create_booking(
+@router.patch("/{booking_id}", response_model=BookingOut)
+@limiter.limit("30/minute")
+async def update_booking(
     request: Request,
-    booking: BookingCreate,
+    booking_id: int,
+    booking_update: BookingUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_not_commission_locked),
+    current_user: User = Depends(get_current_user),
 ):
-    # 1. Validate Client
-    client_stmt = select(Client).where(
-        Client.id == booking.client_id,
-        Client.tenant_id == current_user.tenant_id,
+    booking = await get_authorized_booking_async(booking_id, current_user, db)
+    update_data = booking_update.model_dump(exclude_unset=True)
+
+    # ✅ PHASE 1: driver optional for self-drive (old 422 guard removed)
+    target_driver_id = update_data.get("driver_id", booking.driver_id)
+
+    # ✅ MILESTONE 2: Validate driver on reassign; allow null to unassign
+    if "driver_id" in update_data and update_data["driver_id"] is not None:
+        await validate_driver_assignment(
+            db, current_user.tenant_id, update_data["driver_id"]
+        )
+
+    # ✅ MILESTONE 1: effective post-update schedule (times → dates fallback)
+    target_pickup = (
+        update_data.get("pickup_at")
+        or update_data.get("start_date")
+        or booking.pickup_at
+        or booking.start_date
     )
-    client_result = await db.execute(client_stmt)
-    client = client_result.scalars().first()
-
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found.")
-    if client.status == ClientStatus.suspended or client.is_archived:
-        raise HTTPException(status_code=400, detail="Client cannot make bookings.")
-
-    # 2. Validate Vehicle
-    vehicle_stmt = select(Vehicle).where(
-        Vehicle.id == booking.vehicle_id,
-        Vehicle.tenant_id == current_user.tenant_id,
+    target_return = (
+        update_data.get("scheduled_return_at")
+        or update_data.get("end_date")
+        or booking.scheduled_return_at
+        or booking.end_date
     )
-    vehicle_result = await db.execute(vehicle_stmt)
-    vehicle = vehicle_result.scalars().first()
 
-    if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found.")
-    if vehicle.status != VehicleStatus.available or vehicle.is_archived:
-        raise HTTPException(status_code=409, detail="Vehicle is not available.")
-
-    # ✅ MILESTONE 1: Resolve exact schedule (times → dates fallback)
-    service_type = getattr(booking, "service_type", None) or SELFDRIVE
-    pickup_at = getattr(booking, "pickup_at", None) or booking.start_date
-    scheduled_return_at = getattr(booking, "scheduled_return_at", None) or booking.end_date
-
-    # ✅ PAST-TIME GUARD: new bookings cannot be scheduled in the past.
-    # 2-minute buffer accounts for clock skew between client and server.
-    now_naive = datetime.utcnow()
-    pickup_naive = pickup_at.replace(tzinfo=None) if pickup_at.tzinfo else pickup_at
-    if pickup_naive < (now_naive - timedelta(minutes=2)):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Pickup time cannot be in the past. Please select a future date and time.",
-        )
-
-    # ✅ MILESTONE 2: Service-driver compatibility guard
-    if service_type == SELFDRIVE and booking.driver_id is not None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Self-drive bookings cannot have an assigned driver. The client drives.",
-        )
-
-    # ✅ MILESTONE 2: Validate Driver (tenant-scoped, eligibility-checked)
-    # Captures the driver object for fee resolution (zero extra queries later)
-    driver = None
-    if booking.driver_id is not None:
-        driver = await validate_driver_assignment(db, current_user.tenant_id, booking.driver_id)
-
-    # ✅ DOUBLE BOOKING PREVENTION (time-exact; coalesce covers pre-migration rows)
-    overlap_stmt = select(Booking).where(
-        Booking.vehicle_id == booking.vehicle_id,
-        Booking.tenant_id == current_user.tenant_id,
-        Booking.is_archived == False,
-        Booking.status.in_([BookingStatus.pending, BookingStatus.confirmed, BookingStatus.active]),
-        and_(
-            func.coalesce(Booking.pickup_at, Booking.start_date) < scheduled_return_at,
-            func.coalesce(Booking.scheduled_return_at, Booking.end_date) > pickup_at,
-        )
+    # ✅ DOUBLE BOOKING PREVENTION (time-exact, excludes self, coalesce-safe)
+    schedule_changed = any(
+        k in update_data
+        for k in ("start_date", "end_date", "pickup_at", "scheduled_return_at", "service_type")
     )
-    overlap_result = await db.execute(overlap_stmt)
-    if overlap_result.scalars().first():
-        raise HTTPException(
-            status_code=409,
-            detail=f"Vehicle {vehicle.plate_number} is already booked for these dates."
+    if schedule_changed:
+        overlap_stmt = select(Booking).where(
+            Booking.vehicle_id == booking.vehicle_id,
+            Booking.tenant_id == current_user.tenant_id,
+            Booking.is_archived == False,
+            Booking.status.in_([BookingStatus.pending, BookingStatus.confirmed, BookingStatus.active]),
+            Booking.id != booking.id,
+            and_(
+                func.coalesce(Booking.pickup_at, Booking.start_date) < target_return,
+                func.coalesce(Booking.scheduled_return_at, Booking.end_date) > target_pickup,
+            )
+        )
+        overlap_result = await db.execute(overlap_stmt)
+        if overlap_result.scalars().first():
+            raise HTTPException(status_code=409, detail="This vehicle is already booked for the selected dates.")
+
+    # ✅ PHASE 1: Re-price when schedule OR rate changes (server = source of truth)
+    reprice_needed = schedule_changed or "daily_rate" in update_data
+    if reprice_needed:
+        vehicle_stmt = select(Vehicle).where(Vehicle.id == booking.vehicle_id)
+        vehicle = (await db.execute(vehicle_stmt)).scalars().first()
+
+        # Precedence: new override → existing effective rate → vehicle default
+        daily_rate = (
+            update_data.get("daily_rate")
+            or booking.daily_rate
+            or (vehicle.daily_rate if vehicle else None)
+        )
+        if not daily_rate or Decimal(daily_rate) <= 0:
+            raise HTTPException(status_code=400, detail="Booking has no daily rate configured.")
+
+        # Driver fee via explicit query (never lazy-load in async context)
+        driver_daily_fee = None
+        if target_driver_id is not None:
+            driver = (await db.execute(
+                select(Driver).where(Driver.id == target_driver_id)
+            )).scalars().first()
+            if driver:
+                driver_daily_fee = driver.daily_fee
+
+        try:
+            quote = quote_selfdrive(
+                pickup_at=target_pickup,
+                return_at=target_return,
+                daily_rate=Decimal(daily_rate),
+                driver_daily_fee=Decimal(driver_daily_fee) if driver_daily_fee else None,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        # New terms → engine truth (operator can re-adjust afterwards)
+        update_data["daily_rate"] = daily_rate
+        update_data["billable_days"] = quote.billable_days
+        update_data["computed_total"] = quote.total
+        update_data["total_amount"] = quote.total
+        update_data["manually_adjusted"] = False
+        update_data["price_note"] = None
+
+    # ✅ PHASE 1: explicit total override = human adjustment (audit-tracked)
+    if "total_amount" in update_data:
+        update_data["manually_adjusted"] = True
+        update_data["price_note"] = (
+            f"Manually adjusted via booking update by user {current_user.id}"
         )
 
-    # ✅ MILESTONE 1: Server-side pricing (source of truth — client totals ignored)
-    daily_rate = Decimal(vehicle.daily_rate or getattr(booking, "daily_rate", None) or 0)
-    if daily_rate <= 0:
-        raise HTTPException(status_code=400, detail="Vehicle has no daily rate configured.")
+    for field, value in update_data.items():
+        setattr(booking, field, value)
 
-    config = await get_pricing_config(db, current_user.tenant_id, service_type)
-    
-    # ✅ MILESTONE 2: Resolve driver fees (per-driver → config → None)
-    driver_fees = resolve_driver_fees(driver, config)
-    
-    try:
-        quote = calculate(
-            service_type=service_type,
-            pickup_at=pickup_at,
-            return_at=scheduled_return_at,
-            daily_rate=daily_rate,
-            billing_model=config.billing_model if config else None,
-            day_hours=config.day_hours if config else None,
-            grace_minutes=config.grace_minutes if config else None,
-            overtime_hourly_rate=config.overtime_hourly_rate if config else None,
-            cap_overtime_at_day_rate=config.overtime_cap_at_day_rate if config else True,
-            driver_daily_fee=driver_fees["driver_daily_fee"],
-            driver_overtime_hourly_fee=driver_fees["driver_overtime_hourly_fee"],
-            driver_night_accommodation_fee=driver_fees["driver_night_accommodation_fee"],
-            rate_extras=config.rate_extras if config else None,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-    # 3. ✅ Generate Booking Number (tenant-scoped, monthly-resetting)
-    new_booking_number = await generate_booking_number(db, current_user.tenant_id)
-
-    # 4. Create Booking (with pricing snapshot — contracts never mutate)
-    payload = booking.model_dump()
-    payload.update({
-        "service_type": service_type,
-        "pickup_at": pickup_at,
-        "scheduled_return_at": scheduled_return_at,
-        "daily_rate": daily_rate,
-        "total_amount": quote.total,
-        **snapshot_fields(config, service_type),
-    })
-
-    db_booking = Booking(
-        **payload,
-        tenant_id=current_user.tenant_id,
-        status=BookingStatus.pending,
-        booking_number=new_booking_number,
-    )
-    db.add(db_booking)
     await db.commit()
-    await db.refresh(db_booking)
-
-    # 5. Generate Tasks (non-blocking)
-    try:
-        await BookingTaskService.on_booking_created(db, db_booking, client.full_name, vehicle.plate_number)
-    except Exception as e:
-        print(f"⚠️ Warning: Failed to create tasks for booking {db_booking.id}: {e}")
+    await db.refresh(booking)
 
     await invalidate_booking_cache(current_user.tenant_id)
 
+    # ✅ NEW: Log booking update event
+    try:
+        await BookingActivityLogger.on_updated(
+            db=db,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.id,
+            booking=booking,
+            changed_fields=list(update_data.keys()),
+        )
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to log booking update: {e}")
+
+    # ✅ FIXED: eager re-fetch so BookingOut never lazy-loads (MissingGreenlet-safe)
     stmt = select(Booking).options(
         selectinload(Booking.client),
         selectinload(Booking.vehicle),
         selectinload(Booking.driver)
-    ).where(Booking.id == db_booking.id)
+    ).where(Booking.id == booking.id)
+    return (await db.execute(stmt)).scalars().first()
 
-    result = await db.execute(stmt)
-    return result.scalars().first()
+
+@router.post("/{booking_id}/archive", response_model=BookingOut)
+@limiter.limit("10/minute")
+async def archive_booking(
+    request: Request,
+    booking_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    booking = await get_authorized_booking_async(booking_id, current_user, db)
+
+    if booking.status == BookingStatus.active:
+        raise HTTPException(status_code=400, detail="Active bookings cannot be archived")
+    if booking.is_archived:
+        raise HTTPException(status_code=400, detail="Booking is already archived")
+
+    booking.is_archived = True
+    booking.archived_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(booking)
+
+    await invalidate_booking_cache(current_user.tenant_id)
+
+    # ✅ NEW: Log booking archive event
+    try:
+        await BookingActivityLogger.on_archived(
+            db=db,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.id,
+            booking=booking,
+        )
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to log booking archive: {e}")
+
+    return booking
+
+
+@router.post("/{booking_id}/restore", response_model=BookingOut)
+@limiter.limit("10/minute")
+async def restore_booking(
+    request: Request,
+    booking_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    booking = await get_authorized_booking_async(booking_id, current_user, db)
+
+    if not booking.is_archived:
+        raise HTTPException(status_code=400, detail="Booking is not archived")
+
+    booking.is_archived = False
+    booking.archived_at = None
+    await db.commit()
+    await db.refresh(booking)
+
+    await invalidate_booking_cache(current_user.tenant_id)
+
+    # ✅ NEW: Log booking restore event
+    try:
+        await BookingActivityLogger.on_restored(
+            db=db,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.id,
+            booking=booking,
+        )
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to log booking restore: {e}")
+
+    return booking
+
+
+@router.delete("/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("10/minute")
+async def delete_booking(
+    request: Request,
+    booking_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    booking = await get_authorized_booking_async(booking_id, current_user, db)
+
+    if booking.status == BookingStatus.active:
+        raise HTTPException(status_code=400, detail="Active bookings cannot be deleted.")
+
+    try:
+        await db.delete(booking)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete booking with invoices or contracts. Please archive instead."
+        )
+
+    await invalidate_booking_cache(current_user.tenant_id)

@@ -1,8 +1,10 @@
 """
 Invoice + Quotation creation/update for bookings.
 
-✅ SINGLE SOURCE OF TRUTH: totals ALWAYS come from the pricing engine
-(price_booking). No local day math anywhere in this file.
+✅ PHASE 1 SINGLE SOURCE OF TRUTH:
+  - Totals come from the booking snapshot (booking.total_amount / computed_total).
+  - Rate overrides (custom_rate) re-price via the pure self-drive engine
+    (quote_selfdrive). No legacy config tables, no local day math.
 
 ✅ LIFECYCLE (quotation pipeline):
   - create_quotation_for_booking  → auto-called on booking create (doc_type=quotation)
@@ -19,10 +21,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bookings import Booking
+from app.models.drivers import Driver
 from app.models.invoices import Invoice, InvoiceStatus
 from app.services.number_generator import generate_invoice_number
 from app.services.cache import invalidate_booking_cache
-from app.services.pricing import price_booking
+from app.services.pricing_selfdrive import compute_billable_days, quote_selfdrive
 
 # Quotation public link validity (days)
 QUOTATION_VALID_DAYS = 7
@@ -43,7 +46,7 @@ def _ensure_share_token(invoice: Invoice, days: int = QUOTATION_VALID_DAYS) -> N
 
 
 # =============================================================================
-# EXISTING: manual invoice generation (unchanged behaviour)
+# EXISTING: manual invoice generation (Phase 1 re-pricing)
 # =============================================================================
 async def create_invoice_for_booking(
     booking: Booking,
@@ -60,19 +63,45 @@ async def create_invoice_for_booking(
     Create or update an invoice for a booking.
 
     Precedence for the invoice amount:
-      custom_amount  >  engine total (after custom_rate override)  >  booking.total_amount
+      custom_amount  >  engine total (after custom_rate re-price)  >  booking.total_amount
     """
     existing_stmt = select(Invoice).where(Invoice.booking_id == booking.id)
     existing_result = await db.execute(existing_stmt)
     existing_invoice = existing_result.scalars().first()
 
     if custom_rate is not None:
+        # ✅ PHASE 1: override the effective rate for THIS booking only and
+        # re-price through the pure self-drive engine (days × rate + driver fees).
         booking.daily_rate = custom_rate
         try:
-            quote = await price_booking(db, booking, Decimal(custom_rate))
+            pickup_at = booking.pickup_at or booking.start_date
+            return_at = booking.scheduled_return_at or booking.end_date
+
+            # Locked day count when present (Phase 1 bookings); legacy rows recompute.
+            days = booking.billable_days or compute_billable_days(pickup_at, return_at)
+
+            # Driver fee (explicit query — never lazy-load in async context).
+            driver_daily_fee = None
+            if booking.driver_id:
+                driver = (await db.execute(
+                    select(Driver).where(Driver.id == booking.driver_id)
+                )).scalars().first()
+                if driver:
+                    driver_daily_fee = driver.daily_fee
+
+            quote = quote_selfdrive(
+                pickup_at=pickup_at,
+                return_at=return_at,
+                daily_rate=Decimal(custom_rate),
+                driver_daily_fee=(
+                    Decimal(driver_daily_fee) if driver_daily_fee else None
+                ),
+            )
+            booking.billable_days = quote.billable_days
+            booking.computed_total = quote.total
             booking.total_amount = quote.total
         except ValueError:
-            pass
+            pass  # invalid schedule on legacy row — keep previous total
         await db.commit()
         await db.refresh(booking)
         await invalidate_booking_cache(booking.tenant_id)
@@ -188,7 +217,7 @@ async def morph_quotation_to_invoice(
 
     - doc_type: quotation → invoice
     - due_date = rental start (the initial payment due date)
-    - amount re-synced from booking.total_amount (in case of re-pricing)
+    - amount re-synced from booking.total_amount (human adjustments included)
     - FLUSH only — the caller (accept flow) commits atomically
     Returns None if no quotation exists (nothing to morph).
     """

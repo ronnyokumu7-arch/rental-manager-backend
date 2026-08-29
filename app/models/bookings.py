@@ -1,9 +1,18 @@
+"""
+Booking model — core rental transaction record.
+
+✅ PHASE 1: Self-drive pricing snapshot fields added:
+  - billable_days: locked day count at creation
+  - computed_total: engine result (what the formula said)
+  - manually_adjusted: boolean flag (human touched the price)
+  - price_note: optional free-text reason for adjustment
+"""
 import enum
 from datetime import datetime
 
 from sqlalchemy import (
     Boolean, CheckConstraint, Column, DateTime, Enum, ForeignKey,
-    Integer, Numeric, String, Index, UniqueConstraint,
+    Integer, Numeric, String, Index, UniqueConstraint, Text,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -82,15 +91,14 @@ class Booking(Base, AuditMixin):
         default="selfdrive", server_default="selfdrive", index=True,
     )
 
-    # Exact countdown origin: 1 rental day = day_hours from pickup_at (selfdrive: 24h).
-    # Nullable for backward compat — PricingService falls back to start_date/end_date.
+    # Exact countdown origin: 1 rental day = 24 hours (self-drive).
+    # Nullable for backward compat — falls back to start_date/end_date.
     pickup_at = Column(DateTime(timezone=True), nullable=True)
     scheduled_return_at = Column(DateTime(timezone=True), nullable=True)
     # Set when the vehicle is physically returned (late-return reconciliation).
     actual_return_at = Column(DateTime(timezone=True), nullable=True)
 
-    # ✅ PRICING SNAPSHOT at creation → signed contracts never mutate,
-    # even if the tenant edits their pricing config later.
+    # ✅ LEGACY PRICING SNAPSHOT (kept nullable for old data, no longer used in Phase 1)
     pricing_day_hours = Column(Integer, nullable=True)          # 24 / 12
     pricing_grace_minutes = Column(Integer, nullable=True)      # 60 / 30
     pricing_overtime_hourly_rate = Column(Numeric(10, 2), nullable=True)
@@ -99,6 +107,12 @@ class Booking(Base, AuditMixin):
     daily_rate = Column(Numeric(10, 2), nullable=True)
     total_amount = Column(Numeric(10, 2), nullable=False)
     currency_code = Column(String(3), default="KES", nullable=False)
+    
+    # ✅ PHASE 1: Self-Drive Pricing Snapshot (immutable after creation)
+    billable_days = Column(Integer, nullable=True)          # Locked day count
+    computed_total = Column(Numeric(10, 2), nullable=True)  # Engine result
+    manually_adjusted = Column(Boolean, default=False, nullable=False)  # Human override flag
+    price_note = Column(Text, nullable=True)                # Optional reason for adjustment
 
     # Status & Lifecycle
     status = Column(Enum(BookingStatus), default=BookingStatus.pending, nullable=False, index=True)

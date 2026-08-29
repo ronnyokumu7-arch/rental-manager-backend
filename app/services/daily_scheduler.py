@@ -6,10 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.task import TaskPriority
 from app.models.users import User
+from app.models.bookings import Booking, BookingStatus
 from app.models.invoices import Invoice
 from app.models.vehicles import Vehicle, VehicleStatus
 from app.services.reconciliation import run_reconciliation_job
 from app.services.task_core import TaskCoreService
+from app.services.activity_logs.service import ActivityLogService  # ✅ NEW
+from app.services.activity_logs.vehicle import VehicleActivityLogger  # ✅ NEW
+from app.services.activity_logs.booking import BookingActivityLogger  # ✅ NEW
 
 
 class DailySchedulerService:
@@ -49,6 +53,23 @@ class DailySchedulerService:
                 target_id=user.id
             )
 
+            # ✅ NEW: Log the compliance alert to the Activity Feed
+            await ActivityLogService.log(
+                db=db,
+                tenant_id=user.tenant_id,
+                user_id=user.id,
+                action="dl_expired",
+                label="Driver's License Expiring",
+                target_type="user",
+                target_id=user.id,
+                summary={
+                    "driver_name": user.full_name,
+                    "days_left": days_left,
+                    "expiry_date": expiry_date.isoformat() if expiry_date else None,
+                },
+                priority=3 if days_left < 7 else 2,
+            )
+
         # =====================================================================
         # 2. FINANCIAL HEALTH: Overdue Invoices
         # =====================================================================
@@ -74,6 +95,23 @@ class DailySchedulerService:
                 due_date=today + timedelta(days=1),
                 target_type="invoice",
                 target_id=invoice.id
+            )
+
+            # ✅ NEW: Log the overdue invoice to the Activity Feed
+            await ActivityLogService.log(
+                db=db,
+                tenant_id=invoice.tenant_id,
+                user_id=invoice.user_id,  # Assuming invoice has user_id
+                action="invoice_overdue",
+                label="Invoice Overdue",
+                target_type="invoice",
+                target_id=invoice.id,
+                summary={
+                    "invoice_number": inv_number,
+                    "amount": str(amount),
+                    "days_overdue": days_overdue,
+                },
+                priority=3 if days_overdue > 14 else 2,
             )
 
         # =====================================================================
@@ -104,12 +142,26 @@ class DailySchedulerService:
                     target_id=vehicle.id
                 )
 
+                # ✅ NEW: Log the insurance alert to the Activity Feed
+                await ActivityLogService.log(
+                    db=db,
+                    tenant_id=vehicle.tenant_id,
+                    user_id=None,  # System generated
+                    action="vehicle_insurance_expiring",
+                    label="Vehicle Insurance Expiring",
+                    target_type="vehicle",
+                    target_id=vehicle.id,
+                    summary={
+                        "vehicle_name": f"{vehicle.make} {vehicle.model}",
+                        "plate_number": vehicle.plate_number,
+                        "days_left": days_left,
+                    },
+                    priority=3 if days_left < 7 else 2,
+                )
+
         # =====================================================================
         # 4. ✅ FLEET OPS: Return mileage not yet logged (mileage_due flag)
         # =====================================================================
-        # The lifecycle now keeps returned cars rentable and flags mileage_due.
-        # This task prompts the operator to log the odometer so service
-        # scheduling stays accurate. smart_create_task dedupes (no daily spam).
         mileage_stmt = select(Vehicle).where(
             Vehicle.mileage_due == True,
             Vehicle.status != VehicleStatus.retired,
@@ -129,10 +181,43 @@ class DailySchedulerService:
                 target_id=vehicle.id
             )
 
+            # ✅ NEW: Log the mileage due alert to the Activity Feed
+            await VehicleActivityLogger.on_mileage_due(
+                db=db,
+                tenant_id=vehicle.tenant_id,
+                user_id=None,
+                vehicle=vehicle,
+            )
+
         # =====================================================================
-        # 5. ✅ LIFECYCLE SAFETY NET: drift fix + signed auto-start retry
+        # 5. ✅ LIFECYCLE SAFETY NET: Trip Overdue / Ending Today
         # =====================================================================
-        # Self-contained (own sessions, per-tenant). Fixes booking↔vehicle
-        # drift, auto-starts signed-but-inactive trips, and flips overdue
-        # invoice status. Conservative — anything uncertain is logged, not guessed.
+        bookings_stmt = select(Booking).where(
+            Booking.status == BookingStatus.active,
+            Booking.end_date != None,
+        )
+        for booking in (await db.execute(bookings_stmt)).scalars().all():
+            end_date = booking.end_date.date() if hasattr(booking.end_date, 'date') else booking.end_date
+            
+            # ✅ Trip Ending Today
+            if end_date == today:
+                await BookingActivityLogger.on_trip_ending_today(
+                    db=db,
+                    tenant_id=booking.tenant_id,
+                    user_id=booking.user_id,
+                    booking=booking,
+                )
+
+            # ✅ Trip Overdue
+            if end_date < today:
+                await BookingActivityLogger.on_trip_overdue(
+                    db=db,
+                    tenant_id=booking.tenant_id,
+                    user_id=booking.user_id,
+                    booking=booking,
+                )
+
+        # =====================================================================
+        # 6. ✅ LIFECYCLE SAFETY NET: drift fix + signed auto-start retry
+        # =====================================================================
         await run_reconciliation_job()

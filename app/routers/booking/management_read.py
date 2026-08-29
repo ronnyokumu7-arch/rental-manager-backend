@@ -19,7 +19,7 @@ from app.models.vehicles import Vehicle
 from app.schemas.booking import BookingOut, BookingQuote
 from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.services.cache import get_cached_booking_list, set_cached_booking_list
-from app.services.pricing import SELFDRIVE, calculate, get_pricing_config, resolve_driver_fees
+from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure engine
 from ._helpers import get_authorized_booking_async
 
 router = APIRouter()
@@ -131,8 +131,8 @@ async def get_booking(
 
 
 # ---------------------------------------------------------------------------
-# ✅ MILESTONE 1: LIVE PRICING QUOTE (no DB writes — powers frontend preview)
-# ✅ MILESTONE 2: Per-driver fee resolution
+# ✅ PHASE 1: LIVE PRICING QUOTE (no DB writes — powers frontend preview)
+# Pure self-drive engine: days × rate + optional driver fees. Nothing else.
 # ---------------------------------------------------------------------------
 
 @router.post("/quote", response_model=dict)
@@ -151,14 +151,13 @@ async def quote_booking(
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found.")
 
-    daily_rate = Decimal(vehicle.daily_rate or 0)
+    # ✅ PHASE 1: per-quote rate override (vehicle row is NEVER mutated)
+    daily_rate = Decimal(quote.daily_rate_override or vehicle.daily_rate or 0)
     if daily_rate <= 0:
         raise HTTPException(status_code=400, detail="Vehicle has no daily rate configured.")
 
-    config = await get_pricing_config(db, current_user.tenant_id, quote.service_type)
-    
-    # ✅ MILESTONE 2: Load driver if provided (tenant-scoped, validates ownership)
-    driver = None
+    # Driver optional — adds that driver's own daily fee
+    driver_daily_fee = None
     if quote.driver_id is not None:
         driver_stmt = select(Driver).where(
             Driver.id == quote.driver_id,
@@ -167,25 +166,14 @@ async def quote_booking(
         driver = (await db.execute(driver_stmt)).scalars().first()
         if not driver:
             raise HTTPException(status_code=404, detail="Driver not found.")
-    
-    # ✅ MILESTONE 2: Resolve driver fees (per-driver → config → None)
-    driver_fees = resolve_driver_fees(driver, config)
-    
+        driver_daily_fee = driver.daily_fee
+
     try:
-        result = calculate(
-            service_type=quote.service_type,
+        result = quote_selfdrive(
             pickup_at=quote.pickup_at,
             return_at=quote.return_at,
             daily_rate=daily_rate,
-            billing_model=config.billing_model if config else None,
-            day_hours=config.day_hours if config else None,
-            grace_minutes=config.grace_minutes if config else None,
-            overtime_hourly_rate=config.overtime_hourly_rate if config else None,
-            cap_overtime_at_day_rate=config.overtime_cap_at_day_rate if config else True,
-            driver_daily_fee=driver_fees["driver_daily_fee"],
-            driver_overtime_hourly_fee=driver_fees["driver_overtime_hourly_fee"],
-            driver_night_accommodation_fee=driver_fees["driver_night_accommodation_fee"],
-            rate_extras=config.rate_extras if config else None,
+            driver_daily_fee=Decimal(driver_daily_fee) if driver_daily_fee else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
