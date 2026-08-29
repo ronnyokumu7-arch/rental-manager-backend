@@ -26,11 +26,15 @@ from app.services.invoice_pdf import generate_invoice_pdf
 from app.services.invoices import create_invoice_for_booking
 from app.services.invoice_sync import sync_invoice_to_booking
 
+# ✅ NEW: Import Activity Loggers
+from app.services.activity_logs.invoice import InvoiceActivityLogger
+from app.services.activity_logs.payment import PaymentActivityLogger
+
 router = APIRouter()
 settings = get_settings()
 
 
-# ✅ NEW: Helper to safely convert Invoice → InvoiceOut with denormalized UI fields
+# ✅ Helper to safely convert Invoice → InvoiceOut with denormalized UI fields
 def serialize_invoice(invoice: Invoice) -> InvoiceOut:
     """Manually populate denormalized UI fields to prevent MissingGreenlet errors."""
     booking = invoice.booking
@@ -178,6 +182,17 @@ async def create_invoice(
     # ✅ Invalidate cache
     await invalidate_invoice_cache(current_user.tenant_id)
     
+    # ✅ NEW: Log the invoice creation
+    try:
+        await InvoiceActivityLogger.on_created(
+            db=db,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.id,
+            invoice=invoice,
+        )
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to log invoice creation: {e}")
+    
     # ✅ NEW: Return serialized with denormalized UI fields
     return serialize_invoice(invoice)
 
@@ -283,6 +298,17 @@ async def void_invoice(
     # ✅ Invalidate both invoice and subscription caches
     await invalidate_invoice_cache(current_user.tenant_id)
     await invalidate_subscription_cache(current_user.tenant_id)
+    
+    # ✅ NEW: Log the invoice void
+    try:
+        await InvoiceActivityLogger.on_voided(
+            db=db,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.id,
+            invoice=invoice,
+        )
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to log invoice void: {e}")
     
     # ✅ NEW: Return serialized with denormalized UI fields
     return serialize_invoice(invoice)

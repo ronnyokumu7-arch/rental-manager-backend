@@ -14,6 +14,9 @@ from app.schemas.payment import PaymentOut, PaymentVoid
 from app.services.cache import invalidate_payment_cache, invalidate_subscription_cache
 from ._helpers import get_authorized_payment_async
 
+# ✅ NEW: Import Activity Loggers
+from app.services.activity_logs.payment import PaymentActivityLogger
+
 router = APIRouter()
 
 
@@ -78,5 +81,17 @@ async def void_payment(
     # Voiding a payment reduces invoice.amount_paid, which could affect subscription warnings
     await invalidate_payment_cache(current_user.tenant_id)
     await invalidate_subscription_cache(current_user.tenant_id)
+    
+    # ✅ NEW: Log the payment void
+    try:
+        await PaymentActivityLogger.on_voided(
+            db=db,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.id,
+            payment=payment,
+            reason=payload.reason,
+        )
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to log payment void: {e}")
     
     return payment

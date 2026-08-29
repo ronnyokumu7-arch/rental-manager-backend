@@ -14,6 +14,7 @@ from app.models.payments import Payment, PaymentStatus
 from app.models.users import User
 from app.schemas.payment import PaymentCreate, PaymentOut
 from app.services.cache import invalidate_subscription_cache, invalidate_invoice_cache
+from app.services.activity_logs.payment import PaymentActivityLogger  # ✅ NEW
 
 router = APIRouter()
 
@@ -99,5 +100,17 @@ async def record_offline_payment(
     # This ensures subscription warnings and invoice lists update immediately
     await invalidate_subscription_cache(current_user.tenant_id)
     await invalidate_invoice_cache(current_user.tenant_id)
+    
+    # ✅ NEW: Log the payment received
+    try:
+        await PaymentActivityLogger.on_recorded(
+            db=db,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.id,
+            payment=db_payment,
+            invoice_number=invoice.invoice_number,
+        )
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to log payment received: {e}")
     
     return db_payment
