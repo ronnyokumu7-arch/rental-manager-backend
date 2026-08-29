@@ -15,7 +15,11 @@ from app.schemas.activity_log import ActivityLogOut
 from app.schemas.pagination import PaginatedResponse, paginate_items
 from app.services.cache import get_cached_activity_logs, set_cached_activity_logs
 
-router = APIRouter(prefix="/activity-logs", tags=["activity_logs"])
+router = APIRouter(
+    prefix="/activity-logs",
+    tags=["activity_logs"],
+    redirect_slashes=False,  # ✅ Prevents 307 redirect
+)
 
 MAX_LOG_LIMIT = 100
 DEFAULT_LOG_LIMIT = 50
