@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -29,7 +29,7 @@ DEFAULT_LOG_LIMIT = 50
 @limiter.limit("60/minute")
 async def get_activity_logs(
     request: Request,
-    user_id: Optional[int] = Query(None, description="Filter by specific user ID (admin only)"),
+    user_id: Optional[int] = Query(None, description="Filter by specific user ID (personal/audit view)"),
     action: Optional[str] = Query(None, description="Filter by specific action (e.g., 'payment_received')"),
     target_type: Optional[str] = Query(None, description="Filter by target type (e.g., 'booking', 'vehicle')"),
     start_date: Optional[datetime] = Query(None, description="Start date for filtering"),
@@ -42,100 +42,72 @@ async def get_activity_logs(
 ):
     """
     Get activity logs with strict tenant isolation.
-    
-    ✅ SECURITY RULES:
-    - Tenant users can ONLY see logs from their own tenant
-    - Super admins can view logs for any user across all tenants
-    
-    ✅ ENHANCED FEATURES:
-    - Time-range filtering (Today, This Week, This Month)
-    - Action/Target Type filtering (Financials vs Dashboard distinction)
-    - Priority sorting (Critical alerts on top)
+
+    ✅ FEED SEMANTICS:
+    - DEFAULT (no user_id): TENANT-WIDE feed — all staff actions + system/scheduler
+      alerts (user_id IS NULL). This is what the dashboard expects.
+    - With user_id: personal/audit view for that user (permission-checked).
+    - Super admin + user_id: cross-tenant view of that user.
     """
     page_size = min(max(page_size, 1), MAX_LOG_LIMIT)
-    
-    target_user_id = current_user.id
-    
+
+    # ── Resolve scope ──────────────────────────────────────────────────────
+    filters = []
     if user_id is not None:
-        if current_user.role == UserRole.super_admin:
-            target_user_id = user_id
-        else:
+        # Explicit personal/audit view — permission-checked
+        if current_user.role != UserRole.super_admin:
             target_stmt = select(User).where(
                 User.id == user_id,
                 User.tenant_id == current_user.tenant_id,
             )
             target_result = await db.execute(target_stmt)
-            target_user = target_result.scalars().first()
-            
-            if not target_user:
+            if not target_result.scalars().first():
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Access denied: user not found in your tenant",
                 )
-            target_user_id = user_id
-    
-    # ✅ Build the base query with strict tenant isolation
-    if current_user.role == UserRole.super_admin and user_id is not None:
-        stmt = select(ActivityLog).where(ActivityLog.user_id == target_user_id)
-    else:
-        stmt = select(ActivityLog).where(
-            ActivityLog.tenant_id == current_user.tenant_id,
-            ActivityLog.user_id == target_user_id,
-        )
-    
-    # ✅ Apply action filter (e.g., only payments/invoices for financials page)
+            filters.append(ActivityLog.tenant_id == current_user.tenant_id)
+        filters.append(ActivityLog.user_id == user_id)
+    elif current_user.role != UserRole.super_admin:
+        # ✅ DEFAULT: tenant-wide feed (all users + system events)
+        filters.append(ActivityLog.tenant_id == current_user.tenant_id)
+    # super admin without user_id → platform-wide view (no filters)
+
+    # ── Optional dimension filters ─────────────────────────────────────────
     if action:
-        stmt = stmt.where(ActivityLog.action == action)
-    
-    # ✅ Apply target type filter (e.g., only bookings, vehicles)
+        filters.append(ActivityLog.action == action)
     if target_type:
-        stmt = stmt.where(ActivityLog.target_type == target_type)
-    
-    # ✅ Apply time-range filters (for Today/Week/Month)
+        filters.append(ActivityLog.target_type == target_type)
     if start_date:
-        stmt = stmt.where(ActivityLog.created_at >= start_date)
+        filters.append(ActivityLog.created_at >= start_date)
     if end_date:
-        stmt = stmt.where(ActivityLog.created_at <= end_date)
-    
-    # ✅ Apply priority sorting (critical alerts first, then newest)
+        filters.append(ActivityLog.created_at <= end_date)
+
+    # ── Data query ─────────────────────────────────────────────────────────
+    stmt = select(ActivityLog).where(*filters)
     if sort_by_priority:
         stmt = stmt.order_by(ActivityLog.priority.desc(), ActivityLog.created_at.desc())
     else:
         stmt = stmt.order_by(ActivityLog.created_at.desc())
-    
-    # ✅ Fetch total count for pagination
-    count_stmt = select(ActivityLog.id).where(
-        ActivityLog.tenant_id == current_user.tenant_id,
-        ActivityLog.user_id == target_user_id,
-    )
-    if action:
-        count_stmt = count_stmt.where(ActivityLog.action == action)
-    if target_type:
-        count_stmt = count_stmt.where(ActivityLog.target_type == target_type)
-    if start_date:
-        count_stmt = count_stmt.where(ActivityLog.created_at >= start_date)
-    if end_date:
-        count_stmt = count_stmt.where(ActivityLog.created_at <= end_date)
-    
-    total_result = await db.execute(count_stmt)
-    total = len(total_result.scalars().all())
-    
-    # ✅ Paginate
+
+    # ── Total count (same filters, no ordering) ────────────────────────────
+    count_stmt = select(func.count()).select_from(ActivityLog).where(*filters)
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    # ── Paginate ───────────────────────────────────────────────────────────
     stmt = stmt.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(stmt)
     logs = result.scalars().all()
 
-    # ✅ FIXED: Manually serialize to ensure label, summary, priority are present
+    # ✅ Manually serialize to ensure label, summary, priority are present
     serialized_logs = []
     for log in logs:
         log_data = ActivityLogOut.model_validate(log)
-        # ✅ Ensure fields are populated (in case DB migration hasn't run)
         log_data.label = log_data.label or log.action.replace("_", " ").title()
         log_data.summary = log_data.summary or {}
         log_data.priority = log_data.priority or 2
         serialized_logs.append(log_data)
-    
-    # ✅ Return properly paginated response
+
     return paginate_items(
         serialized_logs,
         total=total,
