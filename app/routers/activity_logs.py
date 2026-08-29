@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.limiter import limiter
 from app.db.database import get_db
@@ -119,10 +120,20 @@ async def get_activity_logs(
     stmt = stmt.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(stmt)
     logs = result.scalars().all()
+
+    # ✅ FIXED: Manually serialize to ensure label, summary, priority are present
+    serialized_logs = []
+    for log in logs:
+        log_data = ActivityLogOut.model_validate(log)
+        # ✅ Ensure fields are populated (in case DB migration hasn't run)
+        log_data.label = log_data.label or log.action.replace("_", " ").title()
+        log_data.summary = log_data.summary or {}
+        log_data.priority = log_data.priority or 2
+        serialized_logs.append(log_data)
     
     # ✅ Return properly paginated response
     return paginate_items(
-        logs,
+        serialized_logs,
         total=total,
         page=page,
         page_size=page_size,
