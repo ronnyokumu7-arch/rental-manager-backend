@@ -1,3 +1,4 @@
+# app/main.py
 import os
 from contextlib import asynccontextmanager
 
@@ -15,6 +16,7 @@ from app.core.limiter import limiter
 from app.core.config import get_settings
 from app.core.exceptions import http_exception_handler
 from app.jobs.scheduler import start_scheduler, stop_scheduler
+from app.db.database import test_db_connection  # ✅ NEW: Startup connectivity test
 
 from app.routers import (
     activity_logs,
@@ -59,8 +61,14 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     redis_client = None
     
+    # ✅ 1. TEST DATABASE CONNECTIVITY FIRST (fail-fast with clear error)
+    db_ok = await test_db_connection()
+    if not db_ok:
+        print("⚠️ WARNING: Database connection failed at startup. The app will continue, but authenticated requests will fail.")
+        print("   Check that DATABASE_URL points to a resolvable hostname (same region as this web service).")
+    
     try:
-        # 1. Initialize Redis cache
+        # 2. Initialize Redis cache
         redis_client = aioredis.from_url(
             settings.redis_url, 
             encoding="utf-8", 
@@ -71,15 +79,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Redis initialization warning: {e}")
 
-    # ✅ 2. Pre-warm the headless browser
-    try:
-        from app.services.browser_pool import browser_pool
-        await browser_pool.get_browser()
-        print("✅ Headless Chrome is pre-warmed and ready for PDF generation!")
-    except Exception as e:
-        print(f"⚠️ Browser pre-warm warning: {e}")
+    # ✅ 3. Pre-warm the headless browser (skip in debug/reload mode to avoid event loop conflicts)
+    if not settings.debug:
+        try:
+            from app.services.browser_pool import browser_pool
+            await browser_pool.get_browser()
+            print("✅ Headless Chrome is pre-warmed and ready for PDF generation!")
+        except Exception as e:
+            print(f"⚠️ Browser pre-warm warning: {e}")
 
-    # ✅ 3. Start background scheduler
+    # ✅ 4. Start background scheduler
     start_scheduler()
     
     yield
