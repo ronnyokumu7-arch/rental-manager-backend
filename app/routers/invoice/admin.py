@@ -83,8 +83,10 @@ async def list_invoices(
     if cached is not None:
         return paginate_items(cached, total=len(cached), page=page, page_size=page_size)
 
+    # ✅ FIXED: Added selectinload for Invoice.booking.vehicle
     stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client)
+        selectinload(Invoice.booking).selectinload(Booking.client),
+        selectinload(Invoice.booking).selectinload(Booking.vehicle),
     ).where(Invoice.tenant_id == current_user.tenant_id)
     
     if status_filter:
@@ -111,8 +113,10 @@ async def get_invoice(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
+    # ✅ FIXED: Added selectinload for Invoice.booking.vehicle
     stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client)
+        selectinload(Invoice.booking).selectinload(Booking.client),
+        selectinload(Invoice.booking).selectinload(Booking.vehicle),
     ).where(
         Invoice.id == invoice_id,
         Invoice.tenant_id == current_user.tenant_id
@@ -163,9 +167,10 @@ async def create_invoice(
         notes=payload.notes,
     )
     
-    # ✅ FIXED: Re-fetch with eager loading so InvoiceOut computed fields don't crash
+    # ✅ FIXED: Re-fetch with eager loading for Invoice.booking.vehicle
     stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client)
+        selectinload(Invoice.booking).selectinload(Booking.client),
+        selectinload(Invoice.booking).selectinload(Booking.vehicle),
     ).where(Invoice.id == invoice.id)
     result = await db.execute(stmt)
     invoice = result.scalars().unique().first()
@@ -216,9 +221,10 @@ async def update_invoice(
 
     await db.commit()
     
-    # ✅ FIXED: Re-fetch with eager loading so InvoiceOut computed fields don't crash
+    # ✅ FIXED: Re-fetch with eager loading for Invoice.booking.vehicle
     stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client)
+        selectinload(Invoice.booking).selectinload(Booking.client),
+        selectinload(Invoice.booking).selectinload(Booking.vehicle),
     ).where(Invoice.id == invoice.id)
     result = await db.execute(stmt)
     invoice = result.scalars().unique().first()
@@ -266,9 +272,10 @@ async def void_invoice(
     invoice.status = InvoiceStatus.void
     await db.commit()
     
-    # ✅ FIXED: Re-fetch with eager loading so InvoiceOut computed fields don't crash
+    # ✅ FIXED: Re-fetch with eager loading for Invoice.booking.vehicle
     stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client)
+        selectinload(Invoice.booking).selectinload(Booking.client),
+        selectinload(Invoice.booking).selectinload(Booking.vehicle),
     ).where(Invoice.id == invoice.id)
     result = await db.execute(stmt)
     invoice = result.scalars().unique().first()
@@ -289,9 +296,10 @@ async def download_invoice_pdf(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    # ✅ FIXED: Added eager loading in case generate_invoice_pdf accesses booking/client
+    # ✅ FIXED: Added eager loading for Invoice.booking.vehicle
     stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client)
+        selectinload(Invoice.booking).selectinload(Booking.client),
+        selectinload(Invoice.booking).selectinload(Booking.vehicle),
     ).where(
         Invoice.id == invoice_id,
         Invoice.tenant_id == current_user.tenant_id
