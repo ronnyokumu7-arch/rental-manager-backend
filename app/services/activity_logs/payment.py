@@ -17,6 +17,19 @@ def _rel(obj, name: str):
     return obj.__dict__.get(name)
 
 
+def _get_client(payment):
+    """
+    ✅ SAFELY extract client from payment.invoice.booking.client chain.
+    """
+    invoice = _rel(payment, "invoice")
+    if not invoice:
+        return None
+    booking = _rel(invoice, "booking")
+    if not booking:
+        return None
+    return _rel(booking, "client")
+
+
 class PaymentActivityLogger:
     """Activity logging helpers for payment-related actions."""
 
@@ -28,7 +41,8 @@ class PaymentActivityLogger:
         ✅ CRITICAL: Payment Received is High Priority (Revenue).
         ✅ SNAPSHOT: Captures client, amount, and reference for instant UI rendering.
         """
-        client = _rel(payment, "client")
+        # ✅ FIXED: Get client through invoice.booking.client chain
+        client = _get_client(payment)
         summary = {
             "amount": f"{payment.currency_code} {payment.amount:,.2f}" if payment.amount else None,
             "reference": payment.reference,
@@ -64,7 +78,8 @@ class PaymentActivityLogger:
 
         ✅ CRITICAL: Failed payments are High Priority (Cash Flow Risk).
         """
-        client = _rel(payment, "client")
+        # ✅ FIXED: Get client through invoice.booking.client chain
+        client = _get_client(payment)
         summary = {
             "amount": f"{payment.currency_code} {payment.amount:,.2f}" if payment.amount else None,
             "reference": payment.reference,
@@ -95,7 +110,8 @@ class PaymentActivityLogger:
         """
         Log a payment void event.
         """
-        client = _rel(payment, "client")
+        # ✅ FIXED: Get client through invoice.booking.client chain
+        client = _get_client(payment)
         summary = {
             "amount": f"{payment.currency_code} {payment.amount:,.2f}" if payment.amount else None,
             "reference": payment.reference,

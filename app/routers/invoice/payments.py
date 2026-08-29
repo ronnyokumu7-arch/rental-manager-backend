@@ -4,11 +4,13 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload  # ✅ NEW: Added import
 
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
 from app.dependencies.subscription import require_active_subscription
+from app.models.bookings import Booking  # ✅ NEW: Added import
 from app.models.invoices import Invoice, InvoiceStatus
 from app.models.payments import Payment, PaymentStatus
 from app.models.users import User
@@ -95,6 +97,15 @@ async def record_offline_payment(
     # ✅ Async commit and refresh
     await db.commit()
     await db.refresh(db_payment)
+
+    # ✅ NEW: Re-fetch payment with eager-loaded client chain (prevents MissingGreenlet)
+    stmt = select(Payment).options(
+        selectinload(Payment.invoice)
+        .selectinload(Invoice.booking)
+        .selectinload(Booking.client)
+    ).where(Payment.id == db_payment.id)
+    result = await db.execute(stmt)
+    db_payment = result.scalars().unique().first()
     
     # ✅ CRITICAL: Invalidate caches since payment status changed
     # This ensures subscription warnings and invoice lists update immediately
