@@ -25,6 +25,22 @@ from ._helpers import get_authorized_booking_async
 router = APIRouter()
 
 
+# ✅ NEW: Helper to safely convert Booking → BookingOut with denormalized UI fields
+def serialize_booking(booking: Booking) -> BookingOut:
+    """Manually populate denormalized UI fields to prevent MissingGreenlet errors."""
+    data = BookingOut.model_validate(booking)  # Base serialization (handles nested objects)
+    
+    # ✅ Safely populate flat fields using getattr (avoids lazy-loading)
+    data.client_name = getattr(booking.client, "full_name", None) if booking.client else None
+    data.client_phone = getattr(booking.client, "phone", None) if booking.client else None
+    data.vehicle_plate = getattr(booking.vehicle, "plate_number", None) if booking.vehicle else None
+    data.vehicle_name = (
+        f"{booking.vehicle.make} {booking.vehicle.model}" if booking.vehicle else None
+    )
+    
+    return data
+
+
 @router.get("/", response_model=PaginatedResponse[BookingOut])
 async def list_bookings(
     request: Request,
@@ -47,6 +63,7 @@ async def list_bookings(
         client_id=client_id
     )
     if cached is not None:
+        # ✅ Return cached items (already serialized as dicts)
         return paginate_cached_items(cached, page=page, page_size=page_size)
 
     stmt = select(Booking).options(
@@ -65,15 +82,18 @@ async def list_bookings(
     result = await db.execute(stmt)
     bookings = result.scalars().unique().all()
 
+    # ✅ NEW: Serialize with denormalized UI fields before caching
+    serialized_bookings = [serialize_booking(b) for b in bookings]
+
     await set_cached_booking_list(
         scope.tenant_id,
         archived=False,
         vehicle_id=vehicle_id,
         client_id=client_id,
-        bookings=bookings
+        bookings=serialized_bookings  # ✅ Cache the serialized versions
     )
 
-    return paginate_items(bookings, total=len(bookings), page=page, page_size=page_size)
+    return paginate_items(serialized_bookings, total=len(serialized_bookings), page=page, page_size=page_size)
 
 
 @router.get("/archived", response_model=PaginatedResponse[BookingOut])
@@ -102,9 +122,12 @@ async def list_archived_bookings(
     result = await db.execute(stmt)
     bookings = result.scalars().unique().all()
 
-    await set_cached_booking_list(scope.tenant_id, archived=True, bookings=bookings)
+    # ✅ NEW: Serialize with denormalized UI fields before caching
+    serialized_bookings = [serialize_booking(b) for b in bookings]
 
-    return paginate_items(bookings, total=len(bookings), page=page, page_size=page_size)
+    await set_cached_booking_list(scope.tenant_id, archived=True, bookings=serialized_bookings)
+
+    return paginate_items(serialized_bookings, total=len(serialized_bookings), page=page, page_size=page_size)
 
 
 @router.get("/{booking_id}", response_model=BookingOut)
@@ -127,7 +150,9 @@ async def get_booking(
 
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
-    return booking
+    
+    # ✅ NEW: Return serialized with denormalized UI fields
+    return serialize_booking(booking)
 
 
 # ---------------------------------------------------------------------------

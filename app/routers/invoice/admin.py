@@ -30,6 +30,23 @@ router = APIRouter()
 settings = get_settings()
 
 
+# ✅ NEW: Helper to safely convert Invoice → InvoiceOut with denormalized UI fields
+def serialize_invoice(invoice: Invoice) -> InvoiceOut:
+    """Manually populate denormalized UI fields to prevent MissingGreenlet errors."""
+    data = InvoiceOut.model_validate(invoice)  # Base serialization (handles nested objects)
+    
+    # ✅ Safely populate flat fields using getattr (avoids lazy-loading)
+    # Invoice has a relationship: invoice.booking -> booking.client
+    booking = invoice.booking
+    client = getattr(booking, "client", None) if booking else None
+    
+    data.client_name = getattr(client, "full_name", None) if client else None
+    data.client_phone = getattr(client, "phone", None) if client else None
+    data.booking_number = getattr(booking, "booking_number", None) if booking else None
+    
+    return data
+
+
 @router.get("/", response_model=PaginatedResponse[InvoiceOut])
 @limiter.limit("60/minute")
 async def list_invoices(
@@ -58,9 +75,12 @@ async def list_invoices(
     stmt = stmt.order_by(Invoice.created_at.desc())
     result = await db.execute(stmt)
     invoices = result.scalars().unique().all()
+
+    # ✅ NEW: Serialize with denormalized UI fields before caching
+    serialized_invoices = [serialize_invoice(inv) for inv in invoices]
     
-    await set_cached_invoice_list(current_user.tenant_id, status_filter, booking_id, invoices)
-    return paginate_items(invoices, total=len(invoices), page=page, page_size=page_size)
+    await set_cached_invoice_list(current_user.tenant_id, status_filter, booking_id, serialized_invoices)
+    return paginate_items(serialized_invoices, total=len(serialized_invoices), page=page, page_size=page_size)
 
 
 @router.get("/{invoice_id}", response_model=InvoiceOut)
@@ -86,7 +106,9 @@ async def get_invoice(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invoice not found"
         )
-    return invoice
+    
+    # ✅ NEW: Return serialized with denormalized UI fields
+    return serialize_invoice(invoice)
 
 
 @router.post("/", response_model=InvoiceOut, status_code=status.HTTP_201_CREATED)
@@ -130,7 +152,9 @@ async def create_invoice(
 
     # ✅ Invalidate cache
     await invalidate_invoice_cache(current_user.tenant_id)
-    return invoice
+    
+    # ✅ NEW: Return serialized with denormalized UI fields
+    return serialize_invoice(invoice)
 
 
 @router.patch("/{invoice_id}", response_model=InvoiceOut)
@@ -166,8 +190,6 @@ async def update_invoice(
         setattr(invoice, field, value)
 
     # ✅ PHASE 1: human price override propagates to the linked booking.
-    # Runs BEFORE commit so invoice + booking persist atomically —
-    # the backend always knows the booking's real, adjusted total.
     booking_synced = False
     if "amount_due" in update_data:
         booking_synced = (await sync_invoice_to_booking(db, invoice)) is not None
@@ -181,11 +203,13 @@ async def update_invoice(
     result = await db.execute(stmt)
     invoice = result.scalars().unique().first()
     
-    # ✅ Invalidate caches (booking cache too when its total moved)
+    # ✅ Invalidate caches
     await invalidate_invoice_cache(current_user.tenant_id)
     if booking_synced:
         await invalidate_booking_cache(current_user.tenant_id)
-    return invoice
+    
+    # ✅ NEW: Return serialized with denormalized UI fields
+    return serialize_invoice(invoice)
 
 
 @router.post("/{invoice_id}/void", response_model=InvoiceOut)
@@ -229,10 +253,12 @@ async def void_invoice(
     result = await db.execute(stmt)
     invoice = result.scalars().unique().first()
     
-    # ✅ Invalidate both invoice and subscription caches (voiding affects financial health)
+    # ✅ Invalidate both invoice and subscription caches
     await invalidate_invoice_cache(current_user.tenant_id)
     await invalidate_subscription_cache(current_user.tenant_id)
-    return invoice
+    
+    # ✅ NEW: Return serialized with denormalized UI fields
+    return serialize_invoice(invoice)
 
 
 @router.get("/{invoice_id}/pdf")

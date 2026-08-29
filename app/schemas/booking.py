@@ -20,7 +20,6 @@ class BookingBase(BaseModel):
     return_location: Optional[str] = Field(default=None, max_length=255)
     
     # ✅ PHASE 1: daily_rate is now optional (server uses vehicle.daily_rate if not provided)
-    # If client sends a value, it becomes the effective rate for THIS booking only
     daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
     
     # ✅ PHASE 1: total_amount is now optional (server computes it via pricing engine)
@@ -143,6 +142,12 @@ class BookingOut(BaseModel):
     client: Optional[ClientOut] = None
     vehicle: Optional[VehicleOut] = None
     driver: Optional[DriverOut] = None
+
+    # ✅ NEW: Denormalized UI fields (prevents MissingGreenlet errors)
+    client_name: Optional[str] = None
+    client_phone: Optional[str] = None
+    vehicle_plate: Optional[str] = None
+    vehicle_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
