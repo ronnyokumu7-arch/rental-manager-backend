@@ -1,27 +1,40 @@
 # app/services/activity_logs/payment.py
 
+from typing import Optional
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from .service import ActivityLogService
+
+
+def _rel(obj, name: str):
+    """
+    ✅ SAFE RELATIONSHIP READ — no lazy-load, no MissingGreenlet.
+    Returns the related object ONLY if already loaded in memory
+    (eager-loaded or passed in); otherwise None.
+    """
+    if obj is None:
+        return None
+    return obj.__dict__.get(name)
 
 
 class PaymentActivityLogger:
     """Activity logging helpers for payment-related actions."""
 
     @staticmethod
-    async def on_recorded(db: AsyncSession, tenant_id: int, user_id: int, payment, invoice_number: str) -> None:
+    async def on_recorded(db: AsyncSession, tenant_id: int, user_id: Optional[int], payment, invoice_number: str) -> None:
         """
         Log a payment record event.
 
         ✅ CRITICAL: Payment Received is High Priority (Revenue).
         ✅ SNAPSHOT: Captures client, amount, and reference for instant UI rendering.
         """
-        # ✅ Build the denormalized summary snapshot
+        client = _rel(payment, "client")
         summary = {
             "amount": f"{payment.currency_code} {payment.amount:,.2f}" if payment.amount else None,
             "reference": payment.reference,
             "invoice_number": invoice_number,
-            "client_name": getattr(payment.client, "full_name", None) if payment.client else None,
-            "client_phone": getattr(payment.client, "phone", None) if payment.client else None,
+            "client_name": client.full_name if client else None,
+            "client_phone": client.phone if client else None,
             "method": payment.method.value if payment.method else None,
         }
 
@@ -45,17 +58,18 @@ class PaymentActivityLogger:
         )
 
     @staticmethod
-    async def on_failed(db: AsyncSession, tenant_id: int, user_id: int, payment, reason: str) -> None:
+    async def on_failed(db: AsyncSession, tenant_id: int, user_id: Optional[int], payment, reason: str) -> None:
         """
         Log a payment failure event.
 
         ✅ CRITICAL: Failed payments are High Priority (Cash Flow Risk).
         """
+        client = _rel(payment, "client")
         summary = {
             "amount": f"{payment.currency_code} {payment.amount:,.2f}" if payment.amount else None,
             "reference": payment.reference,
-            "client_name": getattr(payment.client, "full_name", None) if payment.client else None,
-            "client_phone": getattr(payment.client, "phone", None) if payment.client else None,
+            "client_name": client.full_name if client else None,
+            "client_phone": client.phone if client else None,
             "reason": reason,
         }
 
@@ -77,15 +91,16 @@ class PaymentActivityLogger:
         )
 
     @staticmethod
-    async def on_voided(db: AsyncSession, tenant_id: int, user_id: int, payment, reason: str) -> None:
+    async def on_voided(db: AsyncSession, tenant_id: int, user_id: Optional[int], payment, reason: str) -> None:
         """
         Log a payment void event.
         """
+        client = _rel(payment, "client")
         summary = {
             "amount": f"{payment.currency_code} {payment.amount:,.2f}" if payment.amount else None,
             "reference": payment.reference,
-            "client_name": getattr(payment.client, "full_name", None) if payment.client else None,
-            "client_phone": getattr(payment.client, "phone", None) if payment.client else None,
+            "client_name": client.full_name if client else None,
+            "client_phone": client.phone if client else None,
             "reason": reason,
         }
 

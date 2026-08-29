@@ -113,17 +113,17 @@ async def set_cached_activity_logs(
 
 async def invalidate_activity_log_cache(tenant_id: int, user_id: Optional[int] = None) -> None:
     """
-    ✅ Invalidate specific cache keys when a new log is created.
-    Avoids stale data in the "Today" / "Week" / "Month" views.
+    ✅ Invalidate ALL activity-log cache keys for the tenant.
+
+    The default dashboard feed is TENANT-WIDE (keys contain user_None),
+    so a user-scoped pattern would miss it and serve stale feeds.
+    Activity writes are low-frequency; wiping the tenant namespace is
+    correct and cheap. `user_id` kept for signature compatibility.
     """
     try:
         redis = FastAPICache.get_backend().redis
-        # ✅ Wildcard patterns to invalidate all filter variations for this tenant/user
-        if user_id:
-            pattern = f"activity_logs:tenant_{tenant_id}:user_{user_id}:*"
-        else:
-            pattern = f"activity_logs:tenant_{tenant_id}:*"
-        
+        pattern = f"activity_logs:tenant_{tenant_id}:*"
+
         cursor = 0
         while True:
             cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=100)

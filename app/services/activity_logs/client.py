@@ -1,3 +1,7 @@
+# app/services/activity_logs/client.py
+
+from typing import Optional
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from .service import ActivityLogService
 
@@ -6,11 +10,11 @@ class ClientActivityLogger:
     """Logger for Client lifecycle events."""
 
     @staticmethod
-    async def on_created(db: AsyncSession, tenant_id: int, user_id: int, client) -> None:
+    async def on_created(db: AsyncSession, tenant_id: int, user_id: Optional[int], client) -> None:
         """
         Log a client creation event.
-        
-        ✅ SNAPSHOT PATTERN: Builds a summary with client's name and phone 
+
+        ✅ SNAPSHOT PATTERN: Builds a summary with client's name and phone
         to prevent MissingGreenlet errors in the UI.
         """
         summary = {
@@ -37,7 +41,7 @@ class ClientActivityLogger:
         )
 
     @staticmethod
-    async def on_status_changed(db: AsyncSession, tenant_id: int, user_id: int, client, old_status: str, new_status: str) -> None:
+    async def on_status_changed(db: AsyncSession, tenant_id: int, user_id: Optional[int], client, old_status: str, new_status: str) -> None:
         """
         Log a client status change (Active, Suspended, Inactive, Pending).
         """
@@ -71,7 +75,7 @@ class ClientActivityLogger:
         )
 
     @staticmethod
-    async def on_archived(db: AsyncSession, tenant_id: int, user_id: int, client) -> None:
+    async def on_archived(db: AsyncSession, tenant_id: int, user_id: Optional[int], client) -> None:
         """
         Log a client archive event.
         """

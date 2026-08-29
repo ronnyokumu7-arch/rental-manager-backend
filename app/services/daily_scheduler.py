@@ -3,7 +3,9 @@
 from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.models.activity_log import ActivityLog
 from app.models.task import TaskPriority
 from app.models.users import User
 from app.models.bookings import Booking, BookingStatus
@@ -14,6 +16,18 @@ from app.services.task_core import TaskCoreService
 from app.services.activity_logs.service import ActivityLogService  # ✅ NEW
 from app.services.activity_logs.vehicle import VehicleActivityLogger  # ✅ NEW
 from app.services.activity_logs.booking import BookingActivityLogger  # ✅ NEW
+
+
+async def _logged_today(db: AsyncSession, tenant_id: int, action: str, target_id: int) -> bool:
+    """✅ Once-per-day dedup: skip recurring alerts already logged today."""
+    start = datetime.combine(datetime.now().date(), datetime.min.time())
+    stmt = select(ActivityLog.id).where(
+        ActivityLog.tenant_id == tenant_id,
+        ActivityLog.action == action,
+        ActivityLog.target_id == target_id,
+        ActivityLog.created_at >= start,
+    )
+    return (await db.execute(stmt)).scalars().first() is not None
 
 
 class DailySchedulerService:
@@ -53,22 +67,23 @@ class DailySchedulerService:
                 target_id=user.id
             )
 
-            # ✅ NEW: Log the compliance alert to the Activity Feed
-            await ActivityLogService.log(
-                db=db,
-                tenant_id=user.tenant_id,
-                user_id=user.id,
-                action="dl_expired",
-                label="Driver's License Expiring",
-                target_type="user",
-                target_id=user.id,
-                summary={
-                    "driver_name": user.full_name,
-                    "days_left": days_left,
-                    "expiry_date": expiry_date.isoformat() if expiry_date else None,
-                },
-                priority=3 if days_left < 7 else 2,
-            )
+            # ✅ System alert (actor=None; subject is the target), once per day
+            if not await _logged_today(db, user.tenant_id, "dl_expired", user.id):
+                await ActivityLogService.log(
+                    db=db,
+                    tenant_id=user.tenant_id,
+                    user_id=None,
+                    action="dl_expired",
+                    label="Driver's License Expiring",
+                    target_type="user",
+                    target_id=user.id,
+                    summary={
+                        "driver_name": user.full_name,
+                        "days_left": days_left,
+                        "expiry_date": expiry_date.isoformat() if expiry_date else None,
+                    },
+                    priority=3 if days_left < 7 else 2,
+                )
 
         # =====================================================================
         # 2. FINANCIAL HEALTH: Overdue Invoices
@@ -97,22 +112,23 @@ class DailySchedulerService:
                 target_id=invoice.id
             )
 
-            # ✅ NEW: Log the overdue invoice to the Activity Feed
-            await ActivityLogService.log(
-                db=db,
-                tenant_id=invoice.tenant_id,
-                user_id=invoice.user_id,  # Assuming invoice has user_id
-                action="invoice_overdue",
-                label="Invoice Overdue",
-                target_type="invoice",
-                target_id=invoice.id,
-                summary={
-                    "invoice_number": inv_number,
-                    "amount": str(amount),
-                    "days_overdue": days_overdue,
-                },
-                priority=3 if days_overdue > 14 else 2,
-            )
+            # ✅ System alert, once per day
+            if not await _logged_today(db, invoice.tenant_id, "invoice_overdue", invoice.id):
+                await ActivityLogService.log(
+                    db=db,
+                    tenant_id=invoice.tenant_id,
+                    user_id=None,
+                    action="invoice_overdue",
+                    label="Invoice Overdue",
+                    target_type="invoice",
+                    target_id=invoice.id,
+                    summary={
+                        "invoice_number": inv_number,
+                        "amount": str(amount),
+                        "days_overdue": days_overdue,
+                    },
+                    priority=3 if days_overdue > 14 else 2,
+                )
 
         # =====================================================================
         # 3. FLEET COMPLIANCE: Expiring Vehicle Insurance
@@ -142,22 +158,23 @@ class DailySchedulerService:
                     target_id=vehicle.id
                 )
 
-                # ✅ NEW: Log the insurance alert to the Activity Feed
-                await ActivityLogService.log(
-                    db=db,
-                    tenant_id=vehicle.tenant_id,
-                    user_id=None,  # System generated
-                    action="vehicle_insurance_expiring",
-                    label="Vehicle Insurance Expiring",
-                    target_type="vehicle",
-                    target_id=vehicle.id,
-                    summary={
-                        "vehicle_name": f"{vehicle.make} {vehicle.model}",
-                        "plate_number": vehicle.plate_number,
-                        "days_left": days_left,
-                    },
-                    priority=3 if days_left < 7 else 2,
-                )
+                # ✅ System alert, once per day
+                if not await _logged_today(db, vehicle.tenant_id, "vehicle_insurance_expiring", vehicle.id):
+                    await ActivityLogService.log(
+                        db=db,
+                        tenant_id=vehicle.tenant_id,
+                        user_id=None,  # System generated
+                        action="vehicle_insurance_expiring",
+                        label="Vehicle Insurance Expiring",
+                        target_type="vehicle",
+                        target_id=vehicle.id,
+                        summary={
+                            "vehicle_name": f"{vehicle.make} {vehicle.model}",
+                            "plate_number": vehicle.plate_number,
+                            "days_left": days_left,
+                        },
+                        priority=3 if days_left < 7 else 2,
+                    )
 
         # =====================================================================
         # 4. ✅ FLEET OPS: Return mileage not yet logged (mileage_due flag)
@@ -181,39 +198,47 @@ class DailySchedulerService:
                 target_id=vehicle.id
             )
 
-            # ✅ NEW: Log the mileage due alert to the Activity Feed
-            await VehicleActivityLogger.on_mileage_due(
-                db=db,
-                tenant_id=vehicle.tenant_id,
-                user_id=None,
-                vehicle=vehicle,
-            )
+            # ✅ FIXED: on_mileage_due now exists on VehicleActivityLogger; once per day
+            if not await _logged_today(db, vehicle.tenant_id, "mileage_due", vehicle.id):
+                await VehicleActivityLogger.on_mileage_due(
+                    db=db,
+                    tenant_id=vehicle.tenant_id,
+                    user_id=None,
+                    vehicle=vehicle,
+                )
 
         # =====================================================================
         # 5. ✅ LIFECYCLE SAFETY NET: Trip Overdue / Ending Today
         # =====================================================================
-        bookings_stmt = select(Booking).where(
-            Booking.status == BookingStatus.active,
-            Booking.end_date != None,
+        bookings_stmt = (
+            select(Booking)
+            .options(
+                selectinload(Booking.client),   # ✅ rich summaries (safe _rel reads)
+                selectinload(Booking.vehicle),
+            )
+            .where(
+                Booking.status == BookingStatus.active,
+                Booking.end_date != None,
+            )
         )
         for booking in (await db.execute(bookings_stmt)).scalars().all():
             end_date = booking.end_date.date() if hasattr(booking.end_date, 'date') else booking.end_date
-            
-            # ✅ Trip Ending Today
-            if end_date == today:
+
+            # ✅ Trip Ending Today (once per day)
+            if end_date == today and not await _logged_today(db, booking.tenant_id, "trip_ending_today", booking.id):
                 await BookingActivityLogger.on_trip_ending_today(
                     db=db,
                     tenant_id=booking.tenant_id,
-                    user_id=booking.user_id,
+                    user_id=None,  # system safety net
                     booking=booking,
                 )
 
-            # ✅ Trip Overdue
-            if end_date < today:
+            # ✅ Trip Overdue (once per day — no feed flooding)
+            if end_date < today and not await _logged_today(db, booking.tenant_id, "trip_overdue", booking.id):
                 await BookingActivityLogger.on_trip_overdue(
                     db=db,
                     tenant_id=booking.tenant_id,
-                    user_id=booking.user_id,
+                    user_id=None,  # system safety net
                     booking=booking,
                 )
 

@@ -27,17 +27,23 @@ router = APIRouter()
 
 # ✅ NEW: Helper to safely convert Booking → BookingOut with denormalized UI fields
 def serialize_booking(booking: Booking) -> BookingOut:
-    """Manually populate denormalized UI fields to prevent MissingGreenlet errors."""
-    data = BookingOut.model_validate(booking)  # Base serialization (handles nested objects)
-    
-    # ✅ Safely populate flat fields using getattr (avoids lazy-loading)
-    data.client_name = getattr(booking.client, "full_name", None) if booking.client else None
-    data.client_phone = getattr(booking.client, "phone", None) if booking.client else None
-    data.vehicle_plate = getattr(booking.vehicle, "plate_number", None) if booking.vehicle else None
-    data.vehicle_name = (
-        f"{booking.vehicle.make} {booking.vehicle.model}" if booking.vehicle else None
-    )
-    
+    """Manually populate denormalized UI fields.
+
+    ✅ INVARIANT: call only on eager-loaded bookings (all call sites here do).
+    ✅ Flat fields read from __dict__ — never trigger lazy-load even if the
+    invariant is ever broken (MissingGreenlet-proof for the denormalized part).
+    """
+    data = BookingOut.model_validate(booking)  # Base serialization (nested objects)
+
+    # ✅ Safe in-memory reads (no lazy-load on these fields)
+    client = booking.__dict__.get("client")
+    vehicle = booking.__dict__.get("vehicle")
+
+    data.client_name = client.full_name if client else None
+    data.client_phone = client.phone if client else None
+    data.vehicle_plate = vehicle.plate_number if vehicle else None
+    data.vehicle_name = f"{vehicle.make} {vehicle.model}" if vehicle else None
+
     return data
 
 

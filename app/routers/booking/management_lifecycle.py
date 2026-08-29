@@ -4,6 +4,9 @@
 ✅ PHASE 1: re-pricing on schedule/rate change via the pure self-drive engine
 (quote_selfdrive). Manual total overrides via PATCH are tracked as
 manually_adjusted with an audit note.
+
+✅ ACTIVITY FEED: loggers run on eager-loaded snapshots and are committed
+(flush-only loggers + post-commit calls require an explicit commit).
 """
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -31,6 +34,16 @@ from .management_create import validate_driver_assignment
 from app.services.activity_logs.booking import BookingActivityLogger
 
 router = APIRouter()
+
+
+async def _reload_full(db: AsyncSession, booking_id: int) -> Booking:
+    """✅ Eager re-fetch: loaded relationships = rich log summaries + safe serialization."""
+    stmt = select(Booking).options(
+        selectinload(Booking.client),
+        selectinload(Booking.vehicle),
+        selectinload(Booking.driver),
+    ).where(Booking.id == booking_id)
+    return (await db.execute(stmt)).scalars().first()
 
 
 @router.patch("/{booking_id}", response_model=BookingOut)
@@ -142,7 +155,9 @@ async def update_booking(
         setattr(booking, field, value)
 
     await db.commit()
-    await db.refresh(booking)
+
+    # ✅ Eager snapshot for logging + response (rich summaries, no lazy-load)
+    booking_full = await _reload_full(db, booking.id)
 
     await invalidate_booking_cache(current_user.tenant_id)
 
@@ -152,19 +167,16 @@ async def update_booking(
             db=db,
             tenant_id=current_user.tenant_id,
             user_id=current_user.id,
-            booking=booking,
+            booking=booking_full,
             changed_fields=list(update_data.keys()),
         )
     except Exception as e:
         print(f"⚠️ Warning: Failed to log booking update: {e}")
 
-    # ✅ FIXED: eager re-fetch so BookingOut never lazy-loads (MissingGreenlet-safe)
-    stmt = select(Booking).options(
-        selectinload(Booking.client),
-        selectinload(Booking.vehicle),
-        selectinload(Booking.driver)
-    ).where(Booking.id == booking.id)
-    return (await db.execute(stmt)).scalars().first()
+    # ✅ CRITICAL: persist the flushed activity log
+    await db.commit()
+
+    return booking_full
 
 
 @router.post("/{booking_id}/archive", response_model=BookingOut)
@@ -185,7 +197,8 @@ async def archive_booking(
     booking.is_archived = True
     booking.archived_at = datetime.now(timezone.utc)
     await db.commit()
-    await db.refresh(booking)
+
+    booking_full = await _reload_full(db, booking.id)
 
     await invalidate_booking_cache(current_user.tenant_id)
 
@@ -195,12 +208,15 @@ async def archive_booking(
             db=db,
             tenant_id=current_user.tenant_id,
             user_id=current_user.id,
-            booking=booking,
+            booking=booking_full,
         )
     except Exception as e:
         print(f"⚠️ Warning: Failed to log booking archive: {e}")
 
-    return booking
+    # ✅ CRITICAL: persist the flushed activity log
+    await db.commit()
+
+    return booking_full
 
 
 @router.post("/{booking_id}/restore", response_model=BookingOut)
@@ -219,7 +235,8 @@ async def restore_booking(
     booking.is_archived = False
     booking.archived_at = None
     await db.commit()
-    await db.refresh(booking)
+
+    booking_full = await _reload_full(db, booking.id)
 
     await invalidate_booking_cache(current_user.tenant_id)
 
@@ -229,12 +246,15 @@ async def restore_booking(
             db=db,
             tenant_id=current_user.tenant_id,
             user_id=current_user.id,
-            booking=booking,
+            booking=booking_full,
         )
     except Exception as e:
         print(f"⚠️ Warning: Failed to log booking restore: {e}")
 
-    return booking
+    # ✅ CRITICAL: persist the flushed activity log
+    await db.commit()
+
+    return booking_full
 
 
 @router.delete("/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)

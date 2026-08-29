@@ -188,6 +188,8 @@ async def create_booking(
             user_id=current_user.id,
             booking=db_booking,
             client_name=client.full_name,
+            client=client,    # ✅ already loaded — safe snapshot, no lazy-load
+            vehicle=vehicle,  # ✅ already loaded — safe snapshot, no lazy-load
         )
     except Exception as e:
         print(f"⚠️ Warning: Failed to log booking creation: {e}")
@@ -202,6 +204,11 @@ async def create_booking(
         )
     except Exception as e:
         print(f"⚠️ Warning: Failed to log client creation: {e}")
+
+    # ✅ CRITICAL: persist the flushed activity logs + tasks.
+    # The loggers flush-only; without this commit the rows roll back
+    # when the session closes at request end.
+    await db.commit()
 
     await invalidate_booking_cache(current_user.tenant_id)
 

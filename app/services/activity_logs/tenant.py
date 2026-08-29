@@ -1,5 +1,7 @@
 # app/services/activity_logs/tenant.py
 
+from typing import Optional
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from .service import ActivityLogService
 
@@ -8,7 +10,7 @@ class TenantActivityLogger:
     """Activity logging helpers for tenant (Agency) lifecycle events."""
 
     @staticmethod
-    async def on_created(db: AsyncSession, user_id: int, tenant) -> None:
+    async def on_created(db: AsyncSession, user_id: Optional[int], tenant) -> None:
         """Log a new tenant (Agency) creation event."""
         summary = {
             "tenant_name": tenant.name,
@@ -34,7 +36,7 @@ class TenantActivityLogger:
         )
 
     @staticmethod
-    async def on_updated(db: AsyncSession, user_id: int, tenant, changed_fields: list[str]) -> None:
+    async def on_updated(db: AsyncSession, user_id: Optional[int], tenant, changed_fields: list[str]) -> None:
         """Log a tenant profile update event."""
         summary = {
             "tenant_name": tenant.name,
@@ -58,7 +60,7 @@ class TenantActivityLogger:
         )
 
     @staticmethod
-    async def on_suspended(db: AsyncSession, user_id: int, tenant, reason: str) -> None:
+    async def on_suspended(db: AsyncSession, user_id: Optional[int], tenant, reason: str) -> None:
         """Log a tenant suspension event."""
         summary = {
             "tenant_name": tenant.name,
@@ -82,7 +84,7 @@ class TenantActivityLogger:
         )
 
     @staticmethod
-    async def on_activated(db: AsyncSession, user_id: int, tenant) -> None:
+    async def on_activated(db: AsyncSession, user_id: Optional[int], tenant) -> None:
         """Log a tenant activation event."""
         summary = {
             "tenant_name": tenant.name,
@@ -104,7 +106,7 @@ class TenantActivityLogger:
         )
 
     @staticmethod
-    async def on_archived(db: AsyncSession, user_id: int, tenant) -> None:
+    async def on_archived(db: AsyncSession, user_id: Optional[int], tenant) -> None:
         """Log a tenant archive event."""
         summary = {
             "tenant_name": tenant.name,
@@ -126,7 +128,7 @@ class TenantActivityLogger:
         )
 
     @staticmethod
-    async def on_deleted(db: AsyncSession, user_id: int, tenant_id: int, tenant_name: str, hard_delete: bool) -> None:
+    async def on_deleted(db: AsyncSession, user_id: Optional[int], tenant_id: int, tenant_name: str, hard_delete: bool) -> None:
         """Log a tenant deletion event."""
         summary = {
             "tenant_name": tenant_name,
