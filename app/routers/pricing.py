@@ -1,16 +1,20 @@
 """
 Pricing quote endpoints — live breakdown for booking forms.
 
-✅ PURE: delegates to pricing_selfdrive service (no DB, no side effects).
+✅ PHASE 1: pure self-drive pricing via pricing_selfdrive.quote_selfdrive.
+   No DB writes, no config lookups, no legacy engine.
 """
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.limiter import limiter
+from app.db.database import get_db
 from app.dependencies.commission_lock import require_not_commission_locked
 from app.models.drivers import Driver
 from app.models.users import User
@@ -55,8 +59,8 @@ class SelfDriveQuoteResponse(BaseModel):
 async def quote_self_drive(
     request: Request,
     payload: SelfDriveQuoteRequest,
-    current_user: User = Depends(require_not_commission_locked),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_not_commission_locked),
 ):
     """
     Get live pricing breakdown for self-drive booking.
@@ -64,9 +68,6 @@ async def quote_self_drive(
     Accepts optional daily_rate_override and driver_id.
     Returns full line-item breakdown for UI display.
     """
-    from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import AsyncSession
-    
     # Load vehicle
     vehicle_stmt = select(Vehicle).where(
         Vehicle.id == payload.vehicle_id,
@@ -97,8 +98,8 @@ async def quote_self_drive(
     quote = quote_selfdrive(
         pickup_at=payload.pickup_at,
         return_at=payload.return_at,
-        daily_rate=daily_rate,
-        driver_daily_fee=driver_daily_fee,
+        daily_rate=Decimal(daily_rate),
+        driver_daily_fee=Decimal(driver_daily_fee) if driver_daily_fee else None,
     )
     
     return SelfDriveQuoteResponse(
