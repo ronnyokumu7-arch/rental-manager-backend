@@ -12,7 +12,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean, CheckConstraint, Column, DateTime, Enum, ForeignKey,
-    Integer, Numeric, String, Index, UniqueConstraint, Text,
+    Integer, Numeric, String, Index, UniqueConstraint, Text, JSON,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -91,6 +91,12 @@ class Booking(Base, AuditMixin):
         default="selfdrive", server_default="selfdrive", index=True,
     )
 
+    # ✅ MILESTONE 3: Service-specific details (JSON)
+    # Stores add-ons and configurations specific to the service_type 
+    # (e.g., wedding extra hours, decoration fees, airport tolls).
+    # Keeps the core Booking table lean and avoids nullable column bloat.
+    service_details = Column(JSON, nullable=True)
+
     # Exact countdown origin: 1 rental day = 24 hours (self-drive).
     # Nullable for backward compat — falls back to start_date/end_date.
     pickup_at = Column(DateTime(timezone=True), nullable=True)
@@ -143,6 +149,9 @@ class Booking(Base, AuditMixin):
     # Historical financial records must be preserved for audits even if a booking is archived/deleted.
     invoices = relationship("Invoice", back_populates="booking")
     contract = relationship("Contract", back_populates="booking", uselist=False)
+
+    # ✅ MILESTONE 2: 1:1 Airport Transfer extension
+    airport_transfer = relationship("AirportTransfer", back_populates="booking", uselist=False)
 
     # ✅ CRITICAL INDEXES & CONSTRAINTS:
     __table_args__ = (

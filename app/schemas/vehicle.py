@@ -18,6 +18,14 @@ class VehicleBase(BaseModel):
     insurance_expiry: Optional[datetime] = None
     notes: Optional[str] = None
 
+    # ✅ MILESTONE 2: Airport Transfer Support
+    supports_airport_transfer: bool = Field(default=False)
+    airport_transfer_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+
+    # ✅ MILESTONE 3: Wedding Car Hire Support
+    supports_wedding_service: bool = Field(default=False)
+    wedding_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+
     @field_validator("plate_number")
     @classmethod
     def normalize_plate_number(cls, v: str) -> str:
@@ -54,6 +62,14 @@ class VehicleUpdate(BaseModel):
     insurance_number: Optional[str] = Field(default=None, max_length=100)
     insurance_expiry: Optional[datetime] = None
     notes: Optional[str] = None
+
+    # ✅ MILESTONE 2: Airport Transfer Support (Optional for PATCH)
+    supports_airport_transfer: Optional[bool] = None
+    airport_transfer_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+
+    # ✅ MILESTONE 3: Wedding Car Hire Support (Optional for PATCH)
+    supports_wedding_service: Optional[bool] = None
+    wedding_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
 
     @field_validator("plate_number")
     @classmethod

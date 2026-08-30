@@ -51,6 +51,18 @@ class Vehicle(Base, AuditMixin):
     mileage_due = Column(
         Boolean, nullable=False, default=False, server_default="false",
     )
+
+    # ✅ MILESTONE 2: Airport Transfer Support
+    supports_airport_transfer = Column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    airport_transfer_base_rate = Column(Numeric(10, 2), nullable=True)
+
+    # ✅ MILESTONE 3: Wedding Car Hire Support
+    supports_wedding_service = Column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    wedding_base_rate = Column(Numeric(10, 2), nullable=True)  # 12H package base rate
     
     # Compliance & Documentation (URLs bounded to 500 chars)
     insurance_number = Column(String(100), nullable=True)
@@ -84,6 +96,18 @@ class Vehicle(Base, AuditMixin):
         CheckConstraint("year >= 1900", name="ck_vehicles_year_valid"),
         CheckConstraint("current_mileage >= 0", name="ck_vehicles_mileage_non_negative"),
         
+        # 9. Airport Transfer Base Rate Check
+        CheckConstraint(
+            "(supports_airport_transfer = false) OR (airport_transfer_base_rate > 0)", 
+            name="ck_vehicles_airport_transfer_base_rate_non_negative"
+        ),
+
+        # 10. Wedding Service Base Rate Check
+        CheckConstraint(
+            "(supports_wedding_service = false) OR (wedding_base_rate > 0)", 
+            name="ck_vehicles_wedding_base_rate_non_negative"
+        ),
+        
         # 3. Main Vehicle List View (MOST IMPORTANT)
         # Query: WHERE tenant_id = ? AND is_archived = false ORDER BY created_at DESC
         Index("ix_vehicles_tenant_archived_created", "tenant_id", "is_archived", "created_at"),
@@ -107,4 +131,12 @@ class Vehicle(Base, AuditMixin):
         # 8. Mileage-due fleet view (operators see which returned cars need logging)
         # Query: WHERE tenant_id = ? AND mileage_due = true
         Index("ix_vehicles_tenant_mileage_due", "tenant_id", "mileage_due"),
+
+        # 11. Airport Transfer Support Filtering
+        # Query: WHERE tenant_id = ? AND supports_airport_transfer = true
+        Index("ix_vehicles_tenant_airport_transfer", "tenant_id", "supports_airport_transfer"),
+
+        # 12. Wedding Service Support Filtering
+        # Query: WHERE tenant_id = ? AND supports_wedding_service = true
+        Index("ix_vehicles_tenant_wedding_service", "tenant_id", "supports_wedding_service"),
     )

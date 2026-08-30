@@ -99,6 +99,10 @@ class Tenant(Base, AuditMixin):
     clients = relationship("Client", back_populates="tenant", cascade="all, delete-orphan")
     vehicles = relationship("Vehicle", back_populates="tenant", cascade="all, delete-orphan")
     bookings = relationship("Booking", back_populates="tenant", cascade="all, delete-orphan")
+    
+    # ✅ MILESTONE 2: Airport Transfer relationship
+    airport_transfers = relationship("AirportTransfer", back_populates="tenant", cascade="all, delete-orphan")
+    
     subscriptions = relationship("Subscription", back_populates="tenant", cascade="all, delete-orphan")
     
     payment_verifications = relationship("PaymentVerification", back_populates="tenant", cascade="all, delete-orphan")

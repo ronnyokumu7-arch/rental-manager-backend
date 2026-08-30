@@ -2,6 +2,7 @@
 
 from . import admin
 from . import auth
+from . import airport_transfer  # ✅ NEW: Airport Transfer CRUD (Milestone 2)
 from . import bookings
 from . import clients
 from . import contracts
@@ -24,6 +25,7 @@ from . import services  # ✅ NEW: Service catalog export (Milestone 1.1)
 __all__ = [
     "admin",
     "auth",
+    "airport_transfer",  # ✅ NEW: Milestone 2
     "bookings",
     "clients",
     "contracts",

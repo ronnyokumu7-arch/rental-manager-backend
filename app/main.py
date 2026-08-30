@@ -21,6 +21,7 @@ from app.db.database import test_db_connection  # ✅ NEW: Startup connectivity 
 from app.routers import (
     activity_logs,
     admin,
+    airport_transfer,  # ✅ NEW: Airport Transfer CRUD (Milestone 2)
     auth,
     bookings,
     client_invites,
@@ -110,7 +111,7 @@ async def lifespan(app: FastAPI):
             await redis_client.close()
             print("✅ Redis connection closed.")
         except Exception as e:
-            print(f"⚠️ Redis shutdown warning: {e}")
+            print(f"️ Redis shutdown warning: {e}")
 
 app = FastAPI(
     title=settings.app_name,
@@ -154,6 +155,7 @@ routers = [
     commission,
     vehicles,
     drivers,
+    airport_transfer,  # ✅ NEW: Milestone 2
     bookings,
     subscriptions,
     invoices,

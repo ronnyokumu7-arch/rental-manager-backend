@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, model_validator
 from app.models.bookings import BookingStatus, CancellationReason
 
@@ -34,6 +34,15 @@ class BookingBase(BaseModel):
     # ✅ MILESTONE 2: Staff driver assignment (validated tenant-side in router)
     driver_id: Optional[int] = None
 
+    # ✅ MILESTONE 2: Airport Transfer Add-ons (kept for backward compat)
+    toll_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
+    parking_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
+
+    # ✅ MILESTONE 3: Service-specific details (JSON)
+    # Stores add-ons and configurations specific to the service_type 
+    # (e.g., wedding extra hours, decoration fees). Keeps schema lean.
+    service_details: Optional[Dict[str, Any]] = Field(default=None)
+
     @model_validator(mode="after")
     def check_dates(self):
         if self.end_date < self.start_date:
@@ -66,6 +75,13 @@ class BookingUpdate(BaseModel):
     scheduled_return_at: Optional[datetime] = None
 
     driver_id: Optional[int] = None
+
+    # ✅ MILESTONE 2: Airport Transfer Add-ons (Optional for PATCH)
+    toll_fees: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
+    parking_fees: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
+
+    # ✅ MILESTONE 3: Service-specific details (JSON)
+    service_details: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="after")
     def check_dates(self):
@@ -138,6 +154,9 @@ class BookingOut(BaseModel):
     client_driver_name: Optional[str] = None
     client_driver_phone: Optional[str] = None
 
+    # ✅ MILESTONE 3: Service-specific details (JSON)
+    service_details: Optional[Dict[str, Any]] = None
+
     # 💡 NESTED RELATIONSHIPS:
     client: Optional[ClientOut] = None
     vehicle: Optional[VehicleOut] = None
@@ -152,11 +171,12 @@ class BookingOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# ✅ PHASE 1: Self-Drive Quote Request (simplified for Phase 1)
+# ✅ MILESTONE 2 & 3: Unified Quote Request (supports Self-Drive, Airport, Wedding)
 class BookingQuote(BaseModel):
     vehicle_id: int
     pickup_at: datetime
     return_at: datetime
+    service_type: str = "selfdrive"  # ✅ MILESTONE 2: Service type for pricing factory
     driver_id: Optional[int] = None
     daily_rate_override: Optional[Decimal] = Field(
         default=None, 
@@ -164,6 +184,12 @@ class BookingQuote(BaseModel):
         decimal_places=2,
         description="Override vehicle daily rate for this quote only"
     )
+    # ✅ MILESTONE 2: Airport Transfer Add-ons (kept for backward compat)
+    toll_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
+    parking_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
+    
+    # ✅ MILESTONE 3: Service-specific details for quoting
+    service_details: Optional[Dict[str, Any]] = Field(default=None)
 
 
 # ✅ EXTENSION PAYLOAD
