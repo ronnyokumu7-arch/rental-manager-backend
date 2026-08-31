@@ -1,6 +1,6 @@
 import hashlib
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Body, status
 from passlib.exc import UnknownHashError
@@ -26,17 +26,35 @@ settings = get_settings()
 
 REFRESH_COOKIE_NAME = "rm_refresh_token"
 
+# ✅ ROTATION-RACE GRACE WINDOW: a token revoked less than this many seconds ago
+# (but not expired) is treated as a concurrent-rotation race and rotated forward
+# instead of 401-ing. Kills the "two parallel 401s = silent logout" death spiral.
+ROTATION_GRACE_SECONDS = 60
 
-def _read_refresh_token(request: Request, body_token: Optional[str] = None) -> Optional[str]:
+
+def _refresh_candidates(request: Request, body_token: Optional[str] = None) -> List[str]:
     """
-    Read refresh token from HttpOnly cookie first, fall back to request body.
-    Supports both same-site deployments (cookie works) and cross-site
-    deployments where the cookie is blocked by browser policies.
+    ✅ VALID-TOKEN-WINS precedence: body first (cross-site primary), then cookie.
+    Every candidate is validated; the first fully-valid one wins. A stale
+    third-party cookie can no longer shadow a good body token.
     """
+    candidates: List[str] = []
+    if body_token:
+        candidates.append(body_token)
     cookie_token = request.cookies.get(REFRESH_COOKIE_NAME)
-    if cookie_token:
-        return cookie_token
-    return body_token
+    if cookie_token and cookie_token not in candidates:
+        candidates.append(cookie_token)
+    return candidates
+
+
+def _as_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+async def _load_record(db: AsyncSession, raw: str) -> Optional[RefreshToken]:
+    token_hash = hashlib.sha256(raw.encode()).hexdigest()
+    stmt = select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+    return (await db.execute(stmt)).scalar_one_or_none()
 
 
 @router.post("/login", response_model=TokenOut)
@@ -49,15 +67,8 @@ async def login(
 ):
     """
     Authenticate user and issue access + refresh tokens.
-    
-    ✅ SECURITY:
-    - EmailStr in schema ensures valid format before DB query
-    - Generic error message prevents user enumeration
-    - Legacy password upgrade for plaintext → bcrypt migration
-    - Captures device/browser info for session management UI
-    - Refresh token stored in HttpOnly cookie AND returned in body (cross-site fallback)
+    (Unchanged — login-side eviction policy stays as designed.)
     """
-    # ✅ Schema validation ensures email is valid format
     email = normalize_email(credentials.email)
     
     stmt = select(User).where(func.lower(User.email) == email)
@@ -70,7 +81,6 @@ async def login(
             detail="Invalid email or password",
         )
 
-    # Verify password with legacy fallback
     password_matches = False
     try:
         password_matches = verify_password(credentials.password, user.password_hash)
@@ -83,7 +93,6 @@ async def login(
             detail="Invalid email or password",
         )
 
-    # Check user state
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -96,11 +105,9 @@ async def login(
             detail="Your account has been suspended. Please contact your administrator.",
         )
 
-    # ✅ Upgrade legacy plaintext passwords to bcrypt
     if not user.password_hash.startswith("$2"):
         user.password_hash = get_password_hash(credentials.password)
 
-    # Generate token pair
     access_token = create_access_token(
         subject=str(user.id),
         claims={
@@ -109,11 +116,9 @@ async def login(
         },
     )
     
-    # ✅ Capture device and IP info for session management
     user_agent = request.headers.get("User-Agent", "Unknown")[:500]
     ip_address = request.client.host if request.client else None
     
-    # ✅ Generate refresh token with audit info
     refresh_token = await generate_refresh_token(
         user_id=user.id,
         tenant_id=user.tenant_id,
@@ -122,10 +127,8 @@ async def login(
         ip_address=ip_address,
     )
     
-    # Commit password upgrade (if any) and new refresh token
     await db.commit()
 
-    # ✅ Set refresh token as HttpOnly cookie (works for same-site deployments)
     response.set_cookie(
         key=REFRESH_COOKIE_NAME,
         value=refresh_token,
@@ -136,7 +139,6 @@ async def login(
         path="/",
     )
 
-    # Return BOTH tokens in body (cross-site fallback uses these)
     return TokenOut(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -155,71 +157,75 @@ async def refresh_token(
 ):
     """
     Rotates refresh tokens (prevents replay attacks).
-    
-    ✅ SECURITY:
-    - Reads refresh token from HttpOnly cookie OR request body
-    - Validates old token before issuing new pair
-    - Revokes old token immediately (one-time use)
-    - Checks user status (active, not suspended)
-    - Captures device/browser info for new session
+
+    ✅ HARDENED:
+    - Valid-token-wins precedence (body → cookie): stale cookies can't shadow
+      a good body token (cross-site deployments).
+    - Rotation-race grace window: a token revoked <60s ago (not expired) is
+      rotated forward instead of 401-ing → parallel 401s no longer log users out.
+    - Still revokes old token, re-checks user status, captures audit info.
     """
-    # ✅ Read from cookie (same-site) or body (cross-site)
-    token = _read_refresh_token(request, refresh_token)
-    
-    if not token:
+    candidates = _refresh_candidates(request, refresh_token)
+
+    if not candidates:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="No refresh token found. Please log in again.",
         )
-    
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    
-    stmt = select(RefreshToken).where(RefreshToken.token_hash == token_hash)
-    result = await db.execute(stmt)
-    db_token = result.scalar_one_or_none()
-    
-    # 1. Validate existence and revocation status
-    if not db_token or db_token.revoked:
+
+    now = datetime.now(timezone.utc)
+    chosen: Optional[RefreshToken] = None
+    grace_candidate: Optional[RefreshToken] = None
+
+    # ✅ Validate ALL candidates; first fully-valid wins; remember first grace hit
+    for raw in candidates:
+        rec = await _load_record(db, raw)
+        if not rec:
+            continue
+        if _as_utc(rec.expires_at) <= now:
+            continue  # expired — never usable
+        if not rec.revoked:
+            chosen = rec
+            break
+        if rec.revoked_at is not None:
+            if (now - _as_utc(rec.revoked_at)) <= timedelta(seconds=ROTATION_GRACE_SECONDS):
+                if grace_candidate is None:
+                    grace_candidate = rec
+
+    # ✅ Rotation race (two parallel refreshes): rotate forward, don't logout
+    if chosen is None and grace_candidate is not None:
+        chosen = grace_candidate
+
+    if chosen is None:
         response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
-        
-    # 2. Validate expiration
-    now = datetime.now(timezone.utc)
-    expires_at = db_token.expires_at if db_token.expires_at.tzinfo else db_token.expires_at.replace(tzinfo=timezone.utc)
-    if now > expires_at:
-        response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token has expired. Please log in again.",
-        )
-        
-    # 3. Fetch User to check status
-    user_stmt = select(User).where(User.id == db_token.user_id)
+
+    # User status re-check
+    user_stmt = select(User).where(User.id == chosen.user_id)
     user_res = await db.execute(user_stmt)
     user = user_res.scalar_one_or_none()
-    
+
     if not user or not user.is_active or user.is_suspended:
-        db_token.revoked = True
-        db_token.revoked_at = now
+        chosen.revoked = True
+        chosen.revoked_at = now
         await db.commit()
         response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account is inactive or suspended",
         )
-        
-    # 4. ROTATION: Revoke the old token
-    db_token.revoked = True
-    db_token.revoked_at = now
-    
-    # 5. ✅ Capture device and IP info for new session
+
+    # ROTATION: revoke the consumed token (idempotent if already revoked via grace)
+    if not chosen.revoked:
+        chosen.revoked = True
+        chosen.revoked_at = now
+
     user_agent = request.headers.get("User-Agent", "Unknown")[:500]
     ip_address = request.client.host if request.client else None
-    
-    # 6. Issue NEW pair with audit info
+
     new_access = create_access_token(
         subject=str(user.id),
         claims={"tenant_id": user.tenant_id, "role": user.role}
@@ -231,10 +237,9 @@ async def refresh_token(
         user_agent=user_agent,
         ip_address=ip_address,
     )
-    
+
     await db.commit()
-    
-    # ✅ Set new refresh token in HttpOnly cookie (rotation, same-site benefit)
+
     response.set_cookie(
         key=REFRESH_COOKIE_NAME,
         value=new_refresh,
@@ -244,8 +249,7 @@ async def refresh_token(
         max_age=7 * 24 * 60 * 60,
         path="/",
     )
-    
-    # Return BOTH tokens in body (cross-site fallback)
+
     return TokenOut(
         access_token=new_access,
         refresh_token=new_refresh,
@@ -263,28 +267,21 @@ async def logout(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Revokes the specific refresh token provided and clears the cookie.
-    
-    ✅ SECURITY: 
-    - Reads refresh token from cookie OR body (cross-site support)
-    - Silently succeeds even if token is invalid (prevents enumeration)
-    - Always clears the cookie
+    Revokes EVERY presented token (body + cookie) and clears the cookie.
+    Silently succeeds even if tokens are invalid (prevents enumeration).
     """
-    token = _read_refresh_token(request, refresh_token)
-    
-    if token:
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        
-        stmt = select(RefreshToken).where(RefreshToken.token_hash == token_hash)
-        result = await db.execute(stmt)
-        db_token = result.scalar_one_or_none()
-        
-        if db_token and not db_token.revoked:
-            db_token.revoked = True
-            db_token.revoked_at = datetime.now(timezone.utc)
-            await db.commit()
-    
-    # ✅ Always clear the refresh cookie (harmless if not set)
+    now = datetime.now(timezone.utc)
+    revoked_any = False
+
+    for raw in _refresh_candidates(request, refresh_token):
+        rec = await _load_record(db, raw)
+        if rec and not rec.revoked:
+            rec.revoked = True
+            rec.revoked_at = now
+            revoked_any = True
+
+    if revoked_any:
+        await db.commit()
+
     response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
-    
     return None

@@ -9,12 +9,20 @@ Endpoints:
 - GET /sessions/admin/{user_id} — Super admin view of a user's sessions
 
 ✅ SECURITY MODEL:
-The current session is identified by reading the refresh token from:
-  1. HttpOnly cookie (preferred, same-site only)
-  2. Request body `refresh_token` field (fallback for cross-site deployments)
+The current session is identified via VALID-TOKEN-WINS resolution:
+  candidates = [body refresh_token (cross-site primary), HttpOnly cookie]
+  → the first candidate whose DB record is ACTIVE (not revoked, not expired)
+    is treated as the current session.
+  A stale third-party cookie can no longer shadow the real session —
+  the panic button can never preserve a dead cookie session while
+  revoking every live device.
 
 The token is NEVER passed via query params, so it never appears in URLs,
 logs, referrer headers, or browser history.
+
+✅ HARDENED (this revision):
+- _resolve_current_token_hash: valid-token-wins current-session resolver.
+- revoke_session: cannot revoke the CURRENT session (use /auth/logout).
 """
 import hashlib
 from datetime import datetime, timezone
@@ -43,30 +51,37 @@ REFRESH_COOKIE_NAME = "rm_refresh_token"
 # HELPERS
 # ---------------------------------------------------------------------------
 
-def _get_current_token_hash(refresh_token: Optional[str]) -> Optional[str]:
-    """Hash the current refresh token for comparison."""
-    if not refresh_token:
-        return None
-    return hashlib.sha256(refresh_token.encode()).hexdigest()
-
-
-def _read_refresh_token(request: Request, body_token: Optional[str] = None) -> Optional[str]:
+async def _resolve_current_token_hash(
+    request: Request,
+    body_token: Optional[str],
+    db: AsyncSession,
+) -> Optional[str]:
     """
-    Read the refresh token from:
-      1. HttpOnly cookie (preferred, same-site only)
-      2. Request body `refresh_token` field (fallback for cross-site deployments)
-    
-    This dual-source approach supports both:
-      - Same-site deployments (cookie works)
-      - Cross-site deployments (cookie blocked, body fallback)
+    ✅ VALID-TOKEN-WINS current-session resolver.
+
+    Candidates (in order): body token (cross-site primary), then HttpOnly cookie.
+    The first candidate whose DB record is ACTIVE (exists, not revoked, not
+    expired) is returned as the current session hash.
+
+    Returns None when no candidate is active — callers decide the policy
+    (401 for the panic button, is_current=False for listing).
     """
-    # Try cookie first (same-site, more secure)
+    now = datetime.now(timezone.utc)
+    candidates = []
+    if body_token:
+        candidates.append(body_token)
     cookie_token = request.cookies.get(REFRESH_COOKIE_NAME)
-    if cookie_token:
-        return cookie_token
-    
-    # Fall back to body token (cross-site, localStorage-backed)
-    return body_token
+    if cookie_token and cookie_token not in candidates:
+        candidates.append(cookie_token)
+
+    for raw in candidates:
+        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        rec = (await db.execute(
+            select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+        )).scalar_one_or_none()
+        if rec and not rec.revoked and rec.expires_at > now:
+            return token_hash
+    return None
 
 
 async def _get_user_sessions(
@@ -113,7 +128,7 @@ async def list_my_sessions(
     ✅ SECURITY:
     - Tenant-scoped (defense in depth)
     - Only returns sessions belonging to the authenticated user
-    - Current session identified via cookie (same-site) or body token (cross-site)
+    - Current session identified via valid-token-wins resolver
     
     ✅ USE CASE: "Where am I logged in?" UI
     """
@@ -124,8 +139,8 @@ async def list_my_sessions(
         active_only=not include_revoked,
     )
     
-    # ✅ Mark current session using cookie or body token
-    current_hash = _get_current_token_hash(_read_refresh_token(request, refresh_token))
+    # ✅ Mark current session using the ACTIVE token (body → cookie)
+    current_hash = await _resolve_current_token_hash(request, refresh_token, db)
     
     session_items = [
         SessionOut(
@@ -149,6 +164,7 @@ async def list_my_sessions(
 async def revoke_session(
     request: Request,
     session_id: int,
+    refresh_token: Optional[str] = Body(None, embed=True),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -158,7 +174,7 @@ async def revoke_session(
     ✅ SECURITY:
     - Session must belong to current user (or super admin)
     - Session must be in current user's tenant
-    - Cannot revoke the current session via this endpoint (use /auth/logout instead)
+    - ✅ HARDENED: cannot revoke the CURRENT session (use /auth/logout)
     """
     # Fetch session with tenant isolation
     stmt = select(RefreshToken).where(
@@ -179,6 +195,14 @@ async def revoke_session(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Session not found",
+        )
+    
+    # ✅ HARDENED: block self-revocation via this endpoint
+    current_hash = await _resolve_current_token_hash(request, refresh_token, db)
+    if current_hash is not None and session.token_hash == current_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Use /auth/logout to end the current session.",
         )
     
     if session.revoked:
@@ -219,14 +243,17 @@ async def revoke_all_sessions_except_current(
     Revoke ALL sessions except the current one (panic button for compromised accounts).
     
     ✅ SECURITY:
-    - Current session identified via cookie (same-site) or body token (cross-site)
+    - ✅ HARDENED: current session identified via valid-token-wins resolver —
+      a stale cookie can no longer be preserved while live sessions die.
     - Tenant-scoped
     - Logs the mass revocation for audit trail
     
     ✅ USE CASE: "I think my account was compromised — log out everything else"
+    ✅ NOTE: cross-site clients MUST send the refresh_token in the body so the
+    resolver can identify the live session (third-party cookies are blocked).
     """
-    # ✅ Identify the session to preserve from cookie or body token
-    current_hash = _get_current_token_hash(_read_refresh_token(request, refresh_token))
+    # ✅ Identify the ACTIVE session to preserve (body → cookie)
+    current_hash = await _resolve_current_token_hash(request, refresh_token, db)
     if not current_hash:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -284,7 +311,6 @@ async def list_user_sessions_admin(
 ):
     """
     Super admin endpoint: View all sessions for a specific user.
-    
     ✅ SECURITY:
     - Requires super_admin role
     - Tenant-scoped (super admin can view any tenant's users)
