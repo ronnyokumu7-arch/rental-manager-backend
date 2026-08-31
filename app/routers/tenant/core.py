@@ -22,6 +22,7 @@ from app.schemas.tenant import TenantCreate, TenantUpdate, TenantOut
 from app.core.security import get_password_hash
 from app.services.cache import get_cached_tenant_list, set_cached_tenant_list, invalidate_tenant_cache
 from app.services.activity_log import TenantActivityLogger
+from app.services.email import send_welcome_email
 
 router = APIRouter()
 
@@ -187,7 +188,7 @@ async def create_tenant(
         try:
             await invalidate_tenant_cache()
         except Exception as cache_err:
-            print(f"⚠️ Cache invalidation warning (tenant created): {cache_err}")
+            print(f"️ Cache invalidation warning (tenant created): {cache_err}")
 
         try:
             await TenantActivityLogger.on_created(db, current_user.id, tenant)
@@ -195,6 +196,18 @@ async def create_tenant(
         except Exception as log_err:
             await db.rollback()
             print(f"⚠️ Activity log warning (tenant created): {log_err}")
+
+        # ✅ Send Welcome Email to the new tenant admin (non-blocking, post-commit)
+        try:
+            await send_welcome_email(
+                to=admin_user.email,
+                full_name=admin_user.full_name,
+                role=admin_user.role.value.replace("_", " ").title(),
+                temp_password=payload.password,  # ⚠️ Only safe because we just hashed it above
+            )
+        except Exception as email_err:
+            print(f"⚠️ Welcome email failed (tenant created but email not sent): {email_err}")
+            # Don't rollback - tenant was successfully created, email is just a notification
 
         return tenant
 

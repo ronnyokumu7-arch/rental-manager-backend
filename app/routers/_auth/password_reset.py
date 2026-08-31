@@ -73,7 +73,7 @@ async def forgot_password(
 
     # Send email with reset link
     reset_link = f"{settings.frontend_url}/reset-password?token={raw_token}"
-    send_password_reset_email(
+    await send_password_reset_email(
         to=user.email,
         full_name=user.full_name,
         reset_link=reset_link,
@@ -152,7 +152,7 @@ async def reset_password(
     )
 
     # Send confirmation email
-    send_password_reset_success(
+    await send_password_reset_success(
         to=user.email,
         full_name=user.full_name,
     )
