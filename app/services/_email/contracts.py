@@ -1,6 +1,6 @@
 from app.core.config import get_settings
-from app.services.email.client import _send
-from app.services.email.templates import _premium_template, _format_currency
+from app.services._email.client import _send
+from app.services._email.templates import _premium_template, _format_currency
 
 settings = get_settings()
 
