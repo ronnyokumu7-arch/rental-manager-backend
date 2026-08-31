@@ -1,6 +1,6 @@
 from app.core.config import get_settings
 from app.services.email.client import _send
-from app.services.email.templates import _premium_template, _format_currency
+from app.services.email.templates import _premium_template, BRAND
 
 settings = get_settings()
 
@@ -16,7 +16,7 @@ async def send_invoice_notification(
     
     <table class="detail-table">
         <tr><td>Invoice Number</td><td>{invoice_number}</td></tr>
-        <tr><td>Amount Due</td><td>{_format_currency(amount_due, currency)}</td></tr>
+        <tr><td>Amount Due</td><td><strong>{currency} {amount_due}</strong></td></tr>
         <tr><td>Due Date</td><td>{due_date}</td></tr>
     </table>
     
@@ -46,9 +46,11 @@ async def send_payment_received(
     
     <table class="detail-table">
         <tr><td>Invoice Number</td><td>{invoice_number}</td></tr>
-        <tr><td>Amount Paid</td><td>{_format_currency(amount_paid, currency)}</td></tr>
+        <tr><td>Amount Paid</td><td><strong>{currency} {amount_paid}</strong></td></tr>
         <tr><td>Status</td><td><span class="badge badge-confirmed">Paid</span></td></tr>
     </table>
+    
+    <p>Your account is now up to date. Thank you for being a valued customer!</p>
     """
     return await _send(
         to,
@@ -56,6 +58,8 @@ async def send_payment_received(
         _premium_template(
             title="Payment Received",
             body=body,
+            cta_text="View Payment Details",
+            cta_url=f"{settings.frontend_url}/invoices",
             preview_text="Thank you for your payment.",
         )
     )
@@ -75,8 +79,11 @@ async def send_trial_ending_warning(
         <tr><td>Trial Ends</td><td>{trial_ends_at}</td></tr>
     </table>
     
-    <p>To continue using Rental Garage without interruption, please choose a plan and settle your invoice before the trial ends.</p>
-    <p>After your trial, your account will move to a 14-day starter trial before being suspended if no plan is selected.</p>
+    <div style="margin-top: 16px; padding: 16px; background: {BRAND['warning_bg']}; border-radius: 8px; border-left: 3px solid {BRAND['warning']};">
+        <strong>⚠️ Action Required:</strong> To continue using Rental Garage without interruption, please choose a plan and settle your invoice before the trial ends.
+    </div>
+    
+    <p style="margin-top: 16px;">After your trial, your account will move to a 14-day starter trial before being suspended if no plan is selected.</p>
     """
     return await _send(
         to,
@@ -105,8 +112,11 @@ async def send_subscription_past_due(
         <tr><td>Status</td><td><span class="badge badge-pending">Past Due</span></td></tr>
     </table>
     
-    <p>You have until the date above to settle your invoice before your account is suspended.</p>
-    <p>During this grace period you can still view your data but cannot add new clients, vehicles, or bookings.</p>
+    <div style="margin-top: 16px; padding: 16px; background: {BRAND['danger_bg']}; border-radius: 8px; border-left: 3px solid {BRAND['danger']};">
+        <strong>⚠️ Urgent:</strong> You have until the date above to settle your invoice before your account is suspended.
+    </div>
+    
+    <p style="margin-top: 16px;">During this grace period you can still view your data but cannot add new clients, vehicles, or bookings.</p>
     """
     return await _send(
         to,
@@ -134,8 +144,11 @@ async def send_subscription_suspended(
         <tr><td>Status</td><td><span class="badge badge-cancelled">Suspended</span></td></tr>
     </table>
     
-    <p>You can still log in and view your existing data, but you cannot add or modify records until your invoice is settled.</p>
-    <p>Please contact support or log in to pay your outstanding invoice to reactivate your account.</p>
+    <div style="margin-top: 16px; padding: 16px; background: {BRAND['danger_bg']}; border-radius: 8px; border-left: 3px solid {BRAND['danger']};">
+        <strong>⚠️ Action Required:</strong> You can still log in and view your existing data, but you cannot add or modify records until your invoice is settled.
+    </div>
+    
+    <p style="margin-top: 16px;">Please contact support or log in to pay your outstanding invoice to reactivate your account.</p>
     """
     return await _send(
         to,
