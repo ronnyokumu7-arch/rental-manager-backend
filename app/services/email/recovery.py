@@ -1,11 +1,9 @@
-import logging
 from typing import Optional
 from app.core.config import get_settings
 from app.services.email.client import _send
 from app.services.email.templates import _premium_template, BRAND
 
 settings = get_settings()
-logger = logging.getLogger(__name__)
 
 
 async def send_admin_recovery_notification(
@@ -66,6 +64,8 @@ async def send_sms_otp(
     # )
     
     # For now, log the OTP and return True (simulate success)
+    import logging
+    logger = logging.getLogger(__name__)
     logger.info(f"SMS OTP sent to {phone_number}: {otp}")
     
     # If you want to actually send via email as a fallback (useful for testing)
