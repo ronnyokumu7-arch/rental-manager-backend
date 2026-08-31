@@ -141,6 +141,10 @@ class BookingOut(BaseModel):
     manually_adjusted: bool = False
     price_note: Optional[str] = None
 
+    # ✅ MILESTONE 2: Airport Transfer Add-ons (now persisted on the model)
+    toll_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
+    parking_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
+
     # ✅ LIFECYCLE: cancellation metadata (replaces removed no_show status)
     cancellation_reason: Optional[CancellationReason] = None
     cancelled_at: Optional[datetime] = None

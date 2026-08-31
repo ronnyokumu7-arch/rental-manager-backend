@@ -6,6 +6,10 @@ Booking model — core rental transaction record.
   - computed_total: engine result (what the formula said)
   - manually_adjusted: boolean flag (human touched the price)
   - price_note: optional free-text reason for adjustment
+
+✅ AIRPORT TRANSFER: Add-on fee fields added:
+  - toll_fees: highway/bridge tolls during trip
+  - parking_fees: parking charges during trip
 """
 import enum
 from datetime import datetime
@@ -120,6 +124,10 @@ class Booking(Base, AuditMixin):
     manually_adjusted = Column(Boolean, default=False, nullable=False)  # Human override flag
     price_note = Column(Text, nullable=True)                # Optional reason for adjustment
 
+    # ✅ AIRPORT TRANSFER: Add-on fees (immutable snapshot at booking creation)
+    toll_fees = Column(Numeric(10, 2), nullable=False, default=0, server_default="0")
+    parking_fees = Column(Numeric(10, 2), nullable=False, default=0, server_default="0")
+
     # Status & Lifecycle
     status = Column(Enum(BookingStatus), default=BookingStatus.pending, nullable=False, index=True)
 
@@ -162,6 +170,8 @@ class Booking(Base, AuditMixin):
         CheckConstraint("end_date > start_date", name="ck_bookings_valid_date_range"),
         CheckConstraint("total_amount >= 0", name="ck_bookings_total_amount_non_negative"),
         CheckConstraint("daily_rate >= 0", name="ck_bookings_daily_rate_non_negative"),
+        CheckConstraint("toll_fees >= 0", name="ck_bookings_toll_fees_non_negative"),
+        CheckConstraint("parking_fees >= 0", name="ck_bookings_parking_fees_non_negative"),
         CheckConstraint(
             "scheduled_return_at IS NULL OR pickup_at IS NULL OR scheduled_return_at > pickup_at",
             name="ck_bookings_valid_schedule",
