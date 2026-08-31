@@ -1,4 +1,9 @@
-"""CREATE — validation, double-booking prevention, server-side pricing, tasks."""
+"""CREATE — validation, double-booking prevention, server-side pricing, tasks.
+
+✅ QUOTATION PIPELINE: every booking is born together with its quotation
+(doc_type=quotation, status=sent, share_token ready) in ONE atomic commit.
+Client accepts on the public page → morph to invoice + pending→confirmed.
+"""
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -19,6 +24,7 @@ from app.schemas.booking import BookingCreate, BookingOut
 from app.services.booking_tasks import BookingTaskService
 from app.services.cache import invalidate_booking_cache
 from app.services.number_generator import generate_booking_number
+from app.services.invoices import create_quotation_for_booking  # ✅ QUOTATION PIPELINE
 from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure pricing engine
 from app.services.pricing_airport import quote_airport_transfer  # ✅ MILESTONE 2: pure pricing engine
 from app.services.pricing_wedding import quote_wedding  # ✅ MILESTONE 3: pure pricing engine
@@ -291,6 +297,14 @@ async def create_booking(
         booking_number=new_booking_number,
     )
     db.add(db_booking)
+    await db.flush()  # ✅ assigns db_booking.id so the quotation can reference it
+
+    # ✅ QUOTATION PIPELINE: the price offer is born WITH the booking (atomic).
+    # doc_type=quotation, status=sent, share_token ready → client accepts on the
+    # public page → morph to invoice + booking pending→confirmed (one commit there).
+    # Idempotent + flush-only; the commit below persists booking + quotation together.
+    await create_quotation_for_booking(db_booking, db)
+
     await db.commit()
     await db.refresh(db_booking)
 
