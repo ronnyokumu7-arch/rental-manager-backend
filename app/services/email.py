@@ -28,6 +28,10 @@ from app.services.email.contracts import (
     send_invoice_to_client,
     send_quotation_to_client,
 )
+from app.services.email.recovery import (          # ✅ ADD THIS
+    send_admin_recovery_notification,
+    send_sms_otp,
+)
 from app.services.email.client import _send
 
 __all__ = [
@@ -49,5 +53,7 @@ __all__ = [
     "send_contract_to_client",
     "send_invoice_to_client",
     "send_quotation_to_client",
+    "send_admin_recovery_notification",   # ✅ ADD THIS
+    "send_sms_otp",                       # ✅ ADD THIS
     "_send",
 ]
