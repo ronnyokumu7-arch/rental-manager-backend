@@ -6,7 +6,7 @@ Returns None when Redis is unavailable instead of raising exceptions.
 import logging
 from typing import Optional
 from redis import asyncio as aioredis
-from app.core.config import settings
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,8 @@ _redis_available: bool = False
 async def init_redis() -> None:
     """Initialize Redis connection pool. Called once at startup."""
     global _redis_client, _redis_available
+    
+    settings = get_settings()
     
     try:
         _redis_client = aioredis.from_url(
