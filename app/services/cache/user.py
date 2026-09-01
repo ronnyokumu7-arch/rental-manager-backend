@@ -1,51 +1,91 @@
 import json
+import logging
 from typing import Optional, Any, List
-from fastapi_cache import FastAPICache
+from datetime import datetime, date
+from decimal import Decimal
+
+from app.core.redis_client import get_redis
+
+logger = logging.getLogger(__name__)
 
 CACHE_TTL = 120
+
+
+def _serialize_obj(obj: Any) -> Any:
+    """Convert Pydantic models, datetime, and Decimal to JSON-safe types."""
+    if hasattr(obj, "model_dump"):
+        try:
+            # Pydantic v2 handles datetime/Decimal natively with mode="json"
+            return obj.model_dump(mode="json")
+        except TypeError:
+            # Fallback for Pydantic v1
+            return obj.dict()
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return str(obj)
+    return obj
+
+
+def _build_cache_key(
+    tenant_id: int,
+    role: Optional[str],
+    is_active: Optional[bool],
+    is_suspended: Optional[bool],
+) -> str:
+    return (
+        f"users:tenant_{tenant_id}:"
+        f"role_{role or 'all'}:"
+        f"active_{is_active if is_active is not None else 'all'}:"
+        f"suspended_{is_suspended if is_suspended is not None else 'all'}"
+    )
+
 
 async def get_cached_user_list(
     tenant_id: int, 
     role: Optional[str] = None, 
     is_active: Optional[bool] = None,
-    is_suspended: Optional[bool] = None  # ✅ ADDED: to match router arguments
+    is_suspended: Optional[bool] = None
 ) -> Optional[List[dict]]:
+    redis = await get_redis()
+    if not redis:
+        return None
+
     try:
-        redis = FastAPICache.get_backend().redis
-        cache_key = (
-            f"users:tenant_{tenant_id}:"
-            f"role_{role or 'all'}:"
-            f"active_{is_active if is_active is not None else 'all'}:"
-            f"suspended_{is_suspended if is_suspended is not None else 'all'}"
-        )
+        cache_key = _build_cache_key(tenant_id, role, is_active, is_suspended)
         cached = await redis.get(cache_key)
         return json.loads(cached) if cached else None
-    except Exception:
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to read user cache: {e}")
         return None
+
 
 async def set_cached_user_list(
     tenant_id: int, 
     role: Optional[str] = None, 
     is_active: Optional[bool] = None,
-    is_suspended: Optional[bool] = None,  # ✅ ADDED: to match router arguments
+    is_suspended: Optional[bool] = None,
     users: Optional[List[Any]] = None
 ) -> None:
+    redis = await get_redis()
+    if not redis:
+        return
+
     try:
-        redis = FastAPICache.get_backend().redis
-        cache_key = (
-            f"users:tenant_{tenant_id}:"
-            f"role_{role or 'all'}:"
-            f"active_{is_active if is_active is not None else 'all'}:"
-            f"suspended_{is_suspended if is_suspended is not None else 'all'}"
-        )
-        data = [u.model_dump() if hasattr(u, 'model_dump') else u for u in users] if users else []
-        await redis.setex(cache_key, CACHE_TTL, json.dumps(data))
-    except Exception:
-        pass
+        cache_key = _build_cache_key(tenant_id, role, is_active, is_suspended)
+        data = [_serialize_obj(u) for u in users] if users else []
+        # default=str is a final safety net for any edge-case types
+        await redis.setex(cache_key, CACHE_TTL, json.dumps(data, default=str))
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to write user cache: {e}")
+
 
 async def invalidate_user_cache(tenant_id: int) -> None:
+    redis = await get_redis()
+    if not redis:
+        return
+
     try:
-        redis = FastAPICache.get_backend().redis
         pattern = f"users:tenant_{tenant_id}:*"
         cursor = 0
         while True:
@@ -54,5 +94,5 @@ async def invalidate_user_cache(tenant_id: int) -> None:
                 await redis.delete(*keys)
             if cursor == 0: 
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to invalidate user cache: {e}")

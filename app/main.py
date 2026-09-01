@@ -16,12 +16,12 @@ from app.core.limiter import limiter
 from app.core.config import get_settings
 from app.core.exceptions import http_exception_handler
 from app.jobs.scheduler import start_scheduler, stop_scheduler
-from app.db.database import test_db_connection  # ✅ NEW: Startup connectivity test
+from app.db.database import test_db_connection
 
 from app.routers import (
     activity_logs,
     admin,
-    airport_transfer,  # ✅ NEW: Airport Transfer CRUD (Milestone 2)
+    airport_transfer,
     auth,
     bookings,
     client_invites,
@@ -31,11 +31,11 @@ from app.routers import (
     drivers,
     files,
     financials,
-    health,             # ✅ System health endpoint (lightweight, no auth)
+    health,
     invoices,
     payment_verifications,
     payments,
-    pricing,            # ✅ Phase 1: Self-drive quote endpoint
+    pricing,
     reports,
     role_templates,
     services,
@@ -51,36 +51,33 @@ from app.routers import (
     vault,
 )
 
-# ✅ FIX: Agency Health router was orphaned in app/routers/endpoints/health.py
-# It was never imported, so FastAPI never registered /tenants/{id}/health → 404.
 from app.endpoints.health import router as agency_health_router
 
-# ✅ Initialize settings early
 settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    redis_client = None
-    
-    # ✅ 1. TEST DATABASE CONNECTIVITY FIRST (fail-fast with clear error)
+    # ✅ 1. TEST DATABASE CONNECTIVITY FIRST
     db_ok = await test_db_connection()
     if not db_ok:
         print("⚠️ WARNING: Database connection failed at startup. The app will continue, but authenticated requests will fail.")
         print("   Check that DATABASE_URL points to a resolvable hostname (same region as this web service).")
     
+    # ✅ 2. Initialize Redis cache using the centralized fail-safe client
     try:
-        # 2. Initialize Redis cache
-        redis_client = aioredis.from_url(
-            settings.redis_url, 
-            encoding="utf-8", 
-            decode_responses=True
-        )
-        FastAPICache.init(RedisBackend(redis_client), expire=300)
+        from app.core.redis_client import init_redis, get_redis, close_redis
+        await init_redis()
+        redis_client = await get_redis()
         
+        if redis_client:
+            FastAPICache.init(RedisBackend(redis_client), expire=300)
+            print("✅ FastAPICache initialized with Redis backend")
+        else:
+            print("⚠️ Redis unavailable — cache operations will be no-ops")
     except Exception as e:
         print(f"⚠️ Redis initialization warning: {e}")
 
-    # ✅ 3. Pre-warm the headless browser (skip in debug/reload mode to avoid event loop conflicts)
+    # ✅ 3. Pre-warm the headless browser
     if not settings.debug:
         try:
             from app.services.browser_pool import browser_pool
@@ -105,13 +102,12 @@ async def lifespan(app: FastAPI):
         print("✅ Headless Chrome closed gracefully.")
     except Exception as e:
         print(f"⚠️ Browser shutdown warning: {e}")
-        
-    if redis_client:
-        try:
-            await redis_client.close()
-            print("✅ Redis connection closed.")
-        except Exception as e:
-            print(f"️ Redis shutdown warning: {e}")
+    
+    try:
+        from app.core.redis_client import close_redis
+        await close_redis()
+    except Exception as e:
+        print(f"⚠️ Redis shutdown warning: {e}")
 
 app = FastAPI(
     title=settings.app_name,
@@ -120,11 +116,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Register Rate Limiter globally
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ✅ CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -136,7 +130,6 @@ app.add_middleware(
 
 app.add_exception_handler(HTTPException, http_exception_handler)
 
-# ✅ Root endpoint (keep simple)
 @app.get("/")
 def root():
     return {
@@ -145,7 +138,6 @@ def root():
         "health": "/api/v1/health",
     }
 
-# ✅ Register all API routers
 routers = [
     auth,
     tenants,
@@ -155,13 +147,13 @@ routers = [
     commission,
     vehicles,
     drivers,
-    airport_transfer,  # ✅ NEW: Milestone 2
+    airport_transfer,
     bookings,
     subscriptions,
     invoices,
     payments,
     payment_verifications,
-    pricing,            # ✅ Phase 1: Self-drive quote → POST /api/v1/pricing/self-drive/quote
+    pricing,
     tenant_profile,
     tenant_policies,
     role_templates,
@@ -176,14 +168,10 @@ routers = [
     user_preferences,
     vault,
     files,
-    health,  # ✅ System health router → /api/v1/health
+    health,
 ]
 
 for router in routers:
     app.include_router(router.router, prefix="/api/v1")
 
-# ✅ FIX: Register the Agency Health router (it carries its own /tenants prefix)
-# → GET /api/v1/tenants/{tenant_id}/health  (super_admin only, 30/min)
-# Registered AFTER the loop so its specific path can never be shadowed by
-# generic dynamic routes inside the tenants router.
 app.include_router(agency_health_router, prefix="/api/v1")

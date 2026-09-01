@@ -1,9 +1,31 @@
 import json
+import logging
 from typing import Optional, Any, List
-from fastapi_cache import FastAPICache
+from datetime import datetime, date
+from decimal import Decimal
+
+from app.core.redis_client import get_redis
+
+logger = logging.getLogger(__name__)
 
 CACHE_TTL = 300
 ACTIVITY_TTL = 120  # Shorter TTL for semi-real-time logs
+
+
+def _serialize_obj(obj: Any) -> Any:
+    """Convert Pydantic models, datetime, and Decimal to JSON-safe types."""
+    if hasattr(obj, "model_dump"):
+        try:
+            # Pydantic v2 handles datetime/Decimal natively with mode="json"
+            return obj.model_dump(mode="json")
+        except TypeError:
+            # Fallback for Pydantic v1
+            return obj.dict()
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Decimal):
+        return str(obj)
+    return obj
 
 
 def _build_cache_key(
@@ -47,14 +69,19 @@ async def get_cached_activity_logs(
     ✅ Retrieve cached logs with full filter awareness.
     Returns serialized JSON to prevent MissingGreenlet (no ORM objects in cache).
     """
+    redis = await get_redis()
+    if not redis:
+        return None
+
     try:
         cache_key = _build_cache_key(
             tenant_id, user_id, limit, action, target_type, start_date, end_date, sort_by_priority
         )
-        cached = await FastAPICache.get_backend().redis.get(cache_key)
+        cached = await redis.get(cache_key)
         return json.loads(cached) if cached else None
-    except Exception:
+    except Exception as e:
         # ✅ Graceful degradation: if cache fails, fall back to DB
+        logger.warning(f"⚠️ Failed to read activity log cache: {e}")
         return None
 
 
@@ -73,19 +100,25 @@ async def set_cached_activity_logs(
     ✅ Store serialized logs in cache with full filter awareness.
     ⚠️ NEVER stores ORM objects (prevents async lazy-loading errors).
     """
+    redis = await get_redis()
+    if not redis:
+        return
+
     try:
         cache_key = _build_cache_key(
             tenant_id, user_id, limit, action, target_type, start_date, end_date, sort_by_priority
         )
-        redis = FastAPICache.get_backend().redis
-        
+
         # ✅ Serialize safely (strip ORM relationships)
         data = []
         if logs:
             for log in logs:
                 if hasattr(log, 'model_dump'):
-                    # Pydantic v2
-                    data.append(log.model_dump())
+                    # Pydantic v2 (mode="json" makes datetime/Decimal JSON-safe)
+                    try:
+                        data.append(log.model_dump(mode="json"))
+                    except TypeError:
+                        data.append(log.model_dump())
                 elif hasattr(log, 'dict'):
                     # Pydantic v1
                     data.append(log.dict())
@@ -104,11 +137,12 @@ async def set_cached_activity_logs(
                         "priority": log.priority,
                         "created_at": log.created_at.isoformat() if log.created_at else None,
                     })
-        
-        await redis.setex(cache_key, ACTIVITY_TTL, json.dumps(data))
-    except Exception:
-        # ✅ Logging is non-critical; fail silently
-        pass
+
+        # default=str is a final safety net for any edge-case types
+        await redis.setex(cache_key, ACTIVITY_TTL, json.dumps(data, default=str))
+    except Exception as e:
+        # ✅ Logging is non-critical; degrade loudly-but-safely
+        logger.warning(f"⚠️ Failed to write activity log cache: {e}")
 
 
 async def invalidate_activity_log_cache(tenant_id: int, user_id: Optional[int] = None) -> None:
@@ -120,8 +154,11 @@ async def invalidate_activity_log_cache(tenant_id: int, user_id: Optional[int] =
     Activity writes are low-frequency; wiping the tenant namespace is
     correct and cheap. `user_id` kept for signature compatibility.
     """
+    redis = await get_redis()
+    if not redis:
+        return
+
     try:
-        redis = FastAPICache.get_backend().redis
         pattern = f"activity_logs:tenant_{tenant_id}:*"
 
         cursor = 0
@@ -131,5 +168,5 @@ async def invalidate_activity_log_cache(tenant_id: int, user_id: Optional[int] =
                 await redis.delete(*keys)
             if cursor == 0:
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to invalidate activity log cache: {e}")

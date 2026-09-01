@@ -1,17 +1,17 @@
+# app/jobs/subscription_jobs.py
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 
-import redis.asyncio as redis
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession  # ✅ Added for proper type hinting
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.config import get_settings
+from app.core.redis_client import get_redis
 from app.db.database import AsyncSessionLocal
 from app.models.subscriptions import Subscription, SubscriptionStatus, PlanType, BillingCycle
 from app.models.tenants import Tenant
-from app.services.cache import invalidate_subscription_cache  # ✅ NEW: For cache invalidation
+from app.services.cache import invalidate_subscription_cache
 from app.services.email import (
     send_trial_ending_warning,
     send_subscription_past_due,
@@ -19,26 +19,32 @@ from app.services.email import (
 )
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
-
-# Initialize async Redis client for distributed locking
-redis_client = redis.from_url(settings.redis_url, decode_responses=True)
 
 
 async def run_subscription_lifecycle():
     """
     Daily subscription lifecycle check.
     Uses a Redis distributed lock to prevent duplicate execution across multiple workers/pods.
+    Fail-soft: if Redis is unavailable, the job skips with a warning (does not crash).
     """
+    # ✅ Get Redis client from centralized module (returns None if unavailable)
+    redis_client = await get_redis()
+    if redis_client is None:
+        logger.warning(
+            "⚠️ Redis unavailable — skipping subscription lifecycle job to prevent duplicate runs. "
+            "Job will retry on next scheduled execution."
+        )
+        return
+
     lock_name = "lock:subscription_lifecycle"
     lock_token = uuid.uuid4().hex
     lock_timeout = 3600  # 1 hour TTL (prevents deadlocks if job crashes)
 
-    # 1. Attempt to acquire distributed lock (with graceful failure if Redis is down)
+    # 1. Attempt to acquire distributed lock
     try:
         acquired = await redis_client.set(lock_name, lock_token, nx=True, ex=lock_timeout)
     except Exception as e:
-        logger.error(f"Failed to connect to Redis for distributed lock: {e}")
+        logger.error(f"Failed to acquire subscription lifecycle lock: {e}")
         return
 
     if not acquired:
@@ -46,7 +52,7 @@ async def run_subscription_lifecycle():
         return
 
     logger.info("Running subscription lifecycle job...")
-    
+
     # 2. Use async context manager for safe session lifecycle
     try:
         async with AsyncSessionLocal() as db:
@@ -68,8 +74,15 @@ async def run_subscription_lifecycle():
     finally:
         # Do not delete a lock acquired by a later job after this one expires.
         try:
-            if await redis_client.get(lock_name) == lock_token:
+            current_token = await redis_client.get(lock_name)
+            if current_token == lock_token:
                 await redis_client.delete(lock_name)
+                logger.debug("Subscription lifecycle lock released.")
+            else:
+                logger.warning(
+                    "Lock token mismatch on release — lock may have expired or been stolen. "
+                    f"Expected: {lock_token[:8]}..., Got: {current_token[:8] if current_token else 'None'}..."
+                )
         except Exception:
             logger.warning("Could not release subscription lifecycle lock", exc_info=True)
 
@@ -102,7 +115,7 @@ async def _handle_trial_conversions(db: AsyncSession, now: datetime):
             tenant.trial_ends_at = new_ends_at
             tenant.subscription_ends_at = new_ends_at
             tenant.grace_period_ends_at = new_grace
-            
+
             # ✅ Invalidate cache so warnings update immediately
             await invalidate_subscription_cache(tenant.id)
 
@@ -126,13 +139,12 @@ async def _handle_expired_subscriptions(db: AsyncSession, now: datetime):
         tenant = sub.tenant
         if tenant:
             tenant.subscription_status = SubscriptionStatus.past_due
-            
+
             # ✅ Invalidate cache
             await invalidate_subscription_cache(tenant.id)
-            
+
             # ✅ Wrap email in try/except so a failure doesn't rollback the DB transaction
             try:
-                # NOTE: If send_subscription_past_due is async in your codebase, add 'await' here.
                 await send_subscription_past_due(
                     to=tenant.email,
                     company_name=tenant.name,
@@ -158,10 +170,10 @@ async def _handle_grace_period_expirations(db: AsyncSession, now: datetime):
         tenant = sub.tenant
         if tenant:
             tenant.subscription_status = SubscriptionStatus.suspended
-            
+
             # ✅ Invalidate cache
             await invalidate_subscription_cache(tenant.id)
-            
+
             # ✅ Wrap email in try/except
             try:
                 await send_subscription_suspended(
@@ -192,7 +204,7 @@ async def _handle_trial_ending_warnings(db: AsyncSession, now: datetime):
         if tenant and sub.ends_at:
             delta = sub.ends_at - now
             days_left = max(0, delta.days)
-            
+
             # ✅ Wrap email in try/except
             try:
                 await send_trial_ending_warning(

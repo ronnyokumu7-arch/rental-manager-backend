@@ -32,6 +32,9 @@ from app.services._email.recovery import (
     send_admin_recovery_notification,
     send_sms_otp,
 )
+from app.services._email.commission import (
+    send_commission_statement,
+)
 from app.services._email.client import _send
 
 __all__ = [
@@ -55,5 +58,6 @@ __all__ = [
     "send_quotation_to_client",
     "send_admin_recovery_notification",
     "send_sms_otp",
+    "send_commission_statement",
     "_send",
 ]

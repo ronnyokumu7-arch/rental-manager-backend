@@ -12,6 +12,7 @@ Stateless: severity derived from oldest unpaid age (no extra tables).
 """
 import logging
 import os
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
@@ -20,6 +21,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.redis_client import get_redis
+from app.services.email import _send  # ✅ The platform's real low-level sender (Resend)
 from app.db.database import AsyncSessionLocal
 from app.models.commission import CommissionEvent, CommissionStatus
 from app.models.platform_settings import PlatformSettings
@@ -29,22 +32,19 @@ logger = logging.getLogger(__name__)
 
 PLATFORM_TZ = ZoneInfo("Africa/Nairobi")
 
+EMPTY_STATS = {"statements": 0, "warnings": 0, "lock_notices": 0, "skipped": 0, "errors": 0}
+
 
 # ---------------------------------------------------------------------------
-# EMAIL ADAPTER — adjust the import path/signature if your email utility differs
+# EMAIL ADAPTER — delegates to the platform's real low-level sender
 # ---------------------------------------------------------------------------
 async def _send_email(to: str, subject: str, html: str) -> bool:
     """
-    Reuses the same email utility your password-reset flow uses.
-    TODO: Confirm the import path matches your actual email service.
+    ✅ Delegates to the platform's real low-level sender (`_send`),
+    re-exported by app/services/email.py. It already logs failures
+    and returns a bool, so we simply forward.
     """
-    try:
-        from app.services.email import send_email  # ← confirm this path/signature
-        await send_email(to=to, subject=subject, html_content=html)
-        return True
-    except Exception as exc:
-        logger.error(f"[daily_commission] email failed to {to}: {exc}")
-        return False
+    return await _send(to=to, subject=subject, html=html)
 
 
 def _statement_html(
@@ -99,15 +99,54 @@ async def run_daily_commission_routine(db: Optional[AsyncSession] = None) -> dic
     Email statements with escalating severity.
     If db is None, creates its own session (scheduler context).
     If db is provided, uses it (manual trigger context).
+
+    ✅ Distributed lock (fail-soft) applies ONLY in scheduler context, so a
+    manual trigger is never blocked by Redis being down or a scheduled run.
     """
     now = datetime.now(PLATFORM_TZ)
 
-    owns_session = db is None
-    if owns_session:
-        async with AsyncSessionLocal() as session:
-            return await _run_routine_logic(session, now)
-    else:
-        return await _run_routine_logic(db, now)
+    redis_client = None
+    lock_token = uuid.uuid4().hex
+    lock_name = "lock:daily_commission"
+    lock_timeout = 3600
+
+    if db is None:
+        redis_client = await get_redis()
+        if redis_client is None:
+            logger.warning(
+                "⚠️ Redis unavailable — skipping scheduled commission routine to "
+                "prevent duplicate emails. Job retries on next execution."
+            )
+            return dict(EMPTY_STATS)
+
+        try:
+            acquired = await redis_client.set(lock_name, lock_token, nx=True, ex=lock_timeout)
+        except Exception as exc:
+            logger.error("Failed to acquire daily commission lock: %s", exc)
+            return dict(EMPTY_STATS)
+
+        if not acquired:
+            logger.info("Daily commission routine already running on another instance. Skipping.")
+            return dict(EMPTY_STATS)
+
+    try:
+        if db is None:
+            async with AsyncSessionLocal() as session:
+                return await _run_routine_logic(session, now)
+        else:
+            return await _run_routine_logic(db, now)
+    finally:
+        # ✅ Release the lock only if we still own it
+        if redis_client is not None:
+            try:
+                current_token = await redis_client.get(lock_name)
+                if current_token == lock_token:
+                    await redis_client.delete(lock_name)
+                    logger.debug("Daily commission lock released.")
+                else:
+                    logger.warning("Lock token mismatch on release — lock may have expired or been stolen.")
+            except Exception:
+                logger.warning("Could not release daily commission lock", exc_info=True)
 
 
 async def _run_routine_logic(db: AsyncSession, now: datetime) -> dict:
@@ -130,50 +169,63 @@ async def _run_routine_logic(db: AsyncSession, now: datetime) -> dict:
     )
     rows = (await db.execute(stmt)).all()
 
-    stats = {"statements": 0, "warnings": 0, "lock_notices": 0, "skipped": 0}
+    stats = dict(EMPTY_STATS)
 
     for tenant_id, count, total, oldest_at in rows:
-        age_days = (now.date() - oldest_at.astimezone(PLATFORM_TZ).date()).days
-        if age_days < 1:
-            stats["skipped"] += 1
-            continue  # only previous-day debt gets emailed
+        # ✅ Per-tenant isolation: one bad row must not kill the whole run
+        try:
+            if oldest_at is None:
+                stats["skipped"] += 1
+                logger.warning(f"[daily_commission] tenant {tenant_id}: oldest trip date is NULL — skipped.")
+                continue
 
-        days_until_lock = grace_days - age_days
-        if days_until_lock < 0:
-            stats["skipped"] += 1
-            continue  # already locked — no spam
+            age_days = (now.date() - oldest_at.astimezone(PLATFORM_TZ).date()).days
+            if age_days < 1:
+                stats["skipped"] += 1
+                continue  # only previous-day debt gets emailed
 
-        tenant = await db.get(Tenant, tenant_id)
-        if not tenant:
-            stats["skipped"] += 1
+            days_until_lock = grace_days - age_days
+            if days_until_lock < 0:
+                stats["skipped"] += 1
+                continue  # already locked — no spam
+
+            tenant = await db.get(Tenant, tenant_id)
+            if not tenant:
+                stats["skipped"] += 1
+                continue
+            to_email = getattr(tenant, "admin_email", None) or tenant.email
+            if not to_email:
+                stats["skipped"] += 1
+                continue
+
+            total_dec = Decimal(total)
+            html = _statement_html(
+                tenant_name=tenant.name,
+                trip_count=int(count),
+                total=total_dec,
+                days_until_lock=days_until_lock,
+                paybill=settings.platform_paybill if settings else None,
+                account_number=settings.platform_account_number if settings else None,
+                account_name=settings.platform_account_name if settings else None,
+            )
+
+            if days_until_lock == 0:
+                subject = f"🔒 {tenant.name}: account soft-locked — settle KES {total_dec:,.0f} to unlock"
+                ok = await _send_email(to_email, subject, html)
+                stats["lock_notices"] += 1 if ok else 0
+            elif days_until_lock <= 2:
+                subject = f"⚠️ {days_until_lock} day(s) left: KES {total_dec:,.0f} commission due"
+                ok = await _send_email(to_email, subject, html)
+                stats["warnings"] += 1 if ok else 0
+            else:
+                subject = f"{tenant.name}: daily commission statement — KES {total_dec:,.0f} outstanding"
+                ok = await _send_email(to_email, subject, html)
+                stats["statements"] += 1 if ok else 0
+
+        except Exception as e:
+            stats["errors"] += 1
+            logger.error(f"[daily_commission] tenant {tenant_id} failed: {e}", exc_info=True)
             continue
-        to_email = getattr(tenant, "admin_email", None) or tenant.email
-        if not to_email:
-            stats["skipped"] += 1
-            continue
 
-        total_dec = Decimal(total)
-        html = _statement_html(
-            tenant_name=tenant.name,
-            trip_count=int(count),
-            total=total_dec,
-            days_until_lock=days_until_lock,
-            paybill=settings.platform_paybill if settings else None,
-            account_number=settings.platform_account_number if settings else None,
-            account_name=settings.platform_account_name if settings else None,
-        )
-
-        if days_until_lock == 0:
-            subject = f"🔒 {tenant.name}: account soft-locked — settle KES {total_dec:,.0f} to unlock"
-            ok = await _send_email(to_email, subject, html)
-            stats["lock_notices"] += 1 if ok else 0
-        elif days_until_lock <= 2:
-            subject = f"⚠️ {days_until_lock} day(s) left: KES {total_dec:,.0f} commission due"
-            ok = await _send_email(to_email, subject, html)
-            stats["warnings"] += 1 if ok else 0
-        else:
-            subject = f"{tenant.name}: daily commission statement — KES {total_dec:,.0f} outstanding"
-            ok = await _send_email(to_email, subject, html)
-            stats["statements"] += 1 if ok else 0
-
+    logger.info(f"[daily_commission] run complete: {stats}")
     return stats

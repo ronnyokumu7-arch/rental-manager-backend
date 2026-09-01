@@ -2,27 +2,32 @@ import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 
-import redis.asyncio as redis
 from sqlalchemy import select
 
-from app.core.config import get_settings
+from app.core.redis_client import get_redis
 from app.db.database import AsyncSessionLocal
 from app.models.bookings import Booking, BookingStatus
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
-
-# Initialize async Redis client for distributed locking
-redis_client = redis.from_url(settings.redis_url, decode_responses=True)
 
 ARCHIVE_AFTER_DAYS = 30
 
 
 async def run_booking_auto_archive():
     """
-    Auto-archives old bookings. 
+    Auto-archives old bookings.
     Uses a Redis distributed lock to prevent duplicate execution across multiple workers/pods.
+    Fail-soft: if Redis is unavailable, the job skips with a warning (does not crash).
     """
+    # ✅ Get Redis client from centralized module (returns None if unavailable)
+    redis_client = await get_redis()
+    if redis_client is None:
+        logger.warning(
+            "⚠️ Redis unavailable — skipping booking auto-archive to prevent duplicate runs. "
+            "Job will retry on next scheduled execution."
+        )
+        return
+
     lock_name = "lock:booking_auto_archive"
     lock_token = uuid.uuid4().hex
     lock_timeout = 3600  # 1 hour TTL (prevents deadlocks if job crashes)
@@ -34,13 +39,13 @@ async def run_booking_auto_archive():
     except Exception as exc:
         logger.error("Failed to acquire booking archive lock: %s", exc)
         return
-    
+
     if not acquired:
         logger.info("Booking auto-archive job is already running on another instance. Skipping.")
         return
 
     logger.info("Starting booking auto-archive job...")
-    
+
     # 2. Use async context manager for safe session lifecycle (auto-closes)
     count = 0
     try:
@@ -82,10 +87,18 @@ async def run_booking_auto_archive():
                 # Explicit rollback on failure
                 await db.rollback()
                 logger.error(f"Booking auto-archive job failed: {e}", exc_info=True)
-            
+
     finally:
+        # 6. Release the lock (only if we still own it)
         try:
-            if await redis_client.get(lock_name) == lock_token:
+            current_token = await redis_client.get(lock_name)
+            if current_token == lock_token:
                 await redis_client.delete(lock_name)
+                logger.debug("Booking archive lock released.")
+            else:
+                logger.warning(
+                    "Lock token mismatch on release — lock may have expired or been stolen. "
+                    f"Expected: {lock_token[:8]}..., Got: {current_token[:8] if current_token else 'None'}..."
+                )
         except Exception:
             logger.warning("Could not release booking archive lock", exc_info=True)

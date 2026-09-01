@@ -1,38 +1,80 @@
 import json
+import logging
 from typing import Optional
-from fastapi_cache import FastAPICache
+
+from app.core.redis_client import get_redis
+
+logger = logging.getLogger(__name__)
 
 CACHE_TTL = 300
 
+
 async def get_cached_subscription_status(tenant_id: int) -> Optional[str]:
-    try:
-        cached = await FastAPICache.get_backend().redis.get(f"subscription:status:tenant_{tenant_id}")
-        return json.loads(cached) if cached else None
-    except Exception: 
+    redis = await get_redis()
+    if not redis:
         return None
+
+    try:
+        cached = await redis.get(f"subscription:status:tenant_{tenant_id}")
+        return json.loads(cached) if cached else None
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to read subscription status cache: {e}")
+        return None
+
 
 async def set_cached_subscription_status(tenant_id: int, status_value: str) -> None:
+    redis = await get_redis()
+    if not redis:
+        return
+
     try:
-        await FastAPICache.get_backend().redis.setex(f"subscription:status:tenant_{tenant_id}", CACHE_TTL, json.dumps(status_value))
-    except Exception: 
-        pass
+        await redis.setex(
+            f"subscription:status:tenant_{tenant_id}",
+            CACHE_TTL,
+            json.dumps(status_value)
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to write subscription status cache: {e}")
+
 
 async def get_cached_subscription_warning(tenant_id: int) -> Optional[dict]:
-    try:
-        cached = await FastAPICache.get_backend().redis.get(f"subscription:warning:tenant_{tenant_id}")
-        return json.loads(cached) if cached else None
-    except Exception: 
+    redis = await get_redis()
+    if not redis:
         return None
 
-async def set_cached_subscription_warning(tenant_id: int, warning: Optional[dict]) -> None:
     try:
-        await FastAPICache.get_backend().redis.setex(f"subscription:warning:tenant_{tenant_id}", CACHE_TTL, json.dumps(warning or {}))
-    except Exception: 
-        pass
+        cached = await redis.get(f"subscription:warning:tenant_{tenant_id}")
+        return json.loads(cached) if cached else None
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to read subscription warning cache: {e}")
+        return None
+
+
+async def set_cached_subscription_warning(tenant_id: int, warning: Optional[dict]) -> None:
+    redis = await get_redis()
+    if not redis:
+        return
+
+    try:
+        # default=str is a safety net for any edge-case types inside the warning dict
+        await redis.setex(
+            f"subscription:warning:tenant_{tenant_id}",
+            CACHE_TTL,
+            json.dumps(warning or {}, default=str)
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to write subscription warning cache: {e}")
+
 
 async def invalidate_subscription_cache(tenant_id: int) -> None:
+    redis = await get_redis()
+    if not redis:
+        return
+
     try:
-        redis = FastAPICache.get_backend().redis
-        await redis.delete(f"subscription:status:tenant_{tenant_id}", f"subscription:warning:tenant_{tenant_id}")
-    except Exception: 
-        pass
+        await redis.delete(
+            f"subscription:status:tenant_{tenant_id}",
+            f"subscription:warning:tenant_{tenant_id}"
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to invalidate subscription cache: {e}")
