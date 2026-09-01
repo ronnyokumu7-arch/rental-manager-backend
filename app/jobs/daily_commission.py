@@ -11,7 +11,6 @@ Emails tenants their commission statement with escalating severity:
 Stateless: severity derived from oldest unpaid age (no extra tables).
 """
 import logging
-import os
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -22,7 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.redis_client import get_redis
-from app.services.email import _send  # ✅ The platform's real low-level sender (Resend)
+from app.services.email import send_commission_statement
 from app.db.database import AsyncSessionLocal
 from app.models.commission import CommissionEvent, CommissionStatus
 from app.models.platform_settings import PlatformSettings
@@ -33,62 +32,6 @@ logger = logging.getLogger(__name__)
 PLATFORM_TZ = ZoneInfo("Africa/Nairobi")
 
 EMPTY_STATS = {"statements": 0, "warnings": 0, "lock_notices": 0, "skipped": 0, "errors": 0}
-
-
-# ---------------------------------------------------------------------------
-# EMAIL ADAPTER — delegates to the platform's real low-level sender
-# ---------------------------------------------------------------------------
-async def _send_email(to: str, subject: str, html: str) -> bool:
-    """
-    ✅ Delegates to the platform's real low-level sender (`_send`),
-    re-exported by app/services/email.py. It already logs failures
-    and returns a bool, so we simply forward.
-    """
-    return await _send(to=to, subject=subject, html=html)
-
-
-def _statement_html(
-    tenant_name: str,
-    trip_count: int,
-    total: Decimal,
-    days_until_lock: int,
-    paybill: Optional[str],
-    account_number: Optional[str],
-    account_name: Optional[str],
-) -> str:
-    if days_until_lock == 0:
-        headline, color = "Account soft-locked", "#e11d48"
-    elif days_until_lock <= 2:
-        headline, color = f"{days_until_lock} day(s) until soft-lock", "#d97706"
-    else:
-        headline, color = "Daily commission statement", "#2563eb"
-
-    pay_url = os.getenv("FRONTEND_URL", "")
-    pay_link = (
-        f'<p style="margin:16px 0"><a href="{pay_url}/commission/pay" '
-        f'style="background:#2563eb;color:#fff;padding:10px 18px;border-radius:8px;'
-        f'text-decoration:none;font-weight:bold">Pay Commission</a></p>'
-        if pay_url
-        else "<p>Log in and visit <b>Commission → Pay</b> to settle.</p>"
-    )
-
-    paybill_block = (
-        f"<p>PayBill: <b>{paybill}</b><br>Account No: <b>{account_number}</b><br>"
-        f"Account Name: <b>{account_name}</b></p>"
-        if paybill and account_number
-        else "<p>Payment details are in your dashboard under Commission → Pay.</p>"
-    )
-
-    return f"""
-    <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px">
-      <h2 style="color:{color}">{headline}</h2>
-      <p>Hi {tenant_name},</p>
-      <p>You have <b>{trip_count}</b> unpaid trip(s) totalling <b>KES {total:,.2f}</b>.</p>
-      {paybill_block}
-      {pay_link}
-      <p style="color:#6b7280;font-size:12px">Royride Platform • Commission Office</p>
-    </div>
-    """
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +142,10 @@ async def _run_routine_logic(db: AsyncSession, now: datetime) -> dict:
                 continue
 
             total_dec = Decimal(total)
-            html = _statement_html(
+            
+            # ✅ Send via the dedicated commission email service
+            ok = await send_commission_statement(
+                to=to_email,
                 tenant_name=tenant.name,
                 trip_count=int(count),
                 total=total_dec,
@@ -209,17 +155,12 @@ async def _run_routine_logic(db: AsyncSession, now: datetime) -> dict:
                 account_name=settings.platform_account_name if settings else None,
             )
 
+            # Track stats by severity
             if days_until_lock == 0:
-                subject = f"🔒 {tenant.name}: account soft-locked — settle KES {total_dec:,.0f} to unlock"
-                ok = await _send_email(to_email, subject, html)
                 stats["lock_notices"] += 1 if ok else 0
             elif days_until_lock <= 2:
-                subject = f"⚠️ {days_until_lock} day(s) left: KES {total_dec:,.0f} commission due"
-                ok = await _send_email(to_email, subject, html)
                 stats["warnings"] += 1 if ok else 0
             else:
-                subject = f"{tenant.name}: daily commission statement — KES {total_dec:,.0f} outstanding"
-                ok = await _send_email(to_email, subject, html)
                 stats["statements"] += 1 if ok else 0
 
         except Exception as e:

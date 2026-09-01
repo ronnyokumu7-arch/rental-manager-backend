@@ -1,3 +1,4 @@
+# app/core/redis_client.py
 """
 Centralized Redis client with fail-safe connection logic.
 Returns None when Redis is unavailable instead of raising exceptions.
@@ -41,6 +42,10 @@ async def get_redis() -> Optional[aioredis.Redis]:
     Get Redis client. Returns None if Redis is unavailable.
     Callers must handle None gracefully (fail-open).
     """
+    # ✅ FIX: global declaration MUST be at the top of the function,
+    # BEFORE any read or write of the variable.
+    global _redis_available
+    
     if not _redis_available or _redis_client is None:
         return None
     
@@ -50,7 +55,6 @@ async def get_redis() -> Optional[aioredis.Redis]:
         return _redis_client
     except Exception as e:
         logger.warning(f"⚠️ Redis connection lost: {e}")
-        global _redis_available
         _redis_available = False
         return None
 
