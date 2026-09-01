@@ -57,7 +57,7 @@ async def get_cached_booking_list(
         return None
 
 
-async def set_cached_bookinging_list(
+async def set_cached_booking_list(
     tenant_id: Optional[int], 
     status_filter: Optional[str] = None, 
     vehicle_id: Optional[int] = None, 
