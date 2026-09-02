@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from collections.abc import Mapping
 from typing import Any, Optional  # ✅ Added Any
 
 from pydantic import BaseModel, computed_field, Field, field_validator, model_validator
@@ -51,6 +52,8 @@ class PaymentOut(BaseModel):
     @computed_field
     @property
     def invoice_number(self) -> Optional[str]:
+        if isinstance(self.invoice, Mapping):
+            return self.invoice.get("invoice_number")
         if self.invoice and hasattr(self.invoice, 'invoice_number'):
             return self.invoice.invoice_number
         return None
@@ -58,6 +61,8 @@ class PaymentOut(BaseModel):
     @computed_field
     @property
     def booking_id(self) -> Optional[int]:
+        if isinstance(self.invoice, Mapping):
+            return self.invoice.get("booking_id")
         if self.invoice and hasattr(self.invoice, 'booking_id'):
             return self.invoice.booking_id
         return None
@@ -65,7 +70,11 @@ class PaymentOut(BaseModel):
     @computed_field
     @property
     def client_id(self) -> Optional[int]:
-        if (self.invoice and hasattr(self.invoice, 'booking') and self.invoice.booking 
+        if isinstance(self.invoice, Mapping):
+            booking = self.invoice.get("booking")
+            client = booking.get("client") if isinstance(booking, Mapping) else None
+            return client.get("id") if isinstance(client, Mapping) else None
+        if (self.invoice and hasattr(self.invoice, 'booking') and self.invoice.booking
                 and hasattr(self.invoice.booking, 'client') and self.invoice.booking.client):
             return getattr(self.invoice.booking.client, 'id', None)
         return None
@@ -73,7 +82,11 @@ class PaymentOut(BaseModel):
     @computed_field
     @property
     def client_name(self) -> Optional[str]:
-        if (self.invoice and hasattr(self.invoice, 'booking') and self.invoice.booking 
+        if isinstance(self.invoice, Mapping):
+            booking = self.invoice.get("booking")
+            client = booking.get("client") if isinstance(booking, Mapping) else None
+            return client.get("full_name") if isinstance(client, Mapping) else None
+        if (self.invoice and hasattr(self.invoice, 'booking') and self.invoice.booking
                 and hasattr(self.invoice.booking, 'client') and self.invoice.booking.client):
             return getattr(self.invoice.booking.client, 'full_name', None)
         return None

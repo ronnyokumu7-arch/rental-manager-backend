@@ -2,6 +2,7 @@
 
 import base64
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Any, Optional
 
 from pydantic import BaseModel, computed_field, Field, field_validator
@@ -35,6 +36,8 @@ class ContractOut(BaseModel):
     @property
     def booking_number(self) -> Optional[str]:
         """Extract booking number from linked booking."""
+        if isinstance(self.booking, Mapping):
+            return self.booking.get("booking_number")
         if self.booking and hasattr(self.booking, "booking_number"):
             return self.booking.booking_number
         return None
@@ -43,6 +46,9 @@ class ContractOut(BaseModel):
     @property
     def client_id(self) -> Optional[int]:
         """Extract client ID from the linked booking's client."""
+        if isinstance(self.booking, Mapping):
+            client = self.booking.get("client")
+            return client.get("id") if isinstance(client, Mapping) else None
         if self.booking and hasattr(self.booking, "client") and self.booking.client:
             return getattr(self.booking.client, "id", None)
         return None
@@ -51,6 +57,9 @@ class ContractOut(BaseModel):
     @property
     def client_name(self) -> Optional[str]:
         """Extract client name from the linked booking's client."""
+        if isinstance(self.booking, Mapping):
+            client = self.booking.get("client")
+            return client.get("full_name") if isinstance(client, Mapping) else None
         if self.booking and hasattr(self.booking, "client") and self.booking.client:
             return getattr(self.booking.client, "full_name", None)
         return None

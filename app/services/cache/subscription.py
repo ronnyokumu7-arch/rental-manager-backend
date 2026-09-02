@@ -3,6 +3,7 @@ import logging
 from typing import Optional
 
 from app.core.redis_client import get_redis
+from app.services.cache.serialization import serialize_cache_item
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,10 @@ async def set_cached_subscription_warning(tenant_id: int, warning: Optional[dict
         return
 
     try:
-        # default=str is a safety net for any edge-case types inside the warning dict
         await redis.setex(
             f"subscription:warning:tenant_{tenant_id}",
             CACHE_TTL,
-            json.dumps(warning or {}, default=str)
+            json.dumps(serialize_cache_item(warning or {}))
         )
     except Exception as e:
         logger.warning(f"⚠️ Failed to write subscription warning cache: {e}")

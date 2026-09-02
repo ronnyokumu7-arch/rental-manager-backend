@@ -1,30 +1,13 @@
 import json
 import logging
 from typing import Optional, Any, List
-from datetime import datetime, date
-from decimal import Decimal
+from app.services.cache.serialization import deserialize_cache_list, serialize_cache_item
 
 from app.core.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
 CACHE_TTL = 120
-
-
-def _serialize_obj(obj: Any) -> Any:
-    """Convert Pydantic models, datetime, and Decimal to JSON-safe types."""
-    if hasattr(obj, "model_dump"):
-        try:
-            # Pydantic v2 handles datetime/Decimal natively with mode="json"
-            return obj.model_dump(mode="json")
-        except TypeError:
-            # Fallback for Pydantic v1
-            return obj.dict()
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    if isinstance(obj, Decimal):
-        return str(obj)
-    return obj
 
 
 def _build_cache_key(
@@ -54,7 +37,7 @@ async def get_cached_user_list(
     try:
         cache_key = _build_cache_key(tenant_id, role, is_active, is_suspended)
         cached = await redis.get(cache_key)
-        return json.loads(cached) if cached else None
+        return deserialize_cache_list(cached) if cached else None
     except Exception as e:
         logger.warning(f"⚠️ Failed to read user cache: {e}")
         return None
@@ -73,9 +56,8 @@ async def set_cached_user_list(
 
     try:
         cache_key = _build_cache_key(tenant_id, role, is_active, is_suspended)
-        data = [_serialize_obj(u) for u in users] if users else []
-        # default=str is a final safety net for any edge-case types
-        await redis.setex(cache_key, CACHE_TTL, json.dumps(data, default=str))
+        data = [serialize_cache_item(u) for u in users] if users else []
+        await redis.setex(cache_key, CACHE_TTL, json.dumps(data))
     except Exception as e:
         logger.warning(f"⚠️ Failed to write user cache: {e}")
 

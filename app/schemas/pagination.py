@@ -6,9 +6,16 @@ T = TypeVar("T")
 
 
 def _orm_to_dict(obj: Any) -> Any:
-    """Convert a SQLAlchemy ORM instance to a plain dict. Everything else passes through."""
+    """Convert loaded ORM state without triggering async lazy-loads."""
     if hasattr(obj, "__table__"):
-        return {c.key: getattr(obj, c.key, None) for c in obj.__table__.columns}
+        columns = {column.key for column in obj.__table__.columns}
+        data = {column.key: getattr(obj, column.key, None) for column in obj.__table__.columns}
+        data.update({
+            key: value
+            for key, value in obj.__dict__.items()
+            if not key.startswith("_") and key not in columns
+        })
+        return data
     return obj
 
 
