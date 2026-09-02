@@ -51,8 +51,6 @@ from app.routers import (
     vault,
 )
 
-# ✅ NEW: Cache management router (super_admin only)
-from app.routers.admin.cache_management import router as cache_management_router
 
 from app.endpoints.health import router as agency_health_router
 
@@ -177,7 +175,5 @@ routers = [
 for router in routers:
     app.include_router(router.router, prefix="/api/v1")
 
-# ✅ NEW: Register cache management router under /api/v1/admin/cache
-app.include_router(cache_management_router, prefix="/api/v1/admin")
 
 app.include_router(agency_health_router, prefix="/api/v1")
