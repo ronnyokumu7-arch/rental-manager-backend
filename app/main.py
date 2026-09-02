@@ -3,6 +3,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
@@ -14,7 +15,11 @@ from slowapi.errors import RateLimitExceeded
 from app.core.limiter import limiter
 
 from app.core.config import get_settings
-from app.core.exceptions import http_exception_handler
+from app.core.exceptions import (
+    global_exception_handler,
+    http_exception_handler,
+    validation_exception_handler,
+)
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 from app.db.database import test_db_connection
 
@@ -130,6 +135,8 @@ app.add_middleware(
 )
 
 app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, global_exception_handler)
 
 @app.get("/")
 def root():
