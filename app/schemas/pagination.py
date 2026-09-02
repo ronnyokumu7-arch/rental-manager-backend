@@ -1,12 +1,15 @@
-# app/schemas/pagination.py
-from datetime import datetime, date
-from decimal import Decimal
-from enum import Enum
 from typing import Any, Generic, Sequence, TypeVar
 
 from pydantic import BaseModel, Field
 
 T = TypeVar("T")
+
+
+def _orm_to_dict(obj: Any) -> Any:
+    """Convert a SQLAlchemy ORM instance to a plain dict. Everything else passes through."""
+    if hasattr(obj, "__table__"):
+        return {c.key: getattr(obj, c.key, None) for c in obj.__table__.columns}
+    return obj
 
 
 class PaginatedResponse(BaseModel, Generic[T]):
@@ -15,37 +18,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
     page: int = Field(ge=1)
     page_size: int = Field(ge=1)
 
-
-_SCALARS = (str, int, float, bool, bytes, type(None), datetime, date, Decimal, Enum)
-
-
-def _normalize_item(item: Any) -> Any:
-    """
-    ✅ Deterministic response payloads: convert SQLAlchemy ORM instances
-    (including already-loaded relationships) into plain dicts so response
-    validation never depends on Pydantic's from_attributes behavior.
-    Dicts, Pydantic models, and scalar values pass through untouched.
-    Only touches __dict__ (loaded state) — never triggers lazy loading.
-    """
-    if isinstance(item, (dict, BaseModel)) or isinstance(item, _SCALARS):
-        return item
-    if isinstance(item, (list, tuple, set)):
-        return [_normalize_item(v) for v in item]
-    if hasattr(item, "__table__"):  # SQLAlchemy ORM instance
-        data = {
-            col.key: _normalize_item(getattr(item, col.key, None))
-            for col in obj_columns(item)
-        }
-        for key, value in list(item.__dict__.items()):
-            if key.startswith("_") or key in data:
-                continue
-            data[key] = _normalize_item(value)
-        return data
-    return item
-
-
-def obj_columns(item: Any):
-    return item.__table__.columns
+    model_config = {"from_attributes": True}
 
 
 def paginate_items(
@@ -64,7 +37,7 @@ def paginate_items(
     start = (safe_page - 1) * safe_page_size
     end = start + safe_page_size
     return PaginatedResponse(
-        items=[_normalize_item(i) for i in items[start:end]],
+        items=[_orm_to_dict(i) for i in items[start:end]],
         total=total_count,
         page=safe_page,
         page_size=safe_page_size,
