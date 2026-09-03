@@ -1,52 +1,58 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, model_validator
 from app.models.bookings import BookingStatus, CancellationReason
 
 # 💡 Import nested schemas so Pydantic serializes joined relations
 from app.schemas.client import ClientOut
 from app.schemas.vehicle import VehicleOut
-from app.schemas.driver import DriverOut  # ✅ MILESTONE 2: nested driver
+from app.schemas.driver import DriverOut
 
 
 class BookingBase(BaseModel):
+    """
+    ✅ CONTRACT v2: the exact pair (pickup_at / scheduled_return_at) is the
+    primary input. The legacy pair (start_date / end_date) is accepted as a
+    fallback alias during frontend migration. All optional → factory applies
+    defaults (pickup = now, return = pickup + 1 day).
+    ✅ Money fields removed: the server is the only source of truth for price.
+    """
     client_id: int
     vehicle_id: int
-    start_date: datetime
-    end_date: datetime
+
+    # Legacy alias pair (optional now; factory falls back to it, then defaults)
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+
     destination: Optional[str] = Field(default=None, max_length=255)
     pickup_location: Optional[str] = Field(default=None, max_length=255)
     return_location: Optional[str] = Field(default=None, max_length=255)
-    
-    # ✅ PHASE 1: daily_rate is now optional (server uses vehicle.daily_rate if not provided)
-    daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
-    
-    # ✅ PHASE 1: total_amount is now optional (server computes it via pricing engine)
-    total_amount: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
+
     currency_code: str = Field(default="KES", min_length=3, max_length=3)
 
-    # ✅ MILESTONE 1: Service type + exact times
+    # ✅ MILESTONE 1: Service type + exact times (primary input)
     service_type: str = "selfdrive"
     pickup_at: Optional[datetime] = None
     scheduled_return_at: Optional[datetime] = None
 
-    # ✅ MILESTONE 2: Staff driver assignment (validated tenant-side in router)
+    # ✅ MILESTONE 2: Staff driver assignment (validated tenant-side)
     driver_id: Optional[int] = None
 
-    # ✅ MILESTONE 2: Airport Transfer Add-ons (kept for backward compat)
+    # ✅ MILESTONE 2: Airport Transfer add-ons
     toll_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
     parking_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
 
     # ✅ MILESTONE 3: Service-specific details (JSON)
-    # Stores add-ons and configurations specific to the service_type 
-    # (e.g., wedding extra hours, decoration fees). Keeps schema lean.
     service_details: Optional[Dict[str, Any]] = Field(default=None)
 
     @model_validator(mode="after")
     def check_dates(self):
-        if self.end_date < self.start_date:
-            raise ValueError("end_date cannot be before start_date")
+        # ✅ STRICT: equality now rejected here (DB constraint is strict;
+        # previously this mismatch produced 500s instead of 422s)
+        if self.start_date is not None and self.end_date is not None:
+            if self.end_date <= self.start_date:
+                raise ValueError("end_date must be strictly after start_date")
         return self
 
 
@@ -56,47 +62,19 @@ class BookingCreate(BookingBase):
 
 class BookingUpdate(BaseModel):
     """
-    ✅ SECURITY: Removed 'status' field.
-    Status transitions are controlled by business logic (vehicle pickup, return, cancellation).
-
-    ✅ IMMUTABLE FIELDS: 'client_id', 'vehicle_id', and 'original_end_date' are excluded.
+    ✅ SECURITY: no status field.
+    ✅ CONTRACT v2: ALL datetime and money fields removed. Schedule or price
+    changes go through the booking factory change endpoints only
+    (POST /bookings/{id}/changes[/quote]).
     """
     destination: Optional[str] = Field(default=None, max_length=255)
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
     pickup_location: Optional[str] = Field(default=None, max_length=255)
     return_location: Optional[str] = Field(default=None, max_length=255)
-    daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
-    total_amount: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
-    currency_code: Optional[str] = Field(default=None, min_length=3, max_length=3)
-
-    service_type: Optional[str] = None
-    pickup_at: Optional[datetime] = None
-    scheduled_return_at: Optional[datetime] = None
-
     driver_id: Optional[int] = None
-
-    # ✅ MILESTONE 2: Airport Transfer Add-ons (Optional for PATCH)
-    toll_fees: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
-    parking_fees: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
-
-    # ✅ MILESTONE 3: Service-specific details (JSON)
     service_details: Optional[Dict[str, Any]] = None
-
-    @model_validator(mode="after")
-    def check_dates(self):
-        if self.start_date and self.end_date:
-            if self.end_date < self.start_date:
-                raise ValueError("end_date cannot be before start_date")
-        return self
 
 
 class CancelBookingPayload(BaseModel):
-    """
-    ✅ LIFECYCLE: cancel-with-reason. `reason` is validated against the
-    CancellationReason enum (str-enum → Pydantic coerces + rejects invalid).
-    Terminal status is always `cancelled`; the reason preserves business meaning.
-    """
     reason: CancellationReason = Field(
         ..., description="client_cancelled | agency_cancelled | no_show | expired_unpaid",
     )
@@ -114,7 +92,7 @@ class BookingOut(BaseModel):
     return_location: Optional[str] = None
     start_date: datetime
     end_date: datetime
-    original_end_date: Optional[datetime] = None  # ✅ Immutable audit trail for extensions
+    original_end_date: Optional[datetime] = None
     daily_rate: Optional[Decimal] = None
     total_amount: Decimal
     currency_code: str
@@ -124,49 +102,39 @@ class BookingOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    # ✅ MILESTONE 1: Service type + exact times
     service_type: str
     pickup_at: Optional[datetime] = None
     scheduled_return_at: Optional[datetime] = None
-    actual_return_at: Optional[datetime] = None  # ✅ set on complete (late-return reconciliation)
-    
-    # ✅ LEGACY PRICING SNAPSHOT (kept for old data, no longer used in Phase 1)
+    actual_return_at: Optional[datetime] = None
+
     pricing_day_hours: Optional[int] = None
     pricing_grace_minutes: Optional[int] = None
     pricing_overtime_hourly_rate: Optional[Decimal] = None
-    
-    # ✅ PHASE 1: Self-Drive Pricing Snapshot (immutable after creation)
+
     billable_days: Optional[int] = None
     computed_total: Optional[Decimal] = None
     manually_adjusted: bool = False
     price_note: Optional[str] = None
 
-    # ✅ MILESTONE 2: Airport Transfer Add-ons (now persisted on the model)
     toll_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
     parking_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
 
-    # ✅ LIFECYCLE: cancellation metadata (replaces removed no_show status)
     cancellation_reason: Optional[CancellationReason] = None
     cancelled_at: Optional[datetime] = None
     cancelled_by: Optional[int] = None
 
-    # ✅ MILESTONE 2: Staff driver link
     driver_id: Optional[int] = None
 
-    # 🅿️ PARKED (client drivers): read-only snapshots for contracts
     client_provided_driver: bool = False
     client_driver_name: Optional[str] = None
     client_driver_phone: Optional[str] = None
 
-    # ✅ MILESTONE 3: Service-specific details (JSON)
     service_details: Optional[Dict[str, Any]] = None
 
-    # 💡 NESTED RELATIONSHIPS:
     client: Optional[ClientOut] = None
     vehicle: Optional[VehicleOut] = None
     driver: Optional[DriverOut] = None
 
-    # ✅ NEW: Denormalized UI fields (prevents MissingGreenlet errors)
     client_name: Optional[str] = None
     client_phone: Optional[str] = None
     vehicle_plate: Optional[str] = None
@@ -175,28 +143,72 @@ class BookingOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# ✅ MILESTONE 2 & 3: Unified Quote Request (supports Self-Drive, Airport, Wedding)
+# ✅ Unified Quote Request (times optional → factory defaults now / +1d)
 class BookingQuote(BaseModel):
     vehicle_id: int
-    pickup_at: datetime
-    return_at: datetime
-    service_type: str = "selfdrive"  # ✅ MILESTONE 2: Service type for pricing factory
+    pickup_at: Optional[datetime] = None
+    return_at: Optional[datetime] = None
+    service_type: str = "selfdrive"
     driver_id: Optional[int] = None
-    daily_rate_override: Optional[Decimal] = Field(
-        default=None, 
-        gt=0, 
-        decimal_places=2,
-        description="Override vehicle daily rate for this quote only"
-    )
-    # ✅ MILESTONE 2: Airport Transfer Add-ons (kept for backward compat)
     toll_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
     parking_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
-    
-    # ✅ MILESTONE 3: Service-specific details for quoting
-    service_details: Optional[Dict[str, Any]] = Field(default=None)
+    service_details: Optional[Dict[str, Any]] = None
+    # ✅ daily_rate_override REMOVED — rates come only from vehicle/driver config.
 
 
-# ✅ EXTENSION PAYLOAD
+# ✅ CHANGE PAYLOAD (extend / reduce / reschedule — factory classifies)
+class ChangeBookingPayload(BaseModel):
+    new_pickup_at: Optional[datetime] = None
+    new_return_at: Optional[datetime] = None
+    note: Optional[str] = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def check_something(self):
+        if self.new_pickup_at is None and self.new_return_at is None:
+            raise ValueError("Provide new_pickup_at and/or new_return_at")
+        return self
+
+
+# ✅ LEGACY (kept for existing extension endpoint compatibility)
 class ExtendBookingPayload(BaseModel):
     new_end_date: datetime = Field(..., description="Must be after the current end_date")
     extension_reason: Optional[str] = Field(default=None, max_length=500)
+
+
+# =============================================================================
+# ✅ QUOTE RESPONSE CONTRACT (what the frontend renders verbatim)
+# =============================================================================
+class QuoteLineOut(BaseModel):
+    description: str
+    quantity: str
+    amount: Decimal
+
+
+class BookingQuoteOut(BaseModel):
+    service_type: str
+    pickup_at: str            # platform ISO with offset — render as-is
+    scheduled_return_at: str
+    billable_days: Optional[int] = None
+    daily_rate: Optional[Decimal] = None
+    lines: List[QuoteLineOut] = []
+    total: Decimal
+    currency_code: str
+
+
+class ChangeSideOut(BaseModel):
+    pickup_at: str
+    scheduled_return_at: str
+    billable_days: Optional[int] = None
+    total: Decimal
+    lines: List[QuoteLineOut] = []
+
+
+class ChangeQuoteOut(BaseModel):
+    kind: str                 # extend | reduce | reschedule
+    current: ChangeSideOut
+    new: ChangeSideOut
+    delta_days: int
+    delta_amount: Decimal
+    direction: str            # charge | credit | none
+    new_total: Decimal
+    currency_code: str

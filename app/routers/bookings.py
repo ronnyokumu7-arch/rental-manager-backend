@@ -1,3 +1,5 @@
+# app/routers/bookings.py
+
 from fastapi import APIRouter
 
 from .booking import management, lifecycle, invoices, extensions, contracts
