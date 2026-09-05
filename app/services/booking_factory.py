@@ -33,7 +33,7 @@ from app.models.vehicles import Vehicle, VehicleStatus
 from app.schemas.booking import BookingCreate
 from app.services.activity_log import ActivityLogService
 from app.services.booking_tasks import BookingTaskService
-from app.services.cache import invalidate_booking_cache
+from app.services.cache import invalidate_booking_cache, invalidate_invoice_cache  # ✅ ADD invoice
 from app.services.invoices import create_quotation_for_booking
 from app.services.number_generator import generate_booking_number
 from app.services.pricing_airport import quote_airport_transfer
@@ -319,6 +319,7 @@ async def create_booking(db: AsyncSession, intent: BookingCreate, user: User) ->
     await db.commit()
 
     await invalidate_booking_cache(user.tenant_id)
+    await invalidate_invoice_cache(user.tenant_id)
 
     from sqlalchemy.orm import selectinload
     result = await db.execute(
@@ -514,4 +515,5 @@ async def apply_change(
     await db.commit()
     await db.refresh(booking)
     await invalidate_booking_cache(booking.tenant_id)
+    await invalidate_invoice_cache(booking.tenant_id)
     return payload

@@ -37,6 +37,15 @@ class DailySchedulerService:
     """
 
     @staticmethod
+    async def run_frequent_autostart():
+        """
+        ✅ Runs every few minutes (in-app loop / frequent cron) — NOT daily.
+        Starts signed trips whose pickup has arrived, fixes drift, marks overdue.
+        Lightweight + idempotent; safe to run frequently.
+        """
+        await run_reconciliation_job()
+
+    @staticmethod
     async def run_daily_checks(db: AsyncSession):
         """Main entry point for the daily cron job."""
         today = datetime.now().date()

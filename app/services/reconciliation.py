@@ -1,13 +1,17 @@
 """
-Reconciliation job — the lifecycle's safety net (runs nightly / on schedule).
+Reconciliation job — the lifecycle's safety net (runs on schedule).
 
 ✅ Multi-tenant safe: iterates per tenant; every query is tenant-scoped.
 ✅ Conservative: only auto-fixes unambiguous drift; anything uncertain is logged
   as an issue for human review (never guessed).
+✅ Time-gated: signed trips auto-start ONLY when pickup has arrived (now/past);
+  future pickups wait for a later run at pickup time.
+✅ Cache-aware: invalidates booking/vehicle/invoice caches after each tenant
+  commit so the dashboard reflects changes instantly (no 300s delay).
 
 Jobs:
   1. fix_booking_vehicle_drift  — booking/vehicle status out of sync
-  2. auto_start_signed_trips    — signed at handover but not yet active (retry)
+  2. auto_start_signed_trips    — signed + pickup arrived but not active (retry)
   3. mark_overdue_invoices      — sent/partially_paid past due_date → overdue
 """
 from datetime import datetime, timezone
@@ -16,12 +20,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core import timeutils
 from app.models.bookings import Booking, BookingStatus
 from app.models.contracts import Contract
 from app.models.invoices import Invoice, InvoiceStatus
 from app.models.tenants import Tenant
 from app.models.vehicles import Vehicle, VehicleStatus
 from app.services.booking_lifecycle import BookingLifecycleService
+from app.services.cache import (
+    invalidate_booking_cache, invalidate_vehicle_cache, invalidate_invoice_cache,
+)
 
 
 # ─── 1. BOOKING ↔ VEHICLE DRIFT ────────────────────────────────────────────
@@ -69,9 +77,11 @@ async def fix_booking_vehicle_drift(db: AsyncSession, tenant_id: int, report: di
     return fixed
 
 
-# ─── 2. SIGNED-AT-HANDOVER BUT NOT ACTIVE → AUTO-START (retry) ─────────────
+# ─── 2. SIGNED + PICKUP ARRIVED BUT NOT ACTIVE → AUTO-START (time-gated) ───
 async def auto_start_signed_trips(db: AsyncSession, tenant_id: int) -> int:
     started = 0
+    now = datetime.now(timezone.utc)
+
     stmt = (
         select(Contract).options(selectinload(Contract.booking))
         .join(Booking, Contract.booking_id == Booking.id)
@@ -83,8 +93,18 @@ async def auto_start_signed_trips(db: AsyncSession, tenant_id: int) -> int:
         )
     )
     for contract in (await db.execute(stmt)).scalars().all():
+        booking = contract.booking
+
+        # ✅ TIME GATE: only start when pickup has arrived (now or past).
+        # Future pickups wait for a later run at pickup time.
+        raw_pickup = booking.pickup_at or booking.start_date
+        if raw_pickup is None:
+            continue
+        if timeutils.normalize(raw_pickup) > now:
+            continue  # not yet due — scheduler retries at pickup time
+
         try:
-            await BookingLifecycleService.start_trip_auto(db, contract.booking)
+            await BookingLifecycleService.start_trip_auto(db, booking)
             started += 1
         except Exception:
             continue  # preconditions unmet → operator starts manually
@@ -130,6 +150,12 @@ async def run_reconciliation_job() -> list:
             try:
                 report = await reconcile_tenant(db, tid)
                 await db.commit()
+
+                # ✅ Invalidate caches so the dashboard flips instantly (no 300s delay)
+                await invalidate_booking_cache(tid)
+                await invalidate_vehicle_cache(tid)
+                await invalidate_invoice_cache(tid)
+
                 if report["drift_fixed"] or report["auto_started"] or report["issues"]:
                     print(f"🔁 reconciliation tenant {tid}: {report}")
                 results.append(report)

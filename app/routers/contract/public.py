@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core import timeutils
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.models.bookings import Booking
@@ -14,6 +15,9 @@ from app.models.contracts import Contract, ContractStatus
 from app.models.tenant_profile import TenantProfile
 from app.schemas.contract import ContractSignPayload, PublicContractView
 from app.services.booking_lifecycle import BookingLifecycleService
+from app.services.cache import (
+    invalidate_booking_cache, invalidate_vehicle_cache, invalidate_contract_cache,
+)
 from app.services.contract_pdf import generate_contract_pdf
 from app.services.storage import upload_file
 
@@ -117,7 +121,7 @@ async def sign_contract_public(
 
     # ✅ SIGNING IS ALWAYS AVAILABLE — no time gate.
     # Clients can sign immediately to lock in the booking.
-    # Auto-start is handled separately by the scheduler at pickup time.
+    # Auto-start is handled separately below (now/past) or by the scheduler (future).
 
     # ✅ Signature upload (Cloudinary via storage service)
     signature_b64 = payload.signature.split(",")[1] if "," in payload.signature else payload.signature
@@ -136,15 +140,24 @@ async def sign_contract_public(
     contract.pdf_path = None   # force fresh render with signature
     await db.flush()
 
-    # ✅ Best-effort auto-start attempt. If preconditions aren't met (e.g., vehicle not ready),
-    # the operator can manually start the trip, and the scheduler will retry at pickup time.
-    try:
-        await BookingLifecycleService.start_trip_auto(db, booking)
-    except Exception:
-        pass  # Precondition not met → handled by manual action or scheduler
+    # ✅ AUTO-START: only when pickup time has arrived (now or past).
+    # Future pickups stay pending/confirmed — the scheduler starts them at pickup time.
+    raw_pickup = booking.pickup_at or booking.start_date
+    if raw_pickup is not None:
+        pickup_at = timeutils.normalize(raw_pickup)
+        if pickup_at <= now:
+            try:
+                await BookingLifecycleService.start_trip_auto(db, booking)
+            except Exception:
+                pass  # Precondition not met → operator manual start or scheduler retry
 
     await db.commit()
     await db.refresh(contract)
+
+    # ✅ Invalidate caches so the dashboard flips instantly (no 300s delay)
+    await invalidate_booking_cache(booking.tenant_id)
+    await invalidate_vehicle_cache(booking.tenant_id)
+    await invalidate_contract_cache(booking.tenant_id)
 
     return {
         "message": "Contract signed successfully",

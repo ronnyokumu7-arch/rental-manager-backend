@@ -4,6 +4,7 @@ import os
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.executors.asyncio import AsyncIOExecutor
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 
@@ -111,6 +112,18 @@ def start_scheduler():
         ))
     except Exception as e:
         logger.error(f"❌ Could not import daily_commission: {e}", exc_info=True)
+
+    # ✅ FREQUENT AUTOSTART: runs every 5 minutes to start signed trips at pickup time
+    try:
+        from app.services.daily_scheduler import DailySchedulerService
+        jobs_to_register.append((
+            DailySchedulerService.run_frequent_autostart,
+            IntervalTrigger(minutes=5),
+            "frequent_autostart",
+            "Auto-start signed trips at pickup time (every 5 min)",
+        ))
+    except Exception as e:
+        logger.error(f"❌ Could not import DailySchedulerService: {e}", exc_info=True)
 
     # 3. Register each job independently
     for func, trigger, job_id, name in jobs_to_register:
