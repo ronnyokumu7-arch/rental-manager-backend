@@ -24,7 +24,7 @@ from app.services.booking_lifecycle import BookingLifecycleService
 from app.services.contracts import ensure_contract_for_booking, render_and_store_contract_pdf
 from app.services.invoices import morph_quotation_to_invoice
 from app.services.cache import (
-    invalidate_invoice_cache, invalidate_subscription_cache, invalidate_booking_cache,
+    invalidate_invoice_cache, invalidate_subscription_cache, invalidate_booking_cache, invalidate_contract_cache,
 )
 from app.services.invoice_pdf import generate_invoice_pdf
 from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure engine
@@ -174,6 +174,7 @@ async def accept_quotation_public(
 
     await invalidate_booking_cache(booking.tenant_id)
     await invalidate_invoice_cache(booking.tenant_id)
+    await invalidate_contract_cache(booking.tenant_id)
 
     return await _build_public_view(db, invoice.id)
 

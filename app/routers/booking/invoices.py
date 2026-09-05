@@ -13,7 +13,7 @@ from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.users import User
 from app.services.invoices import create_invoice_for_booking
-from app.services.cache import invalidate_booking_cache
+from app.services.cache import invalidate_booking_cache, invalidate_invoice_cache
 from ._helpers import get_authorized_booking_async
 
 router = APIRouter()
@@ -91,6 +91,8 @@ async def generate_invoice(
     
     # ✅ Invalidate booking cache in case the service updated any booking-related state
     await invalidate_booking_cache(current_user.tenant_id)
+    await invalidate_invoice_cache(current_user.tenant_id)
+    
     
     return {
         "share_url": f"{base_url}/invoice/{invoice.share_token}",
