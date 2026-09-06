@@ -147,11 +147,11 @@ class TenantPolicy(Base, AuditMixin):
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
 
-    # ✅ NEW: which contract block this clause belongs to (String, not DB ENUM —
+    # ✅ Which contract block this clause belongs to (String, not DB ENUM —
     # future categories ship without ALTER TYPE migrations).
     category = Column(String(30), nullable=False, index=True)
 
-    # ✅ NEW: identifies the default clause being overridden.
+    # ✅ Identifies the default clause being overridden.
     # NULL = custom/additional clause (unlimited per category).
     clause_key = Column(String(60), nullable=True)
 
@@ -159,10 +159,6 @@ class TenantPolicy(Base, AuditMixin):
     content = Column(Text, nullable=False)
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     display_order = Column(Integer, nullable=False, default=0)
-
-    # ⚠️ DEPRECATED: legacy column kept nullable for zero-downtime migration.
-    # No longer written or read by the application.
-    section = Column(String(30), nullable=True)
 
     # Relationships
     tenant = relationship("Tenant", back_populates="policies", foreign_keys=[tenant_id])
