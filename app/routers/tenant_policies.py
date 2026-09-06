@@ -22,7 +22,7 @@ from app.services.business_policy import (
     default_document,
     get_effective_policy_document,
 )
-from app.services.cache import invalidate_tenant_cache, invalidate_contract_cache
+from app.services.cache import invalidate_contract_cache
 from app.services.activity_log import ActivityLogService
 
 router = APIRouter(prefix="/policies", tags=["policies"])
@@ -139,9 +139,8 @@ async def create_policy(
         )
     await db.refresh(policy)
 
-    # ✅ Invalidate tenant and contract caches (policies are embedded in contracts)
-    await invalidate_tenant_cache()
-    await invalidate_contract_cache()
+    # ✅ Invalidate contract cache (policies are embedded in contracts)
+    await invalidate_contract_cache(current_user.tenant_id)
 
     # ✅ Log the policy creation
     await ActivityLogService.log(
@@ -173,9 +172,8 @@ async def update_policy(
     await db.commit()
     await db.refresh(policy)
 
-    # ✅ Invalidate caches
-    await invalidate_tenant_cache()
-    await invalidate_contract_cache()
+    # ✅ Invalidate contract cache
+    await invalidate_contract_cache(current_user.tenant_id)
 
     # ✅ Log the policy update
     await ActivityLogService.log(
@@ -201,9 +199,8 @@ async def toggle_policy(
     await db.commit()
     await db.refresh(policy)
 
-    # ✅ Invalidate caches
-    await invalidate_tenant_cache()
-    await invalidate_contract_cache()
+    # ✅ Invalidate contract cache
+    await invalidate_contract_cache(current_user.tenant_id)
 
     # ✅ Log the policy toggle
     await ActivityLogService.log(
@@ -228,9 +225,8 @@ async def delete_policy(
     await db.delete(policy)
     await db.commit()
 
-    # ✅ Invalidate caches
-    await invalidate_tenant_cache()
-    await invalidate_contract_cache()
+    # ✅ Invalidate contract cache
+    await invalidate_contract_cache(current_user.tenant_id)
 
     # ✅ Log the policy deletion
     await ActivityLogService.log(
