@@ -10,6 +10,8 @@ BookingLifecycleService — SINGLE SOURCE OF TRUTH for booking + vehicle transit
   - Commission owned HERE: trial-exempt, rate from PlatformSettings, fires once per trip.
   - ✅ Activity Logs owned HERE: logged BEFORE commit (atomic with the transition,
     relationships still loaded → rich summaries, rows actually persist).
+  - ✅ TRIP-START GATE owned HERE: no handover without a signed contract AND
+    at least a partial payment. Manual start → friendly error; auto-start → silent skip.
 """
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -22,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.bookings import Booking, BookingStatus, CancellationReason
 from app.models.clients import Client, ClientStatus
 from app.models.commission import CommissionEvent, CommissionStatus
+from app.models.contracts import Contract
+from app.models.invoices import Invoice
 from app.models.platform_settings import PlatformSettings
 from app.models.tenants import Tenant
 from app.models.users import User
@@ -92,6 +96,35 @@ class BookingLifecycleService:
         await invalidate_booking_cache(tenant_id)
         await invalidate_vehicle_cache(tenant_id)
 
+    # ─── TRIP-START GATE (signed contract + money in) ──────────────────────
+    @classmethod
+    async def _start_preconditions(cls, db: AsyncSession, booking: Booking) -> list:
+        """
+        ✅ TRIP-START GATE: no vehicle handover without a signed contract and
+        at least a partial payment. Returns unmet preconditions ([] = clear).
+        Manual start surfaces these as friendly errors; auto-start skips silently.
+        """
+        issues = []
+
+        # 1. Contract signed?
+        contract = (await db.execute(
+            select(Contract).where(Contract.booking_id == booking.id)
+        )).scalars().first()
+        signed = bool(contract) and (
+            getattr(contract, "signed_by_client", False) or contract.status == "signed"
+        )
+        if not signed:
+            issues.append("contract")
+
+        # 2. Payment recorded? (partial or full)
+        invoice = (await db.execute(
+            select(Invoice).where(Invoice.booking_id == booking.id)
+        )).scalars().first()
+        if not invoice or float(invoice.amount_paid or 0) <= 0:
+            issues.append("payment")
+
+        return issues
+
     # ─── CONFIRM (client-driven via quotation accept; NOT a dashboard button) ──
     @classmethod
     async def confirm(cls, db: AsyncSession, booking_id: int, current_user: User) -> Booking:
@@ -115,7 +148,7 @@ class BookingLifecycleService:
                 new_status="confirmed",
             )
         except Exception as e:
-            print(f"⚠️ Warning: Failed to log booking confirmation: {e}")
+            print(f"️ Warning: Failed to log booking confirmation: {e}")
 
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
@@ -131,6 +164,19 @@ class BookingLifecycleService:
             return await cls._reload(db, booking.id)          # idempotent
         if booking.status not in (BookingStatus.pending, BookingStatus.confirmed):
             raise HTTPException(status_code=400, detail="Only pending or confirmed bookings can start.")
+
+        # ✅ TRIP-START GATE: friendly, specific blockers (contract → payment order)
+        issues = await cls._start_preconditions(db, booking)
+        if "contract" in issues:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Trip can't start yet — the rental contract hasn't been signed. Send the contract link and wait for the client's signature.",
+            )
+        if "payment" in issues:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Trip can't start yet — no payment has been recorded. Record at least a partial payment (deposit) before handing over the vehicle.",
+            )
 
         # Client must be active
         client = (await db.execute(
@@ -418,6 +464,13 @@ class BookingLifecycleService:
             return booking
         if booking.status not in (BookingStatus.pending, BookingStatus.confirmed):
             raise HTTPException(status_code=400, detail="Booking cannot start.")
+
+        # ✅ TRIP-START GATE: silently skip until signed + paid (scheduler retries)
+        if await cls._start_preconditions(db, booking):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Auto-start skipped: contract not signed or no payment recorded.",
+            )
 
         client = (await db.execute(
             select(Client).where(Client.id == booking.client_id)
