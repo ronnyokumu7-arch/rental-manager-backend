@@ -21,6 +21,7 @@ from app.models.tenants import Tenant
 from app.models.tenant_profile import TenantProfile
 from app.services.browser_pool import browser_pool
 from app.services.storage import get_backend
+from app.services.business_policy import get_effective_policy_document
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 template_env = Environment(
@@ -148,11 +149,10 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
     if contract.signed_by_client:
         signature_data_uri = await resolve_signature_data_uri(contract)
 
-    default_policies = [
-        "FUEL POLICY: Vehicle must be returned with the same fuel level as at pickup. Standard refueling fee applies if returned below level.",
-        "MILEAGE LIMITS: Daily cap is 550 KM. Excess mileage is billed at KES 50/KM.",
-        "LATE RETURNS: Returns over 2 hours late are treated as a new rental day (daily rates apply)."
-    ]
+    # ✅ POLICY DOCUMENT: 3-category merged doc (defaults + overrides + custom clauses)
+    # The merge service returns {category_key: [clause_list]} where each clause has
+    # {title, content, is_custom, ...}. Missing override → default inherited.
+    policy_doc = await get_effective_policy_document(db, contract.tenant_id)
 
     # ✅ PHASE 1: Booking snapshot is the source of truth.
     # Priority:
@@ -205,7 +205,7 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "tenant": tenant,
         "tenant_profile": tenant_profile,
         "signature_data_uri": signature_data_uri,
-        "policies": default_policies,
+        "policy_doc": policy_doc,  # ✅ 3-category merged document
         "daily_rate": daily_rate,
         "driver_fees": driver_fees_breakdown,
     }
