@@ -517,3 +517,52 @@ class BookingLifecycleService:
 
         await db.flush()
         return booking
+
+
+    @classmethod
+    async def end_trip_auto(cls, db: AsyncSession, booking: Booking) -> Booking:
+        """
+        ✅ AUTO-END: system-triggered completion after the 2-hour grace window.
+        FLUSH only — caller (scheduler job) commits atomically.
+        Frees the vehicle and flags mileage for operator logging.
+        """
+        if booking.status == BookingStatus.completed:
+            return booking  # idempotent
+        if booking.status != BookingStatus.active:
+            raise HTTPException(status_code=400, detail="Only active trips can be auto-ended.")
+
+        vehicle = await cls._load_vehicle_locked(db, booking.vehicle_id, booking.tenant_id)
+
+        booking.status = BookingStatus.completed
+        booking.actual_return_at = datetime.now(timezone.utc)
+
+        # ✅ Vehicle returns to the rentable pool; mileage flagged for logging
+        vehicle.status = VehicleStatus.available
+        vehicle.mileage_due = True
+
+        try:
+            await VehicleActivityLogger.on_returned(
+                db=db,
+                tenant_id=booking.tenant_id,
+                user_id=None,
+                vehicle=vehicle,
+                booking_number=booking.booking_number,
+                client_name=_client_name(booking),
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log auto vehicle return: {e}")
+
+        try:
+            await BookingActivityLogger.on_status_changed(
+                db=db,
+                tenant_id=booking.tenant_id,
+                user_id=None,
+                booking=booking,
+                old_status="active",
+                new_status="completed",
+            )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to log auto booking completion: {e}")
+
+        await db.flush()
+        return booking

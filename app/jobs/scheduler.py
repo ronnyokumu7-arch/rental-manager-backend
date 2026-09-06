@@ -125,6 +125,21 @@ def start_scheduler():
     except Exception as e:
         logger.error(f"❌ Could not import DailySchedulerService: {e}", exc_info=True)
 
+    # ✅ AUTO-END TRIPS: runs every 10 minutes to complete trips past the 2-hour grace window.
+    # Business-rule faithful: uses COALESCE(scheduled_return_at, end_date) as the
+    # effective return instant (exact wall-clock time, no 23:59/00:00 assumptions).
+    # Extensions shift these instants automatically, so extended trips are respected.
+    try:
+        from app.jobs.booking_jobs import run_auto_end_trips
+        jobs_to_register.append((
+            run_auto_end_trips,
+            IntervalTrigger(minutes=10),
+            "auto_end_trips",
+            "Auto-end trips past 2-hour grace period (every 10 min)",
+        ))
+    except Exception as e:
+        logger.error(f"❌ Could not import run_auto_end_trips: {e}", exc_info=True)
+
     # 3. Register each job independently
     for func, trigger, job_id, name in jobs_to_register:
         _register_job(func, trigger, job_id, name)
