@@ -19,9 +19,12 @@ AUTO_END_GRACE_HOURS = 2  # ✅ Operator buffer to extend / follow up before aut
 
 async def run_booking_auto_archive():
     """
-    Auto-archives old bookings.
+    Auto-archives old bookings (completed or cancelled, including no-shows).
     Uses a Redis distributed lock to prevent duplicate execution across multiple workers/pods.
     Fail-soft: if Redis is unavailable, the job skips with a warning (does not crash).
+
+    ✅ No-show bookings are archived automatically — they have status=cancelled
+    with cancellation_reason="no_show", so they're captured by the cancelled filter.
     """
     redis_client = await get_redis()
     if redis_client is None:
@@ -54,10 +57,11 @@ async def run_booking_auto_archive():
                 now = datetime.now(timezone.utc)
                 cutoff = now - timedelta(days=ARCHIVE_AFTER_DAYS)
 
+                # ✅ Only terminal statuses — no-shows are status=cancelled
+                # with cancellation_reason="no_show", so they're included here.
                 archivable_statuses = [
                     BookingStatus.completed,
                     BookingStatus.cancelled,
-                    BookingStatus.no_show,
                 ]
 
                 stmt = select(Booking).where(
