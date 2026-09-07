@@ -1,10 +1,10 @@
-# app/routers/tenants/core.py
+# app/routers/tenant/core.py
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
@@ -35,6 +35,30 @@ def _clean_string(value: str | None) -> str | None:
         cleaned = value.strip()
         return cleaned if cleaned else None
     return None
+
+
+# ---------------------------------------------------------------------------
+# ✅ EFFECTIVE-STATUS PREDICATES — server-side mirror of TenantOut.effective_status.
+# One derivation, two projections (SQL for scoping, Pydantic for payloads).
+# ---------------------------------------------------------------------------
+_VAULTED = Tenant.is_archived == True  # noqa: E712
+_SUSPENDED = and_(
+    Tenant.is_archived == False,  # noqa: E712
+    or_(
+        Tenant.is_active == False,  # noqa: E712
+        Tenant.suspended_at.isnot(None),
+        Tenant.subscription_status == TenantSubscriptionStatus.suspended,
+    ),
+)
+_HEALTHY = and_(Tenant.is_archived == False, Tenant.suspended_at.is_(None), Tenant.is_active == True)  # noqa: E712
+_ATTENTION = and_(
+    _HEALTHY,
+    Tenant.subscription_status.in_([
+        TenantSubscriptionStatus.past_due,
+        TenantSubscriptionStatus.pending_verification,
+        TenantSubscriptionStatus.cancelled,
+    ]),
+)
 
 
 @router.post("/", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
@@ -178,13 +202,10 @@ async def create_tenant(
         await db.commit()
 
         # ✅ 6. Eager re-fetch so Pydantic serialization can NEVER lazy-load
-        # (this replaces the old db.refresh(tenant.profile) which could raise
-        #  MissingGreenlet AFTER the commit → the "tenant exists but UI shows error" bug)
         stmt = select(Tenant).options(selectinload(Tenant.profile)).where(Tenant.id == tenant.id)
         tenant = (await db.execute(stmt)).scalars().first()
 
         # ✅ 7. Post-commit side effects must NEVER fail the response.
-        # The tenant already exists — a cache/log failure is a warning, not a 500.
         try:
             await invalidate_tenant_cache()
         except Exception as cache_err:
@@ -207,7 +228,6 @@ async def create_tenant(
             )
         except Exception as email_err:
             print(f"⚠️ Welcome email failed (tenant created but email not sent): {email_err}")
-            # Don't rollback - tenant was successfully created, email is just a notification
 
         return tenant
 
@@ -233,7 +253,10 @@ async def list_tenants(
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
     search: Optional[str] = Query(None, description="Search by name or KRA PIN"),
-    status_filter: Optional[str] = Query(None, alias="status", description="Filter by ACTIVE or SUSPENDED"),
+    status_filter: Optional[str] = Query(
+        None, alias="status",
+        description="ACTIVE | SUSPENDED | VAULTED | ATTENTION (effective-status semantics)",
+    ),
     show_archived: bool = Query(False, description="Include archived/vaulted tenants"),
     db: AsyncSession = Depends(get_db),
     current_user: User = super_admin_only,
@@ -262,14 +285,19 @@ async def list_tenants(
         ).subquery()
         stmt = stmt.where(Tenant.id.in_(search_subq))
 
-    # Multi-tenancy & Vault Enforcement
+    # ✅ Multi-tenancy & Vault Enforcement
     if not show_archived:
-        stmt = stmt.where(Tenant.is_archived == False)
+        stmt = stmt.where(Tenant.is_archived == False)  # noqa: E712
 
+    # ✅ EFFECTIVE-STATUS SCOPING — mirrors TenantOut.effective_status exactly
     if status_filter == "ACTIVE":
-        stmt = stmt.where(Tenant.is_active == True)
+        stmt = stmt.where(_HEALTHY)
     elif status_filter == "SUSPENDED":
-        stmt = stmt.where(Tenant.is_active == False)
+        stmt = stmt.where(_SUSPENDED)
+    elif status_filter in ("VAULTED", "ARCHIVED"):
+        stmt = stmt.where(_VAULTED)
+    elif status_filter == "ATTENTION":
+        stmt = stmt.where(_ATTENTION)
 
     # ✅ Eager load profile using selectinload (required for async)
     stmt = stmt.options(selectinload(Tenant.profile))
@@ -334,12 +362,24 @@ async def update_tenant(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
 
     update_data = payload.model_dump(exclude_unset=True)
+
+    # ✅ CONTRACT ENFORCEMENT: lifecycle flags are owned EXCLUSIVELY by the
+    # lifecycle endpoints (/suspend /activate /archive /restore). Any attempt
+    # to flip them through the generic update is rejected loudly.
+    forbidden = {"is_active", "is_archived"} & set(update_data.keys())
+    if forbidden:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Lifecycle fields {sorted(forbidden)} cannot be changed here. "
+                "Use POST /tenants/{id}/suspend | /activate | /archive | /restore instead."
+            ),
+        )
+
     for field, value in update_data.items():
         setattr(tenant, field, value)
 
     # ✅ FIXED: Sync TenantProfile.company_name with Tenant.name (same commit).
-    # Profile is already eager-loaded via selectinload above.
-    # Keeps PDFs / public views / topbar consistent when a super admin renames a tenant.
     if "name" in update_data and tenant.profile:
         tenant.profile.company_name = tenant.name
 

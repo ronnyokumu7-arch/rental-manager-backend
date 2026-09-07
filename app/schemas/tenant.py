@@ -3,7 +3,7 @@ import enum
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 from app.models.tenants import PaymentMethodType, SubscriptionStatus
 
@@ -28,22 +28,22 @@ class TenantBase(BaseModel):
 
 class TenantCreate(TenantBase):
     """Maps directly to the 4-step Onboarding Wizard payload."""
-    
+
     # Denormalized Admin Snapshot
     admin_name: str = Field(..., min_length=2, max_length=150, description="Initial Tenant Admin full name")
     admin_email: EmailStr = Field(..., description="Initial Tenant Admin email (used for auth & display)")
     admin_phone: Optional[str] = Field(None, max_length=30, description="Initial Tenant Admin direct phone")
     password: str = Field(..., min_length=8, description="Initial Tenant Admin password (min 8 chars)")
-    
+
     # Core Identity (Step 1)
     is_corporate: bool = Field(default=False, description="Whether agency is registered corporate entity")
     business_location: Optional[str] = Field(None, max_length=255, description="Physical office or yard address")
-    
+
     # Compliance & Locale (Step 2)
     kra_pin: Optional[str] = Field(None, max_length=20, description="KRA PIN for tax invoicing in Kenya")
     currency: str = Field(default="KES", max_length=10, description="Default operational currency")
     time_zone: str = Field(default="Africa/Nairobi", max_length=50, description="Tenant primary time zone")
-    
+
     # Subscription & Billing (Step 3)
     plan: str = Field(default="free_trial", description="Initial plan tier")
     billing_cycle: str = Field(default="monthly", description="Monthly or annual billing preference")
@@ -65,27 +65,34 @@ class TenantCreate(TenantBase):
 
 
 class TenantUpdate(BaseModel):
-    """Super Admin update for specific tenant configuration."""
+    """
+    Super Admin update for tenant CONFIGURATION only.
+
+    ⚠️ CONTRACT RULE: lifecycle transitions (suspend / unsuspend / vault / restore)
+    must NEVER flow through this schema. They own dedicated endpoints that
+    capture reason, timestamp, and audit trail. The lifecycle flags below are
+    retained for backend compatibility only — no UI may bind to them.
+    """
     name: Optional[str] = Field(None, min_length=2, max_length=150)
     email: Optional[EmailStr] = None
     phone_number: Optional[str] = Field(None, max_length=30)
-    
+
     # Allow updating the denormalized admin snapshot
     admin_name: Optional[str] = Field(None, min_length=2, max_length=150)
     admin_email: Optional[EmailStr] = None
     admin_phone: Optional[str] = Field(None, max_length=30)
-    
-    # Lifecycle Management
+
+    # ⚠️ DEPRECATED for UI use — lifecycle owned by dedicated endpoints
     is_active: Optional[bool] = None
     is_archived: Optional[bool] = None
-    
+
     # Subscription Management
     plan: Optional[str] = None
     subscription_status: Optional[SubscriptionStatus] = None
     billing_cycle: Optional[str] = Field(None, description="monthly | annual")
     auto_renew: Optional[bool] = None
     custom_vehicle_limit: Optional[int] = Field(None, description="Super Admin manual capacity override")
-    
+
     # Payment Gateway Updates
     default_payment_method: Optional[PaymentMethodType] = None
     stripe_customer_id: Optional[str] = None
@@ -99,6 +106,30 @@ class TenantUpdate(BaseModel):
             cleaned = v.strip()
             return cleaned if cleaned else None
         return v
+
+
+# ---------------------------------------------------------------------------
+# ✅ Lifecycle Action Payloads (dedicated endpoints only)
+# ---------------------------------------------------------------------------
+
+class TenantSuspendPayload(BaseModel):
+    """Manual super-admin suspension. Reason is mandatory and audited."""
+    reason: str = Field(..., min_length=10, max_length=500, description="Justification recorded on the tenant and shown on any restore")
+
+
+class TenantUnsuspendPayload(BaseModel):
+    """Reinstatement after manual suspension."""
+    note: Optional[str] = Field(None, max_length=500, description="Optional reinstatement note for the audit trail")
+
+
+class TenantVaultPayload(BaseModel):
+    """Archive into the Vault. Reason mandatory — vaulting is near-terminal."""
+    reason: str = Field(..., min_length=10, max_length=500, description="Why this agency is being vaulted")
+
+
+class TenantRestorePayload(BaseModel):
+    """Restore from the Vault."""
+    note: Optional[str] = Field(None, max_length=500, description="Optional restore note for the audit trail")
 
 
 # ---------------------------------------------------------------------------
@@ -155,43 +186,68 @@ class TenantProfileOut(BaseModel):
 class TenantOut(TenantBase):
     """Unified output for Super Admin table AND tenant self-service views."""
     id: int
-    
+
     # Agency Owner Relational Link
     owner_id: Optional[int] = Field(None, description="ID of the primary Agency Owner user")
-    
+
     # Denormalized Admin Snapshot
     admin_name: Optional[str] = None
     admin_email: Optional[str] = None
     admin_phone: Optional[str] = None
-    
+
     # Lifecycle & Multi-Tenancy
     is_active: bool
     is_archived: bool = False
     suspended_at: Optional[datetime] = None
     suspension_reason: Optional[str] = None
-    
+
     # Subscription & Billing
     plan: str
     subscription_status: SubscriptionStatus
     billing_cycle: str
     auto_renew: bool
     custom_vehicle_limit: Optional[int] = None
-    
+
     trial_ends_at: Optional[datetime] = None
     subscription_ends_at: Optional[datetime] = None
     grace_period_ends_at: Optional[datetime] = None
-    
+
     # Payment Gateway
     default_payment_method: Optional[PaymentMethodType] = None
     stripe_customer_id: Optional[str] = None
     paypal_payer_id: Optional[str] = None
     payment_metadata: Optional[Dict[str, Any]] = None
-    
+
     # Nested Profile Data
     profile: Optional[TenantProfileOut] = None
-    
+
     # Timestamps
     created_at: datetime
     updated_at: datetime
+
+    # ✅ SINGLE SOURCE OF TRUTH for display state.
+    # Two suspension CAUSES exist (manual lockout vs billing expiry) but exactly
+    # ONE presentation state. Stats, directory filters, badges, and action
+    # buttons must all key off this field — never off raw flags independently.
+    effective_status: str = Field("active", description="vaulted | suspended | trial | active | attention")
+
+    @model_validator(mode="after")
+    def _compute_effective_status(self):
+        if self.is_archived:
+            self.effective_status = "vaulted"
+        elif self.suspended_at is not None or not self.is_active:
+            # Account-level suspension (manual) wins over billing state
+            self.effective_status = "suspended"
+        elif self.subscription_status == SubscriptionStatus.suspended:
+            # Billing-level suspension (subscription expiry)
+            self.effective_status = "suspended"
+        elif self.subscription_status in (SubscriptionStatus.trial, SubscriptionStatus.starter_trial):
+            self.effective_status = "trial"
+        elif self.subscription_status == SubscriptionStatus.active:
+            self.effective_status = "active"
+        else:
+            # past_due / pending_verification / cancelled
+            self.effective_status = "attention"
+        return self
 
     model_config = {"from_attributes": True}

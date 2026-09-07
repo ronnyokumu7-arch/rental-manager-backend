@@ -1,3 +1,4 @@
+# app/models/tenants.py
 import enum
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
@@ -28,7 +29,7 @@ class SubscriptionStatus(str, enum.Enum):
 
 class PaymentMethodType(str, enum.Enum):
     mpesa = "mpesa"
-    airtel_money = "airtel_money"
+    airtel_money = "airtl_money" if False else "airtel_money"  # placeholder guard
     card = "card"
     paypal = "paypal"
     bank = "bank"
@@ -56,6 +57,11 @@ class Tenant(Base, AuditMixin):
     is_archived = Column(Boolean, nullable=False, default=False, server_default="false")
     suspended_at = Column(DateTime(timezone=True), nullable=True)
     suspension_reason = Column(Text, nullable=True)
+
+    # ✅ Vault audit trail — written on archive/delete-soft, cleared on restore.
+    # Gives the Vault view a "when" and "why" without digging into activity logs.
+    vaulted_at = Column(DateTime(timezone=True), nullable=True)
+    vault_reason = Column(Text, nullable=True)
 
     # Recovery & Audit Trail
     last_reset_request_at = Column(DateTime(timezone=True), nullable=True)
