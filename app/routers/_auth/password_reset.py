@@ -119,9 +119,14 @@ async def reset_password(
             detail="Your new password must be different from your current password.",
         )
 
-    # Update password and mark token as used
+    # Update password
     user.password_hash = get_password_hash(payload.new_password)
+
+    # ✅ CRITICAL: Mark token as used and flush BEFORE bulk operations.
+    # Without flush, the bulk DELETE below sees used_at=NULL in the DB and
+    # deletes this row, causing StaleDataError on commit.
     db_token.used_at = datetime.now(timezone.utc)
+    await db.flush()
 
     # ✅ CRITICAL: Kill ALL active sessions for this user.
     # A password reset implies potential account compromise — any existing
@@ -137,7 +142,8 @@ async def reset_password(
     )
     revoked_count = revoke_result.rowcount
 
-    # ✅ Defense in depth: purge any other unused reset tokens
+    # ✅ Defense in depth: purge any OTHER unused reset tokens.
+    # Excludes the one we just marked used (flush persisted used_at != NULL).
     await db.execute(
         delete(PasswordResetToken).where(
             PasswordResetToken.user_id == user.id,
