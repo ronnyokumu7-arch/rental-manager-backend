@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     password_reset_rate_limit: int = 3  # Max attempts per window
     password_reset_rate_window: int = 60  # Window in seconds
     
+    # ✅ NEW: Password reset token expiry (was hardcoded 15 min in two places;
+    # now configurable and defaulted to 60 min for email-based flows)
+    password_reset_token_expire_minutes: int = 60
+    
     # General API endpoints: more lenient
     api_rate_limit: int = 100  # Max requests per window
     api_rate_window: int = 60  # Window in seconds
@@ -374,6 +378,17 @@ class Settings(BaseSettings):
             warnings.warn("refresh_token_expire_days is very long (> 1 year), security risk")
         return v
     
+    # ✅ NEW: Password reset token expiry validator
+    @field_validator("password_reset_token_expire_minutes")
+    @classmethod
+    def validate_password_reset_token_expiry(cls, v: int) -> int:
+        """Ensure password reset token expiry is reasonable."""
+        if v < 15:
+            warnings.warn("password_reset_token_expire_minutes is very short (< 15 min), may cause user frustration")
+        if v > 1440:  # More than 24 hours
+            warnings.warn("password_reset_token_expire_minutes is very long (> 24 hours), security risk")
+        return v
+    
     @field_validator("min_password_length")
     @classmethod
     def validate_min_password_length(cls, v: int) -> int:
@@ -496,6 +511,7 @@ def get_security_config_summary() -> dict:
         "token_expiry": {
             "access_token_minutes": settings.access_token_expire_minutes,
             "refresh_token_days": settings.refresh_token_expire_days,
+            "password_reset_token_minutes": settings.password_reset_token_expire_minutes,
         },
         "file_upload": {
             "max_size_bytes": settings.max_upload_size,

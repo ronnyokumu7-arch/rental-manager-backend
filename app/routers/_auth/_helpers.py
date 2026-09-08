@@ -1,3 +1,4 @@
+# app/routers/auth/_helpers.py
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -13,7 +14,10 @@ from app.models.refresh_tokens import RefreshToken
 from app.models.users import User
 
 settings = get_settings()
-RESET_TOKEN_EXPIRE_MINUTES = 15
+
+# ✅ SINGLE SOURCE OF TRUTH: reset token TTL now comes from config
+# (was hardcoded 15 min; default is now 60 min, env-overridable)
+RESET_TOKEN_EXPIRE_MINUTES = settings.password_reset_token_expire_minutes
 
 
 async def generate_refresh_token(
@@ -73,7 +77,8 @@ async def get_valid_reset_token_or_400(token: str, db: AsyncSession) -> Password
     """
     Helper to validate token existence, usage status, and expiration.
     
-    ✅ SECURITY: Returns generic error messages to prevent token enumeration.
+    ✅ SECURITY: Generic message for missing/used tokens (prevents enumeration).
+    ✅ SECURITY: Specific message for expiry (helps UX, leaks no user info).
     ✅ SECURITY: Hash comparison means DB leaks don't expose usable tokens.
     """
     token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -86,18 +91,20 @@ async def get_valid_reset_token_or_400(token: str, db: AsyncSession) -> Password
     db_token = result.scalar_one_or_none()
 
     if not db_token:
+        # Token doesn't exist or was already used — keep generic (anti-enumeration)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset token",
+            detail="Invalid or expired reset link. Please request a new one.",
         )
 
     now = datetime.now(timezone.utc)
     expires_at = db_token.expires_at if db_token.expires_at.tzinfo else db_token.expires_at.replace(tzinfo=timezone.utc)
 
     if now > expires_at:
+        # Expired — safe to be specific (reveals nothing about the user)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Reset token has expired. Please request a new one.",
+            detail="This reset link has expired. Please request a new one.",
         )
     return db_token
 
@@ -116,6 +123,6 @@ async def get_active_user_or_400(user_id: int, db: AsyncSession) -> User:
     if not user or not user.is_active or user.is_suspended:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset token",
+            detail="Invalid or expired reset link. Please request a new one.",
         )
     return user

@@ -1,3 +1,4 @@
+# app/routers/auth/password_reset.py
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -16,11 +17,16 @@ from app.models.users import User
 from app.schemas.auth import ForgotPasswordRequest, ResetPasswordRequest
 from app.services.activity_log import ActivityLogService
 from app.services.email import send_password_reset_email, send_password_reset_success
-from ._helpers import get_active_user_or_400, get_valid_reset_token_or_400
+# ✅ SINGLE SOURCE OF TRUTH: TTL imported from _helpers (backed by config),
+# no local hardcoded copy
+from ._helpers import (
+    RESET_TOKEN_EXPIRE_MINUTES,
+    get_active_user_or_400,
+    get_valid_reset_token_or_400,
+)
 
 router = APIRouter()
 settings = get_settings()
-RESET_TOKEN_EXPIRE_MINUTES = 15
 
 
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)
@@ -38,6 +44,7 @@ async def forgot_password(
     - Generic response prevents user enumeration
     - Deletes any existing unused tokens before creating new one
     - Token is hashed before storage (SHA-256)
+    - ✅ TTL is configurable (default 60 min) via password_reset_token_expire_minutes
     """
     # ✅ Schema validation ensures email is valid format
     email = normalize_email(payload.email)
@@ -109,7 +116,7 @@ async def reset_password(
     if verify_password(payload.new_password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be different from your current password.",
+            detail="Your new password must be different from your current password.",
         )
 
     # Update password and mark token as used
