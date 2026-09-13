@@ -71,6 +71,7 @@ async def set_rls_context(
     is_super_admin: bool = False,
     is_system: bool = False,
     public_token: str | None = None,
+    public_token_hash: str | None = None,
     public_user_id: int | None = None,
     public_email: str | None = None,
 ) -> None:
@@ -81,6 +82,7 @@ async def set_rls_context(
         "app.is_super_admin": "true" if is_super_admin else "false",
         "app.is_system": "true" if is_system else "false",
         "app.public_token": "" if public_token is None else public_token,
+        "app.public_token_hash": "" if public_token_hash is None else public_token_hash,
         "app.public_user_id": "" if public_user_id is None else str(public_user_id),
         "app.public_email": "" if public_email is None else public_email,
     }

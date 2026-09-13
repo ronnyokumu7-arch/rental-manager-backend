@@ -15,9 +15,9 @@ from app.core.security import (
     normalize_email,
     verify_password,
 )
-from app.db.database import get_db
+from app.db.database import get_db, set_rls_context
 from app.models.refresh_tokens import RefreshToken
-from app.models.users import User
+from app.models.users import User, UserRole
 from app.schemas.auth import LoginRequest, TokenOut
 from ._helpers import generate_refresh_token
 
@@ -53,6 +53,7 @@ def _as_utc(dt: datetime) -> datetime:
 
 async def _load_record(db: AsyncSession, raw: str) -> Optional[RefreshToken]:
     token_hash = hashlib.sha256(raw.encode()).hexdigest()
+    await set_rls_context(db, public_token_hash=token_hash)
     stmt = select(RefreshToken).where(RefreshToken.token_hash == token_hash)
     return (await db.execute(stmt)).scalar_one_or_none()
 
@@ -70,6 +71,7 @@ async def login(
     (Unchanged — login-side eviction policy stays as designed.)
     """
     email = normalize_email(credentials.email)
+    await set_rls_context(db, public_email=email)
     
     stmt = select(User).where(func.lower(User.email) == email)
     result = await db.execute(stmt)
@@ -104,6 +106,13 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your account has been suspended. Please contact your administrator.",
         )
+
+    await set_rls_context(
+        db,
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        is_super_admin=user.role == UserRole.super_admin,
+    )
 
     if not user.password_hash.startswith("$2"):
         user.password_hash = get_password_hash(credentials.password)
@@ -203,6 +212,12 @@ async def refresh_token(
             detail="Invalid or expired refresh token",
         )
 
+    await set_rls_context(
+        db,
+        user_id=chosen.user_id,
+        public_user_id=chosen.user_id,
+    )
+
     # User status re-check
     user_stmt = select(User).where(User.id == chosen.user_id)
     user_res = await db.execute(user_stmt)
@@ -217,6 +232,13 @@ async def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account is inactive or suspended",
         )
+
+    await set_rls_context(
+        db,
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        is_super_admin=user.role == UserRole.super_admin,
+    )
 
     # ROTATION: revoke the consumed token (idempotent if already revoked via grace)
     if not chosen.revoked:
