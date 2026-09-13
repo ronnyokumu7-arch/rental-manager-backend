@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core import timeutils
 from app.core.limiter import limiter
-from app.db.database import get_db
+from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.models.bookings import Booking
 from app.models.contracts import Contract, ContractStatus
 from app.models.tenant_profile import TenantProfile
@@ -35,6 +35,15 @@ async def _load_booking_locked(db, booking_id: int) -> Booking:
 @router.get("/public/{token}", response_model=PublicContractView)
 @limiter.limit("30/minute")
 async def view_contract_public(request: Request, token: str, db=Depends(get_db)):
+    await set_public_rls_context(db, token)
+    contract = (await db.execute(
+        select(Contract).where(Contract.share_token == token)
+    )).scalars().first()
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="This contract link has expired.")
+    await set_rls_context(db, tenant_id=contract.tenant_id)
     stmt = select(Contract).options(
         selectinload(Contract.booking).selectinload(Booking.client),
         selectinload(Contract.booking).selectinload(Booking.vehicle),
@@ -43,10 +52,6 @@ async def view_contract_public(request: Request, token: str, db=Depends(get_db))
     ).where(Contract.share_token == token)
 
     contract = (await db.execute(stmt)).scalars().unique().first()
-    if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found")
-    if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="This contract link has expired.")
 
     booking = contract.booking
     driver = booking.driver if booking else None
@@ -86,12 +91,14 @@ async def view_contract_public(request: Request, token: str, db=Depends(get_db))
 @router.get("/public/{token}/pdf")
 @limiter.limit("15/minute")
 async def download_contract_pdf_public(request: Request, token: str, db=Depends(get_db)):
+    await set_public_rls_context(db, token)
     stmt = select(Contract).where(Contract.share_token == token)
     contract = (await db.execute(stmt)).scalars().first()
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
     if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="This contract link has expired.")
+    await set_rls_context(db, tenant_id=contract.tenant_id)
 
     pdf_bytes = await generate_contract_pdf(contract, db)
     return Response(
@@ -105,12 +112,14 @@ async def download_contract_pdf_public(request: Request, token: str, db=Depends(
 async def sign_contract_public(
     request: Request, token: str, payload: ContractSignPayload, db=Depends(get_db),
 ):
+    await set_public_rls_context(db, token)
     stmt = select(Contract).where(Contract.share_token == token)
     contract = (await db.execute(stmt)).scalars().first()
     if not contract:
         raise HTTPException(status_code=404, detail="Contract not found")
     if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="This contract link has expired.")
+    await set_rls_context(db, tenant_id=contract.tenant_id)
     if contract.status == ContractStatus.void:
         raise HTTPException(status_code=400, detail="This contract has been voided")
     if contract.signed_by_client:

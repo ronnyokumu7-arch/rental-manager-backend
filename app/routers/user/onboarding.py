@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.models.tenants import Tenant
 
-from app.db.database import get_db
+from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.core.limiter import limiter
 from app.core.security import get_password_hash, normalize_email
 from app.models.users import User
@@ -59,12 +59,14 @@ async def accept_invite(
     Allows a user to accept an invite by providing their token and setting a password.
     This flips is_onboarded to True and clears the invite token.
     """
+    await set_public_rls_context(db, payload.invite_token)
     # 1. Find user by token
     stmt = select(User).where(User.invite_token == payload.invite_token)
     user = (await db.execute(stmt)).scalars().first()
     
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid invite token")
+    await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
 
     # 2. Check expiration
     if user.invite_expires_at and user.invite_expires_at < datetime.now(timezone.utc):
@@ -125,6 +127,7 @@ async def accept_invite(
     # ✅ Invalidate cache and log the onboarding completion
     if user.tenant_id:
         await invalidate_user_cache(user.tenant_id)
+    await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
         
     # Note: user_id is set to user.id here because the user is performing this action on their own account
     await ActivityLogService.log(
@@ -144,6 +147,13 @@ async def preview_user_invite(
     db: AsyncSession = Depends(get_db),
 ):
     """✅ Branding & role preview for the public user onboarding page. Dead links → 410 Gone."""
+    await set_public_rls_context(db, token)
+    user = (await db.execute(
+        select(User).where(User.invite_token == token)
+    )).scalars().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
     stmt = select(User).options(
         selectinload(User.tenant).selectinload(Tenant.profile)
     ).where(User.invite_token == token)

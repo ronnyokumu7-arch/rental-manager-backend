@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.limiter import limiter
-from app.db.database import get_db
+from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.models.bookings import Booking, BookingStatus, CancellationReason
 from app.models.drivers import Driver
 from app.models.invoices import Invoice, InvoiceStatus
@@ -43,12 +43,14 @@ class ReschedulePayload(BaseModel):
 
 
 async def _load_invoice_by_token(db: AsyncSession, token: str) -> Invoice:
+    await set_public_rls_context(db, token)
     stmt = select(Invoice).where(Invoice.share_token == token)
     invoice = (await db.execute(stmt)).scalars().first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     if invoice.share_token_expires_at and invoice.share_token_expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="This link has expired")
+    await set_rls_context(db, tenant_id=invoice.tenant_id)
     return invoice
 
 
@@ -60,8 +62,19 @@ async def _load_booking_locked(db: AsyncSession, booking_id: int) -> Booking:
     return booking
 
 
-async def _build_public_view(db: AsyncSession, invoice_id: int) -> PublicInvoiceView:
+async def _build_public_view(
+    db: AsyncSession, invoice_id: int, token: str | None = None
+) -> PublicInvoiceView:
     """✅ Single source of truth for the public invoice JSON shape."""
+    if token is not None:
+        await set_public_rls_context(db, token)
+        token_invoice = (await db.execute(
+            select(Invoice).where(Invoice.share_token == token)
+        )).scalars().first()
+        if not token_invoice or token_invoice.id != invoice_id:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        await set_rls_context(db, tenant_id=token_invoice.tenant_id)
+
     stmt = select(Invoice).options(
         selectinload(Invoice.booking).selectinload(Booking.client),
         selectinload(Invoice.booking).selectinload(Booking.vehicle),
@@ -176,7 +189,7 @@ async def accept_quotation_public(
     await invalidate_invoice_cache(booking.tenant_id)
     await invalidate_contract_cache(booking.tenant_id)
 
-    return await _build_public_view(db, invoice.id)
+    return await _build_public_view(db, invoice.id, token)
 
 
 @router.post("/public/{token}/cancel", response_model=PublicInvoiceView)
@@ -191,7 +204,7 @@ async def cancel_booking_public(
     booking = await _load_booking_locked(db, invoice.booking_id)
 
     if booking.status == BookingStatus.cancelled:
-        return await _build_public_view(db, invoice.id)   # idempotent
+        return await _build_public_view(db, invoice.id, token)   # idempotent
     if booking.status == BookingStatus.completed:
         raise HTTPException(status_code=400, detail="Cannot cancel a completed booking")
 
@@ -203,7 +216,7 @@ async def cancel_booking_public(
     await invalidate_booking_cache(booking.tenant_id)
     await invalidate_invoice_cache(booking.tenant_id)
 
-    return await _build_public_view(db, invoice.id)
+    return await _build_public_view(db, invoice.id, token)
 
 
 @router.post("/public/{token}/reschedule", response_model=PublicInvoiceView)
@@ -280,7 +293,7 @@ async def reschedule_booking_public(
     await invalidate_booking_cache(booking.tenant_id)
     await invalidate_invoice_cache(booking.tenant_id)
 
-    return await _build_public_view(db, invoice.id)
+    return await _build_public_view(db, invoice.id, token)
 
 
 # =============================================================================
@@ -292,7 +305,7 @@ async def view_invoice_public(request: Request, token: str, db: AsyncSession = D
     invoice = await _load_invoice_by_token(db, token)
     if invoice.status == InvoiceStatus.void:
         raise HTTPException(status_code=400, detail="This invoice has been voided")
-    return await _build_public_view(db, invoice.id)
+    return await _build_public_view(db, invoice.id, token)
 
 
 @router.post("/public/{token}/pay", response_model=PublicInvoiceView)

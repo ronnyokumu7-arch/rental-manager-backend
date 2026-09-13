@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.redis_client import get_redis
-from app.db.database import AsyncSessionLocal
+from app.db.database import AsyncSessionLocal, set_system_rls_context
 from app.models.subscriptions import Subscription, SubscriptionStatus, PlanType, BillingCycle
 from app.models.tenants import Tenant
 from app.services.cache import invalidate_subscription_cache
@@ -57,6 +57,7 @@ async def run_subscription_lifecycle():
     try:
         async with AsyncSessionLocal() as db:
             try:
+                await set_system_rls_context(db)
                 now = datetime.now(timezone.utc)
 
                 # 3. Await all async helper functions

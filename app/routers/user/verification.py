@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_db
+from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.core.config import get_settings
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -104,6 +104,7 @@ async def send_verification(
     # ✅ Invalidate cache and log the verification request
     if user.tenant_id:
         await invalidate_user_cache(user.tenant_id)
+    await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
     await ActivityLogService.log(
         db=db, tenant_id=user.tenant_id or 0, user_id=current_user.id,
         action="send_verification_request", target_type="user", target_id=user.id,
@@ -135,12 +136,14 @@ async def verify_token(
     """
     Public endpoint called by the user clicking the link in their email or WhatsApp.
     """
+    await set_public_rls_context(db, payload.token)
     # 1. Find user by token
     stmt = select(User).where(User.invite_token == payload.token)
     user = (await db.execute(stmt)).scalars().first()
     
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid or expired verification link.")
+    await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
 
     # 2. Check expiration
     if user.invite_expires_at and user.invite_expires_at < datetime.now(timezone.utc):

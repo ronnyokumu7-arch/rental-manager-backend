@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.limiter import limiter
 from app.core.security import get_password_hash, normalize_email, verify_password
-from app.db.database import get_db
+from app.db.database import get_db, set_rls_context
 from app.models.password_reset import PasswordResetToken
 from app.models.refresh_tokens import RefreshToken
 from app.models.users import User
@@ -48,6 +48,7 @@ async def forgot_password(
     """
     # ✅ Schema validation ensures email is valid format
     email = normalize_email(payload.email)
+    await set_rls_context(db, public_email=email)
     
     stmt = select(User).where(func.lower(User.email) == email)
     result = await db.execute(stmt)
@@ -110,6 +111,7 @@ async def reset_password(
     - Audit-logged for forensic trail
     """
     db_token = await get_valid_reset_token_or_400(payload.token, db)
+    await set_rls_context(db, public_user_id=db_token.user_id)
     user = await get_active_user_or_400(db_token.user_id, db)
 
     # ✅ Prevent password reuse
@@ -154,6 +156,7 @@ async def reset_password(
     await db.commit()
 
     # ✅ Audit log for forensic trail
+    await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
     await ActivityLogService.log(
         db=db,
         tenant_id=user.tenant_id,

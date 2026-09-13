@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.redis_client import get_redis
 from app.services.email import send_commission_statement
-from app.db.database import AsyncSessionLocal
+from app.db.database import AsyncSessionLocal, set_system_rls_context
 from app.models.commission import CommissionEvent, CommissionStatus
 from app.models.platform_settings import PlatformSettings
 from app.models.tenants import Tenant
@@ -75,6 +75,7 @@ async def run_daily_commission_routine(db: Optional[AsyncSession] = None) -> dic
     try:
         if db is None:
             async with AsyncSessionLocal() as session:
+                await set_system_rls_context(session)
                 return await _run_routine_logic(session, now)
         else:
             return await _run_routine_logic(db, now)

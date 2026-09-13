@@ -139,15 +139,17 @@ async def reconcile_tenant(db: AsyncSession, tenant_id: int) -> dict:
 # ─── ENTRYPOINT (called by your scheduler) ─────────────────────────────────
 async def run_reconciliation_job() -> list:
     """Iterate ALL tenants, reconcile each in its own transaction."""
-    from app.db.database import AsyncSessionLocal
+    from app.db.database import AsyncSessionLocal, set_system_rls_context
 
     results = []
     async with AsyncSessionLocal() as db:
+        await set_system_rls_context(db)
         tenant_ids = (await db.execute(select(Tenant.id))).scalars().all()
 
     for tid in tenant_ids:
         async with AsyncSessionLocal() as db:
             try:
+                await set_system_rls_context(db)
                 report = await reconcile_tenant(db, tid)
                 await db.commit()
 

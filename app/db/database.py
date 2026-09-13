@@ -62,6 +62,42 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
+
+async def set_rls_context(
+    session: AsyncSession,
+    *,
+    user_id: int | None = None,
+    tenant_id: int | None = None,
+    is_super_admin: bool = False,
+    is_system: bool = False,
+    public_token: str | None = None,
+    public_user_id: int | None = None,
+    public_email: str | None = None,
+) -> None:
+    """Set transaction-local identity values consumed by PostgreSQL RLS."""
+    values = {
+        "app.user_id": "" if user_id is None else str(user_id),
+        "app.tenant_id": "" if tenant_id is None else str(tenant_id),
+        "app.is_super_admin": "true" if is_super_admin else "false",
+        "app.is_system": "true" if is_system else "false",
+        "app.public_token": "" if public_token is None else public_token,
+        "app.public_user_id": "" if public_user_id is None else str(public_user_id),
+        "app.public_email": "" if public_email is None else public_email,
+    }
+    for setting, value in values.items():
+        await session.execute(
+            text("SELECT set_config(:setting, :value, true)"),
+            {"setting": setting, "value": value},
+        )
+
+
+async def set_system_rls_context(session: AsyncSession) -> None:
+    await set_rls_context(session, is_system=True)
+
+
+async def set_public_rls_context(session: AsyncSession, token: str) -> None:
+    await set_rls_context(session, public_token=token)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Base class for declarative models
 # ─────────────────────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.limiter import limiter
-from app.db.database import get_db
+from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.dependencies.auth import get_current_user
 from app.dependencies.subscription import require_active_subscription
 from app.models.client_invite import ClientInvite, ClientInviteStatus
@@ -120,22 +120,25 @@ async def preview_invite(
     db: AsyncSession = Depends(get_db),
 ):
     """✅ Branding for the public intake page. Dead links → 410 Gone."""
+    await set_public_rls_context(db, token)
+    invite = (await db.execute(
+        select(ClientInvite).where(ClientInvite.token == token)
+    )).scalars().first()
+
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found.")
+    if invite.status != ClientInviteStatus.pending:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invite has already been used or was revoked.")
+    if invite.is_expired:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invite has expired.")
+
+    await set_rls_context(db, tenant_id=invite.tenant_id)
     stmt = select(ClientInvite).options(
         selectinload(ClientInvite.tenant).selectinload(Tenant.profile)
     ).where(ClientInvite.token == token)
     invite = (await db.execute(stmt)).scalars().unique().first()
 
-    if not invite:
-        raise HTTPException(status_code=404, detail="Invite not found.")
-    if invite.status != ClientInviteStatus.pending:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="This invite has already been used or was revoked.",
-        )
-    if invite.is_expired:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE, detail="This invite has expired.",
-        )
+    invite = (await db.execute(stmt)).scalars().unique().first()
 
     tenant = invite.tenant
     profile = tenant.profile if tenant else None
@@ -163,6 +166,7 @@ async def submit_invite(
     - status hardcoded to pending; invite flipped accepted atomically
     - Document URLs from prior uploads are stored on the client record
     """
+    await set_public_rls_context(db, token)
     # FOR UPDATE: two simultaneous submits can't both consume the invite
     stmt = select(ClientInvite).where(ClientInvite.token == token).with_for_update()
     invite = (await db.execute(stmt)).scalars().first()
@@ -178,6 +182,7 @@ async def submit_invite(
         raise HTTPException(
             status_code=status.HTTP_410_GONE, detail="This invite has expired.",
         )
+    await set_rls_context(db, tenant_id=invite.tenant_id)
 
     # 1) HARD BLOCKS (per-tenant identity uniqueness)
     conflicts = await check_identity_conflicts(
@@ -265,6 +270,7 @@ async def upload_invite_document(
     before storing the new one. Clients can retry freely without accumulating
     orphan files — the invite's `uploaded_files` JSONB tracks the active URL.
     """
+    await set_public_rls_context(db, token)
     # Validate invite is live
     stmt = select(ClientInvite).where(ClientInvite.token == token)
     invite = (await db.execute(stmt)).scalars().first()
@@ -280,6 +286,7 @@ async def upload_invite_document(
         raise HTTPException(
             status_code=status.HTTP_410_GONE, detail="This invite has expired.",
         )
+    await set_rls_context(db, tenant_id=invite.tenant_id)
 
     # Validate field
     valid_fields = {"avatar", "id_front", "id_back", "dl_front"}

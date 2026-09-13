@@ -4,8 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.security import decode_access_token
-from app.db.database import get_db
-from app.models.users import User
+from app.db.database import get_db, set_rls_context
+from app.models.users import User, UserRole
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -71,6 +71,7 @@ async def get_current_user(
         )
 
     # 6. Fetch user from database (async)
+    await set_rls_context(db, public_user_id=user_id_int)
     result = await db.execute(select(User).where(User.id == user_id_int))
     user = result.scalar_one_or_none()
 
@@ -94,5 +95,12 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is suspended. Please contact support.",
         )
+
+    await set_rls_context(
+        db,
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        is_super_admin=user.role == UserRole.super_admin,
+    )
 
     return user

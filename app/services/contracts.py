@@ -85,10 +85,11 @@ async def create_contract_for_booking(booking: Booking, db: AsyncSession) -> Con
 
 async def render_and_store_contract_pdf(contract_id: int) -> None:
     """Background PDF renderer - uses its own DB session."""
-    from app.db.database import AsyncSessionLocal
+    from app.db.database import AsyncSessionLocal, set_system_rls_context
     from app.services.contract_pdf import generate_contract_pdf
 
     async with AsyncSessionLocal() as db:
+        await set_system_rls_context(db)
         # ✅ FIXED: Eager-load booking/client/vehicle — generate_contract_pdf needs them.
         stmt = select(Contract).options(
             selectinload(Contract.booking).selectinload(Booking.client),

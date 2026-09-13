@@ -7,7 +7,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
 from app.core.redis_client import get_redis
-from app.db.database import AsyncSessionLocal
+from app.db.database import AsyncSessionLocal, set_system_rls_context
 from app.models.bookings import Booking, BookingStatus
 from app.services.booking_lifecycle import BookingLifecycleService
 
@@ -54,6 +54,7 @@ async def run_booking_auto_archive():
     try:
         async with AsyncSessionLocal() as db:
             try:
+                await set_system_rls_context(db)
                 now = datetime.now(timezone.utc)
                 cutoff = now - timedelta(days=ARCHIVE_AFTER_DAYS)
 
@@ -144,6 +145,7 @@ async def run_auto_end_trips():
     try:
         async with AsyncSessionLocal() as db:
             try:
+                await set_system_rls_context(db)
                 now = datetime.now(timezone.utc)
                 cutoff = now - timedelta(hours=AUTO_END_GRACE_HOURS)
 
