@@ -50,7 +50,6 @@ limiter = Limiter(
     default_limits=[f"{settings.api_rate_limit}/{settings.api_rate_window}second"],
     storage_uri=settings.redis_url,
     strategy="moving-window",  # Smoother, more accurate than fixed-window
-    headers_enabled=True,
     in_memory_fallback=[f"{settings.api_rate_limit}/{settings.api_rate_window}second"],
     in_memory_fallback_enabled=True,
     swallow_errors=True,
