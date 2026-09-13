@@ -30,7 +30,7 @@ settings = get_settings()
 
 
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)
-@limiter.limit("3/minute")
+@limiter.limit(lambda: f"{settings.password_reset_rate_limit}/{settings.password_reset_rate_window}second")
 async def forgot_password(
     request: Request,
     payload: ForgotPasswordRequest,

@@ -38,17 +38,17 @@ def _sanitize_url(url: str) -> str:
         return "<unparseable-url>"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Production-Grade Async Connection Pooling
-#    Tuned for Render Postgres (5-min idle timeout, not 60-min)
+# 3. Async connection pooling
+#    Conservative defaults match the current 0.1 CPU / 256 MB Render plan.
 # ─────────────────────────────────────────────────────────────────────────────
 engine = create_async_engine(
     db_url,
     echo=False,  # Set to True ONLY for local debugging, False in production
-    pool_size=20,                # Keep 20 connections always open and ready
-    max_overflow=30,             # Allow 30 extra connections during sudden spikes (Total 50)
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
     pool_pre_ping=True,          # ✅ Verify connection is alive before using it
-    pool_recycle=270,            # ✅ Render Postgres idle timeout is ~5min; recycle at 4.5min
-    pool_timeout=30,             # Max seconds to wait for a connection from the pool
+    pool_recycle=settings.db_pool_recycle,
+    pool_timeout=settings.db_pool_timeout,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────

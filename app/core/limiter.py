@@ -47,8 +47,14 @@ def get_client_ip(request: Request) -> str:
 # for 30 seconds and causing frontend "failed to load" timeouts.
 limiter = Limiter(
     key_func=get_client_ip,
+    default_limits=[f"{settings.api_rate_limit}/{settings.api_rate_window}second"],
     storage_uri=settings.redis_url,
     strategy="moving-window",  # Smoother, more accurate than fixed-window
+    headers_enabled=True,
+    in_memory_fallback=[f"{settings.api_rate_limit}/{settings.api_rate_window}second"],
+    in_memory_fallback_enabled=True,
+    swallow_errors=True,
+    key_prefix="rental-manager-rate-limit",
     storage_options={
         "socket_connect_timeout": 1,  # Fail fast if Redis is unreachable
         "socket_timeout": 1,          # Fail fast if Redis stops responding

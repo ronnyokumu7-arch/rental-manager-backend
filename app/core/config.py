@@ -113,6 +113,12 @@ class Settings(BaseSettings):
     # DATABASE (REQUIRED - Set in Render Dashboard)
     # ─────────────────────────────────────────────────────────────────────────
     database_url: str = Field(..., min_length=10)  # ✅ Required, basic length check
+    # Keep the pool small for the starter Render database. Increase these only
+    # after the database plan and connection limit are upgraded.
+    db_pool_size: int = 3
+    db_max_overflow: int = 2
+    db_pool_timeout: int = 10
+    db_pool_recycle: int = 270
     
     # ─────────────────────────────────────────────────────────────────────────
     # REDIS (Optional - defaults to local for development)

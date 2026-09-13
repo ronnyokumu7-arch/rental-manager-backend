@@ -59,7 +59,7 @@ async def _load_record(db: AsyncSession, raw: str) -> Optional[RefreshToken]:
 
 
 @router.post("/login", response_model=TokenOut)
-@limiter.limit("5/minute")
+@limiter.limit(lambda: f"{settings.login_rate_limit}/{settings.login_rate_window}second")
 async def login(
     request: Request,
     response: Response,
