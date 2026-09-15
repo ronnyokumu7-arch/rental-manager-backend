@@ -344,6 +344,7 @@ async def record_payment_public(
         invoice.status = InvoiceStatus.partially_paid
 
     await db.commit()
+    await set_rls_context(db, tenant_id=invoice.tenant_id)
     await db.refresh(db_payment)
     await invalidate_subscription_cache(invoice.tenant_id)
     await invalidate_invoice_cache(invoice.tenant_id)

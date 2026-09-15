@@ -51,6 +51,7 @@ async def create_invite(
     )
     db.add(invite)
     await db.commit()
+    await set_rls_context(db, tenant_id=current_user.tenant_id, user_id=current_user.id)
     await db.refresh(invite)
     return invite
 
