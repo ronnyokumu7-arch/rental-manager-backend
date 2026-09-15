@@ -51,18 +51,6 @@ engine = create_async_engine(
     pool_timeout=settings.db_pool_timeout,
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. Async Session Factory
-# ─────────────────────────────────────────────────────────────────────────────
-AsyncSessionLocal = async_sessionmaker(
-    bind=engine,
-    class_=AsyncSession,
-    expire_on_commit=False,      # ⚠️ CRUCIAL: Prevents "Object is no longer bound to session" errors in async
-    autocommit=False,
-    autoflush=False,
-)
-
-
 async def set_rls_context(
     session: AsyncSession,
     *,
@@ -86,6 +74,7 @@ async def set_rls_context(
         "app.public_user_id": "" if public_user_id is None else str(public_user_id),
         "app.public_email": "" if public_email is None else public_email,
     }
+    session.info["rls_context"] = values
     for setting, value in values.items():
         await session.execute(
             text("SELECT set_config(:setting, :value, true)"),
@@ -99,6 +88,40 @@ async def set_system_rls_context(session: AsyncSession) -> None:
 
 async def set_public_rls_context(session: AsyncSession, token: str) -> None:
     await set_rls_context(session, public_token=token)
+
+
+class RlsAsyncSession(AsyncSession):
+    """Async session that preserves transaction-local RLS context."""
+
+    async def _restore_rls_context(self) -> None:
+        values = self.info.get("rls_context")
+        if not values:
+            return
+        for setting, value in values.items():
+            await self.execute(
+                text("SELECT set_config(:setting, :value, true)"),
+                {"setting": setting, "value": value},
+            )
+
+    async def commit(self) -> None:
+        await super().commit()
+        await self._restore_rls_context()
+
+    async def rollback(self) -> None:
+        await super().rollback()
+        await self._restore_rls_context()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Async Session Factory
+# ─────────────────────────────────────────────────────────────────────────────
+AsyncSessionLocal = async_sessionmaker(
+    bind=engine,
+    class_=RlsAsyncSession,
+    expire_on_commit=False,      # ⚠️ CRUCIAL: Prevents "Object is no longer bound to session" errors in async
+    autocommit=False,
+    autoflush=False,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Base class for declarative models
