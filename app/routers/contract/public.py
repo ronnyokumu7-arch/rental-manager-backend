@@ -161,6 +161,7 @@ async def sign_contract_public(
                 pass  # Precondition not met → operator manual start or scheduler retry
 
     await db.commit()
+    await set_rls_context(db, tenant_id=contract.tenant_id)
     await db.refresh(contract)
 
     # ✅ Invalidate caches so the dashboard flips instantly (no 300s delay)

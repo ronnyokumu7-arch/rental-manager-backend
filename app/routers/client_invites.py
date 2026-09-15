@@ -138,8 +138,6 @@ async def preview_invite(
     ).where(ClientInvite.token == token)
     invite = (await db.execute(stmt)).scalars().unique().first()
 
-    invite = (await db.execute(stmt)).scalars().unique().first()
-
     tenant = invite.tenant
     profile = tenant.profile if tenant else None
     return PublicInvitePreviewOut(
@@ -247,6 +245,7 @@ async def submit_invite(
             detail="A client with these details already exists.",
         )
 
+    await set_rls_context(db, tenant_id=client.tenant_id)
     await db.refresh(client)
     return client
 

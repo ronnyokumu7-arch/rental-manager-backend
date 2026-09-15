@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -13,9 +13,43 @@ from app.models.users import User
 from app.schemas.user import UserOut, AcceptInvitePayload, UserInvitePreviewOut
 from app.services.cache import invalidate_user_cache
 from app.services.activity_log import ActivityLogService
+from app.services.storage import upload_file
 # from app.services.uploads import check_tenant_access  # ✅ NEW: Validate file ownership
 
 router = APIRouter()
+
+
+@router.post("/invite/{token}/upload", status_code=status.HTTP_201_CREATED)
+@limiter.limit("60/minute")
+async def upload_invite_document(
+    request: Request,
+    token: str,
+    file: UploadFile = File(...),
+    field: str = Query(..., description="avatar | id_front | dl_front"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a staff invite document before the invite is accepted."""
+    await set_public_rls_context(db, token)
+    user = (await db.execute(
+        select(User).where(User.invite_token == token)
+    )).scalars().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    if user.is_onboarded:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invite has already been used.")
+    if user.invite_expires_at and user.invite_expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invite has expired.")
+    if user.tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invite has no tenant context")
+
+    await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
+    field_categories = {"avatar": "avatar", "id_front": "compliance", "dl_front": "compliance"}
+    category = field_categories.get(field)
+    if category is None:
+        raise HTTPException(status_code=400, detail="Invalid upload field")
+
+    file_url = await upload_file(file=file, tenant_id=user.tenant_id, category=category)
+    return {"url": file_url, "field": field}
 
 
 def _validate_file_url_belongs_to_tenant(file_url: str | None, tenant_id: int) -> None:
@@ -122,13 +156,14 @@ async def accept_invite(
     user.invite_expires_at = None
     
     await db.commit()
+    await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
     await db.refresh(user)
 
     # ✅ Invalidate cache and log the onboarding completion
     if user.tenant_id:
         await invalidate_user_cache(user.tenant_id)
     await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
-        
+
     # Note: user_id is set to user.id here because the user is performing this action on their own account
     await ActivityLogService.log(
         db=db, tenant_id=user.tenant_id or 0, user_id=user.id,

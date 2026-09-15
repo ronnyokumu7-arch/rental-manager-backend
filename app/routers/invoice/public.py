@@ -348,7 +348,7 @@ async def record_payment_public(
     await invalidate_subscription_cache(invoice.tenant_id)
     await invalidate_invoice_cache(invoice.tenant_id)
 
-    return await _build_public_view(db, invoice.id)
+    return await _build_public_view(db, invoice.id, token)
 
 
 @router.get("/public/{token}/pdf")

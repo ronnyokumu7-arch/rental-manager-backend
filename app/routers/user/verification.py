@@ -178,6 +178,7 @@ async def verify_token(
     user.invite_expires_at = None
     
     await db.commit()
+    await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
     await db.refresh(user)
     
     # ✅ Invalidate cache and log the successful self-verification
@@ -219,6 +220,12 @@ async def mark_verified(
         user.phone_verified = True
         
     await db.commit()
+    await set_rls_context(
+        db,
+        tenant_id=user.tenant_id,
+        user_id=current_user.id,
+        is_super_admin=current_user.role == UserRole.super_admin,
+    )
     await db.refresh(user)
     
     # ✅ Invalidate cache and log the manual verification override
