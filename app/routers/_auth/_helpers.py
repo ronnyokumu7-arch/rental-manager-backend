@@ -81,7 +81,7 @@ async def get_valid_reset_token_or_400(token: str, db: AsyncSession) -> Password
     ✅ SECURITY: Specific message for expiry (helps UX, leaks no user info).
     ✅ SECURITY: Hash comparison means DB leaks don't expose usable tokens.
     """
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_hash = hashlib.sha256(token.strip().encode()).hexdigest()
     
     stmt = select(PasswordResetToken).where(
         PasswordResetToken.token_hash == token_hash,

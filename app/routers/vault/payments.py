@@ -19,7 +19,7 @@ from app.services.activity_log import ActivityLogService
 
 router = APIRouter(prefix="/payments", tags=["vault-payments"])
 
-@router.get("/", response_model=PaginatedResponse[PaymentOut])
+@router.get("", response_model=PaginatedResponse[PaymentOut])
 @limiter.limit("60/minute")
 async def list_vault_payments(
     request: Request,
