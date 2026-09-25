@@ -211,13 +211,15 @@ async def commission_payment_info(
         )
     ).scalars().first()
 
-    # ✅ M-PESA PAYBILL TRIPLE — exactly as entered/confirmed on the phone
+    # ✅ M-PESA PLATFORM PAYBILL TRIPLE — exactly as entered/confirmed on the phone.
+    # ✅ FIXED: field names now match CommissionPaymentInfoOut (platform_* naming),
+    # so Pydantic no longer drops them (silent nulls) or 500 on validation.
     return CommissionPaymentInfoOut(
         outstanding_balance=Decimal(owed_total),
         outstanding_count=int(owed_count),
-        paybill_number=settings.platform_paybill if settings else None,
-        account_number=settings.platform_account_number if settings else None,
-        account_name=settings.platform_account_name if settings else None,
+        platform_paybill=settings.platform_paybill if settings else None,
+        platform_account_number=settings.platform_account_number if settings else None,
+        platform_account_name=settings.platform_account_name if settings else None,
         platform_phone=settings.platform_phone if settings else None,
         platform_email=settings.platform_email if settings else None,
         pending_payment=pending,
@@ -470,6 +472,7 @@ async def update_platform_settings(
     await db.commit()
     await db.refresh(settings)
     return settings
+
 
 @router.post("/admin/run-daily-job", response_model=dict)
 @limiter.limit("5/minute")
