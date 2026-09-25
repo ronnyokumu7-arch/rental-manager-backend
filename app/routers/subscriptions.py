@@ -24,6 +24,9 @@ super_admin_only = Depends(require_role([UserRole.super_admin]))
 
 GRACE_PERIOD_DAYS = 7
 
+# ✅ NEW: Trial statuses eligible for extension
+TRIAL_STATUSES = (SubscriptionStatus.trial, SubscriptionStatus.starter_trial)
+
 
 # ---------------------------------------------------------------------------
 # Business Logic Helpers
@@ -64,6 +67,31 @@ def _compute_ends_at(plan: PlanType, billing_cycle: BillingCycle, starts_at: dat
     return None
 
 
+async def _apply_trial_extension(sub: Subscription, days: int, db: AsyncSession) -> datetime:
+    """
+    ✅ NEW: Shift a trial's ends_at forward by `days` and sync tenant-level mirrors.
+    Extension base = max(current ends_at, now), so extending an already-expired
+    (but still trial-status) subscription can never leave it still in the past.
+    """
+    now = datetime.now(timezone.utc)
+    base = sub.ends_at if (sub.ends_at and sub.ends_at > now) else now
+    new_ends_at = base + timedelta(days=days)
+    new_grace = new_ends_at + timedelta(days=GRACE_PERIOD_DAYS)
+
+    sub.ends_at = new_ends_at
+    sub.grace_period_ends_at = new_grace
+    sub.updated_at = now
+
+    tenant_stmt = select(Tenant).where(Tenant.id == sub.tenant_id)
+    tenant = (await db.execute(tenant_stmt)).scalars().first()
+    if tenant:
+        tenant.trial_ends_at = new_ends_at
+        tenant.subscription_ends_at = new_ends_at
+        tenant.grace_period_ends_at = new_grace
+
+    return new_ends_at
+
+
 # ---------------------------------------------------------------------------
 # Request & Response Schemas (For Manual Provision)
 # ---------------------------------------------------------------------------
@@ -77,6 +105,23 @@ class ManualProvisionRequest(BaseModel):
     amount_paid: Optional[float] = Field(default=0.0, description="Amount paid for this period")
     notes: Optional[str] = None
     custom_expiry_days: Optional[int] = Field(default=None, description="Override default duration")
+
+
+# ---------------------------------------------------------------------------
+# ✅ NEW: Request & Response Schemas (Trial Management)
+# ---------------------------------------------------------------------------
+
+class ExtendTrialRequest(BaseModel):
+    days: int = Field(..., ge=1, le=365, description="Days to add to the current trial period")
+
+
+class BulkExtendTrialsRequest(BaseModel):
+    days: int = Field(..., ge=1, le=365, description="Days to add to every active trial")
+
+
+class BulkExtendTrialsResponse(BaseModel):
+    updated: int
+    days_added: int
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +369,60 @@ async def cancel_subscription(
     # ✅ CRITICAL: Invalidate cache
     await invalidate_subscription_cache(sub.tenant_id)
     return sub
+
+
+# ---------------------------------------------------------------------------
+# ✅ NEW: Routes - Trial Management (Super Admin)
+# ---------------------------------------------------------------------------
+
+@router.post("/{subscription_id}/extend-trial", response_model=SubscriptionOut)
+@limiter.limit("10/minute")  # 🚨 STRICT: Affects tenant access
+async def extend_trial(
+    request: Request,
+    subscription_id: int,
+    payload: ExtendTrialRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = super_admin_only,
+):
+    """Extend a single active trial by N days (Super Admin only)."""
+    sub = await _get_authorized_subscription(subscription_id, current_user, db)
+    if sub.status not in TRIAL_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Only active trials can be extended (current status: {sub.status.value}).",
+        )
+
+    await _apply_trial_extension(sub, payload.days, db)
+    await db.commit()
+    await db.refresh(sub)
+
+    # ✅ CRITICAL: Invalidate cache so warnings update immediately
+    await invalidate_subscription_cache(sub.tenant_id)
+    return sub
+
+
+@router.post("/admin/bulk-extend-trials", response_model=BulkExtendTrialsResponse)
+@limiter.limit("5/minute")  # 🚨 EXTREMELY STRICT: Mass access change
+async def bulk_extend_trials(
+    request: Request,
+    payload: BulkExtendTrialsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = super_admin_only,
+):
+    """Extend EVERY active trial by N days in one operation (Super Admin only)."""
+    stmt = select(Subscription).where(Subscription.status.in_(TRIAL_STATUSES))
+    subs = (await db.execute(stmt)).scalars().all()
+
+    for sub in subs:
+        await _apply_trial_extension(sub, payload.days, db)
+
+    await db.commit()
+
+    # ✅ Invalidate cache per affected tenant
+    for sub in subs:
+        await invalidate_subscription_cache(sub.tenant_id)
+
+    return {"updated": len(subs), "days_added": payload.days}
 
 
 # ---------------------------------------------------------------------------
