@@ -6,11 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
 from app.models.users import User, UserRole
+from app.models.tenants import Tenant
 from app.services.email import send_investor_invite_email
 
 router = APIRouter(prefix="/investors", tags=["Investors"])
@@ -72,10 +74,17 @@ async def invite_investor(
     await db.commit()
     await db.refresh(new_investor)
 
-    # 5. Send the Email (Non-blocking / Graceful Failure)
-    agency_name = current_user.tenant.name if current_user.tenant else "Rental Garage"
-    # Note: Update this URL to match your actual frontend route
-    invite_link = f"{request.app.state.settings.frontend_url}/investor/accept-invite?token={invite_token}"
+    # 5. Fetch tenant name properly (async)
+    agency_name = "Rental Garage"  # Default fallback
+    if current_user.tenant_id:
+        tenant_stmt = select(Tenant).where(Tenant.id == current_user.tenant_id)
+        tenant_result = await db.execute(tenant_stmt)
+        tenant = tenant_result.scalars().first()
+        if tenant:
+            agency_name = tenant.name
+
+    # 6. Send the Email (Non-blocking / Graceful Failure)
+    invite_link = f"{request.app.state.settings.frontend_url}/accept-invite?token={invite_token}"
     
     try:
         await send_investor_invite_email(
@@ -86,7 +95,7 @@ async def invite_investor(
             expires_at=expires_at.strftime("%B %d, %Y")
         )
     except Exception as e:
-        print(f"⚠️ Failed to send investor invite email: {e}")
+        print(f"️ Failed to send investor invite email: {e}")
         # We don't raise an error here. The user is created, admin can resend later.
 
     return {
