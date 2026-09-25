@@ -29,6 +29,12 @@ class UserBase(BaseModel):
     id_image_url: Optional[str] = None
     dl_image_url: Optional[str] = None
 
+    # ✅ NEW: Financial / Payout Details (For Investors)
+    mpesa_phone: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_account_name: Optional[str] = None
+
     # ✅ SECURITY FIX: Validate permissions against master list
     @field_validator("permissions")
     @classmethod
@@ -98,6 +104,12 @@ class UserUpdate(BaseModel):
     id_image_url: Optional[str] = None
     dl_image_url: Optional[str] = None
 
+    # ✅ NEW: Financial / Payout Details (For Investors)
+    mpesa_phone: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_account_name: Optional[str] = None
+
     # UI Preferences
     theme_preference: Optional[str] = Field(None, max_length=20)
     density_preference: Optional[str] = Field(None, max_length=20)
@@ -155,6 +167,12 @@ class UserOut(BaseModel):
     id_number: Optional[str] = None
     dl_number: Optional[str] = None
     dl_expiry: Optional[date] = None
+
+    # ✅ NEW: Financial / Payout Details (For Investors)
+    mpesa_phone: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_account_name: Optional[str] = None
 
     created_at: datetime
     updated_at: datetime
@@ -224,6 +242,7 @@ class UserInvitePreviewOut(BaseModel):
     
     # UX Flags
     is_driver: bool  # Tells frontend to require DL fields
+    is_investor: bool = False  # ✅ NEW: Tells frontend to show financial fields
 
 
 # ✅ COMPLETELY REWRITTEN: Self-Service Onboarding Payload
@@ -243,3 +262,9 @@ class AcceptInvitePayload(BaseModel):
     dl_number: Optional[str] = None
     dl_image_url: Optional[str] = None
     dl_expiry: Optional[date] = None
+
+    # ✅ NEW: Financial / Payout Details (For Investors)
+    mpesa_phone: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_account_name: Optional[str] = None

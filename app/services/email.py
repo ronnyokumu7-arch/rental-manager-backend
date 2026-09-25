@@ -8,6 +8,7 @@ from app.services._email.auth import (
     send_password_reset_success,
     send_password_changed,
     send_verification_email,
+    send_investor_invite_email,
 )
 from app.services._email.bookings import (
     send_booking_confirmation,
@@ -57,6 +58,7 @@ __all__ = [
     "send_invoice_to_client",
     "send_quotation_to_client",
     "send_admin_recovery_notification",
+    "send_investor_invite_email",
     "send_sms_otp",
     "send_commission_statement",
     "_send",

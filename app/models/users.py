@@ -8,6 +8,7 @@ class UserRole(str, enum.Enum):
     super_admin = "super_admin"
     tenant_admin = "tenant_admin"
     tenant_staff = "tenant_staff"
+    investor = "investor"  # ✅ NEW: Host/Investor role
 
 class User(Base, AuditMixin):
     __tablename__ = "users"
@@ -29,6 +30,12 @@ class User(Base, AuditMixin):
     phone_number = Column(String(30), nullable=True)
     department = Column(String(100), nullable=True)
     job_title = Column(String(100), nullable=True)
+    
+    # ✅ NEW: Financial / Payout Details (For Investors)
+    mpesa_phone = Column(String(50), nullable=True)
+    bank_name = Column(String(100), nullable=True)
+    bank_account_number = Column(String(100), nullable=True)
+    bank_account_name = Column(String(100), nullable=True)
     
     # Security & Access
     permissions = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list)
@@ -54,7 +61,7 @@ class User(Base, AuditMixin):
     phone_verified = Column(Boolean, nullable=False, default=False, server_default="false")
     is_onboarded = Column(Boolean, nullable=False, default=False, server_default="false")
     
-    # ✅ FIX: Renamed from is_super_tenant_admin to match schema
+    # Agency Owner Flag
     is_tenant_owner = Column(Boolean, nullable=False, default=False, server_default="false")
     
     # Invite System
@@ -68,8 +75,6 @@ class User(Base, AuditMixin):
         server_default=UserRole.tenant_staff.value,
     )
     
-    # ✅ Timestamps removed: created_at and updated_at are now provided by AuditMixin
-
     # Relationships
     tenant = relationship("Tenant", back_populates="users", foreign_keys="[User.tenant_id]")
     password_reset_tokens = relationship(
@@ -84,7 +89,6 @@ class User(Base, AuditMixin):
         back_populates="user",
         cascade="all, delete-orphan",
     )
-    # ✅ NEW: Refresh token relationship for secure session management
     refresh_tokens = relationship(
         "RefreshToken",
         foreign_keys="[RefreshToken.user_id]",
@@ -100,17 +104,10 @@ class User(Base, AuditMixin):
         cascade="all, delete-orphan",
     )
 
-    # ✅ ADD THESE CRITICAL INDEXES:
+    # Indexes
     __table_args__ = (
-        # 1. User List View with Status Filtering (MOST IMPORTANT)
         Index("ix_users_tenant_status_created", "tenant_id", "is_active", "is_suspended", "created_at"),
-        
-        # 2. Role Filtering (for admin dashboards)
         Index("ix_users_tenant_role_created", "tenant_id", "role", "created_at"),
-        
-        # 3. Agency Health Login Tracking (CRITICAL for health endpoint)
         Index("ix_users_tenant_last_login", "tenant_id", "last_login_at"),
-        
-        # ✅ NEW: Prevent negative login attempts
         CheckConstraint("failed_login_attempts >= 0", name="ck_users_failed_login_attempts_non_negative"),
     )

@@ -26,6 +26,8 @@ from app.models.payment_gateways import (
     PaypalConfig,
     StripeConfig,
 )
+# ✅ NEW: Import Investor Lease models
+from app.models.investor_leases import InvestorLease, LeaseType, LeaseStatus
 
 __all__ = [
     "Driver",
@@ -59,4 +61,8 @@ __all__ = [
     "ClientInviteStatus",
     "AirtelMoneyConfig",
     "BankAccountConfig",
+    # ✅ NEW: Export Investor Lease models
+    "InvestorLease",
+    "LeaseType",
+    "LeaseStatus",
 ]

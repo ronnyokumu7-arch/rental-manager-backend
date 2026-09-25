@@ -1,4 +1,3 @@
-# app/main.py
 import os
 from contextlib import asynccontextmanager
 
@@ -38,6 +37,7 @@ from app.routers import (
     financials,
     health,
     invoices,
+    investors,               # ✅ NEW: Import investors router
     payment_verifications,
     payments,
     pricing,
@@ -55,7 +55,6 @@ from app.routers import (
     vehicles,
     vault,
 )
-
 
 from app.endpoints.health import router as agency_health_router
 
@@ -168,6 +167,7 @@ routers = [
     services,
     contracts,
     financials,
+    investors,             # ✅ NEW: Add to registration list
     admin,
     reports,
     activity_logs,
@@ -181,6 +181,5 @@ routers = [
 
 for router in routers:
     app.include_router(router.router, prefix="/api/v1")
-
 
 app.include_router(agency_health_router, prefix="/api/v1")

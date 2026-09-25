@@ -1,4 +1,3 @@
-# app/services/_email/notification.py
 from typing import Optional
 from app.core.config import get_settings
 from app.services._email.client import _send
@@ -147,5 +146,38 @@ async def send_verification_email(to: str, full_name: str, verification_link: st
             cta_text="Verify My Account",
             cta_url=verification_link,
             preview_text="Please verify your email address.",
+        )
+    )
+
+
+# ✅ NEW: Investor Invite Email
+async def send_investor_invite_email(
+    to: str, full_name: str, invite_token: str, agency_name: str, expires_at: str
+) -> bool:
+    invite_link = f"{settings.frontend_url}/investor/accept-invite?token={invite_token}"
+    
+    body = f"""
+    <p>Dear Investor,</p>
+    <p><strong>{agency_name}</strong> has invited you to join their fleet as a Host Investor on Rental Garage.</p>
+    <p>By joining, you will be able to list your vehicles, track bookings in real-time, and manage your earnings seamlessly.</p>
+    
+    <div class="divider"></div>
+    
+    <table class="detail-table">
+        <tr><td>Inviting Agency</td><td><strong>{agency_name}</strong></td></tr>
+        <tr><td>Invite Expires</td><td>{expires_at.split('T')[0]}</td></tr>
+    </table>
+    
+    <p>Click the button below to create your investor profile and list your first vehicle.</p>
+    """
+    return await _send(
+        to,
+        f"Invitation to join {agency_name} on Rental Garage",
+        _premium_template(
+            title="You're Invited!",
+            body=body,
+            cta_text="Accept Invitation",
+            cta_url=invite_link,
+            preview_text=f"{agency_name} wants you to join their fleet.",
         )
     )
