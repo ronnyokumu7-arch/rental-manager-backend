@@ -337,43 +337,53 @@ class BookingLifecycleService:
 
         return await cls._reload(db, booking.id)
 
-    # ─── COMMISSION (fires once per trip — SINGLE SOURCE OF TRUTH) ─────────
-    @staticmethod
-    async def _create_commission_event(
-        db: AsyncSession,
-        booking: Booking,
-        tenant_id: int,
-        created_by: Optional[int],
-    ) -> None:
-        """
-        ✅ TRIAL RULE: trips started during the free trial create NO event —
-        the tenant owes nothing and nothing is counted.
-        ✅ RATE: read from PlatformSettings (super-admin configurable).
-        ✅ booking_id is unique → a trip can never be double-charged.
-        """
-        tenant = await db.get(Tenant, tenant_id)
-        now = datetime.now(timezone.utc)
-        in_trial = (
-            tenant is not None
-            and tenant.trial_ends_at is not None
-            and tenant.trial_ends_at > now
-        )
-        if in_trial:
-            return  # trial trips are commission-free
+# ─── COMMISSION (fires once per trip — SINGLE SOURCE OF TRUTH) ─────────
+@staticmethod
+async def _create_commission_event(
+    db: AsyncSession,
+    booking: Booking,
+    tenant_id: int,
+    created_by: Optional[int],
+) -> None:
+    """
+    ✅ BILLING MODE GATE: commission accrues ONLY for PAYG tenants.
+    - Subscription tenants (starter/pro/enterprise, monthly/annual) → NO commission
+    - PAYG tenants (billing_cycle="pay_as_you_go") → commission per trip
+    - Trial tenants (free_trial/starter_trial) → NO commission (legacy check)
+    ✅ RATE: read from PlatformSettings (super-admin configurable).
+    ✅ booking_id is unique → a trip can never be double-charged.
+    """
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        return  # No tenant → no commission
 
-        settings = (
-            await db.execute(select(PlatformSettings).where(PlatformSettings.id == 1))
-        ).scalars().first()
-        amount = Decimal(settings.commission_amount) if settings else Decimal("150.00")
+    # ✅ BILLING MODE CHECK: only PAYG tenants accrue commission
+    is_payg = tenant.billing_cycle == "pay_as_you_go"
+    if not is_payg:
+        return  # subscription or trial mode → no commission
 
-        db.add(CommissionEvent(
-            tenant_id=tenant_id,
-            booking_id=booking.id,
-            amount=amount,
-            currency_code="KES",
-            status=CommissionStatus.unpaid,
-            created_by=created_by,
-        ))
+    # ✅ Legacy trial check (belt-and-suspenders)
+    now = datetime.now(timezone.utc)
+    in_trial = (
+        tenant.trial_ends_at is not None
+        and tenant.trial_ends_at > now
+    )
+    if in_trial:
+        return  # trial trips are commission-free
+
+    settings = (
+        await db.execute(select(PlatformSettings).where(PlatformSettings.id == 1))
+    ).scalars().first()
+    amount = Decimal(settings.commission_amount) if settings else Decimal("150.00")
+
+    db.add(CommissionEvent(
+        tenant_id=tenant_id,
+        booking_id=booking.id,
+        amount=amount,
+        currency_code="KES",
+        status=CommissionStatus.unpaid,
+        created_by=created_by,
+    ))
 
     # ─── CLIENT-DRIVEN (public, no authenticated user) — flush-only ────────
     @classmethod

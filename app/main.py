@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_cache import FastAPICache
@@ -21,6 +21,7 @@ from app.core.exceptions import (
 )
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 from app.db.database import test_db_connection
+from app.dependencies.tenant import block_investors_from_tenant_data
 
 from app.routers import (
     activity_logs,
@@ -179,7 +180,10 @@ routers = [
     health,
 ]
 
+investor_scoped_routers = (auth, users, vehicles, investors, user_preferences, health)
+
 for router in routers:
-    app.include_router(router.router, prefix="/api/v1")
+    dependencies = [] if router in investor_scoped_routers else [Depends(block_investors_from_tenant_data)]
+    app.include_router(router.router, prefix="/api/v1", dependencies=dependencies)
 
 app.include_router(agency_health_router, prefix="/api/v1")

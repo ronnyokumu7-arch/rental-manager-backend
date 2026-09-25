@@ -10,9 +10,9 @@ from app.models.users import User, UserRole
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: AsyncSession = Depends(get_db),
+async def _authenticate_user(
+    credentials: HTTPAuthorizationCredentials | None,
+    db: AsyncSession,
 ) -> User:
     """
     Core authentication dependency.
@@ -101,6 +101,23 @@ async def get_current_user(
         user_id=user.id,
         tenant_id=user.tenant_id,
         is_super_admin=user.role == UserRole.super_admin,
+        is_investor=user.role == UserRole.investor,
     )
 
     return user
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    return await _authenticate_user(credentials, db)
+
+
+async def get_optional_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    if credentials is None:
+        return None
+    return await _authenticate_user(credentials, db)

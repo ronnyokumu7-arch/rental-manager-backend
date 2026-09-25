@@ -89,6 +89,11 @@ async def list_users(
     current_user: User = Depends(get_current_user),
 ):
     """List users with optional filtering. Strict tenant isolation enforced."""
+    if current_user.role == UserRole.investor:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Investors cannot list tenant users",
+        )
     
     # Determine the effective tenant_id for caching
     effective_tenant_id = tenant_id if (current_user.role == UserRole.super_admin and tenant_id is not None) else current_user.tenant_id

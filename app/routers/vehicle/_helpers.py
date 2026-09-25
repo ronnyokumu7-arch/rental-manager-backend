@@ -17,7 +17,13 @@ def get_authorized_vehicle(vehicle_id: int, user: User, db: Session) -> Vehicle:
     Super admins can access any vehicle.
     """
     # Build query with tenant isolation
-    if user.role == UserRole.super_admin:
+    if user.role == UserRole.investor:
+        stmt = select(Vehicle).where(
+            Vehicle.id == vehicle_id,
+            Vehicle.tenant_id == user.tenant_id,
+            Vehicle.owner_id == user.id,
+        )
+    elif user.role == UserRole.super_admin:
         # Super admins can access any vehicle
         stmt = select(Vehicle).where(Vehicle.id == vehicle_id)
     else:
@@ -53,7 +59,13 @@ async def get_authorized_vehicle_async(vehicle_id: int, user: User, db: AsyncSes
     Super admins can access any vehicle.
     """
     # Build query with tenant isolation
-    if user.role == UserRole.super_admin:
+    if user.role == UserRole.investor:
+        stmt = select(Vehicle).where(
+            Vehicle.id == vehicle_id,
+            Vehicle.tenant_id == user.tenant_id,
+            Vehicle.owner_id == user.id,
+        )
+    elif user.role == UserRole.super_admin:
         # Super admins can access any vehicle
         stmt = select(Vehicle).where(Vehicle.id == vehicle_id)
     else:

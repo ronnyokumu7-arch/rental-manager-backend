@@ -123,6 +123,16 @@ async def _run_routine_logic(db: AsyncSession, now: datetime) -> dict:
                 logger.warning(f"[daily_commission] tenant {tenant_id}: oldest trip date is NULL — skipped.")
                 continue
 
+            # ✅ BILLING MODE CHECK: only email PAYG tenants about commission
+            tenant = await db.get(Tenant, tenant_id)
+            if not tenant:
+                stats["skipped"] += 1
+                continue
+            if tenant.billing_cycle != "pay_as_you_go":
+                stats["skipped"] += 1
+                logger.info(f"[daily_commission] tenant {tenant_id}: not PAYG (billing_cycle={tenant.billing_cycle}) — skipped.")
+                continue
+
             age_days = (now.date() - oldest_at.astimezone(PLATFORM_TZ).date()).days
             if age_days < 1:
                 stats["skipped"] += 1
@@ -133,10 +143,6 @@ async def _run_routine_logic(db: AsyncSession, now: datetime) -> dict:
                 stats["skipped"] += 1
                 continue  # already locked — no spam
 
-            tenant = await db.get(Tenant, tenant_id)
-            if not tenant:
-                stats["skipped"] += 1
-                continue
             to_email = getattr(tenant, "admin_email", None) or tenant.email
             if not to_email:
                 stats["skipped"] += 1

@@ -11,7 +11,7 @@ from app.dependencies.subscription import require_active_subscription
 from app.dependencies.commission_lock import require_not_commission_locked
 from app.dependencies.tenant import TenantScope, get_tenant_scope, require_mutation_tenant_scope
 from app.models.bookings import Booking, BookingStatus
-from app.models.users import User
+from app.models.users import User, UserRole
 from app.models.vehicles import Vehicle, VehicleStatus
 from app.schemas.pagination import PaginatedResponse, paginate_items
 from app.schemas.vehicle import VehicleCreate, VehicleOut, VehicleUpdate
@@ -38,7 +38,10 @@ async def create_vehicle(
     data = vehicle.model_dump()
     data["status"] = VehicleStatus.pending_activation
     
-    db_vehicle = Vehicle(**data, tenant_id=scope.tenant_id)
+    # ✅ NEW: If an investor is adding this, tag them as the owner
+    owner_id = current_user.id if current_user.role.value == "investor" else None
+    
+    db_vehicle = Vehicle(**data, tenant_id=scope.tenant_id, owner_id=owner_id)
     db.add(db_vehicle)
     await db.commit()
     await db.refresh(db_vehicle)
@@ -71,8 +74,10 @@ async def read_vehicles(
     ✅ SECURITY: Manual tenant-scoped caching.
     Default @cache decorator does NOT include tenant context, causing cross-tenant leaks.
     """
-    # Check cache first
-    cached = await get_cached_vehicle_list(scope.tenant_id, archived=False, status_filter=status_filter)
+    is_investor = current_user.role == UserRole.investor
+
+    # Investor vehicle results are private to the owner, so skip tenant-shared cache entries.
+    cached = None if is_investor else await get_cached_vehicle_list(scope.tenant_id, archived=False, status_filter=status_filter)
     if cached is not None:
         return paginate_items(cached, total=len(cached), page=page, page_size=page_size)
     
@@ -80,6 +85,8 @@ async def read_vehicles(
     stmt = select(Vehicle).where(Vehicle.is_archived == False)
     if scope.tenant_id is not None:
         stmt = stmt.where(Vehicle.tenant_id == scope.tenant_id)
+    if is_investor:
+        stmt = stmt.where(Vehicle.owner_id == current_user.id)
     if status_filter:
         stmt = stmt.where(Vehicle.status == status_filter)
         
@@ -87,7 +94,8 @@ async def read_vehicles(
     vehicles = result.scalars().all()
     
     # Write to cache (5-minute TTL)
-    await set_cached_vehicle_list(scope.tenant_id, archived=False, status_filter=status_filter, vehicles=vehicles)
+    if not is_investor:
+        await set_cached_vehicle_list(scope.tenant_id, archived=False, status_filter=status_filter, vehicles=vehicles)
     
     return paginate_items(vehicles, total=len(vehicles), page=page, page_size=page_size)
 
@@ -105,8 +113,10 @@ async def read_archived_vehicles(
     """
     ✅ SECURITY: Manual tenant-scoped caching.
     """
-    # Check cache first
-    cached = await get_cached_vehicle_list(scope.tenant_id, archived=True, status_filter=status_filter)
+    is_investor = current_user.role == UserRole.investor
+
+    # Investor vehicle results are private to the owner, so skip tenant-shared cache entries.
+    cached = None if is_investor else await get_cached_vehicle_list(scope.tenant_id, archived=True, status_filter=status_filter)
     if cached is not None:
         return paginate_items(cached, total=len(cached), page=page, page_size=page_size)
     
@@ -114,6 +124,8 @@ async def read_archived_vehicles(
     stmt = select(Vehicle).where(Vehicle.is_archived == True)
     if scope.tenant_id is not None:
         stmt = stmt.where(Vehicle.tenant_id == scope.tenant_id)
+    if is_investor:
+        stmt = stmt.where(Vehicle.owner_id == current_user.id)
     if status_filter:
         stmt = stmt.where(Vehicle.status == status_filter)
         
@@ -121,7 +133,8 @@ async def read_archived_vehicles(
     vehicles = result.scalars().all()
     
     # Write to cache
-    await set_cached_vehicle_list(scope.tenant_id, archived=True, status_filter=status_filter, vehicles=vehicles)
+    if not is_investor:
+        await set_cached_vehicle_list(scope.tenant_id, archived=True, status_filter=status_filter, vehicles=vehicles)
     
     return paginate_items(vehicles, total=len(vehicles), page=page, page_size=page_size)
 
