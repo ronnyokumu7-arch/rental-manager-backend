@@ -1,18 +1,19 @@
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.core.limiter import limiter
-from app.core.config import get_settings  # ✅ ADD THIS IMPORT
+from app.core.config import get_settings
 from app.dependencies.auth import get_current_user
 from app.models.users import User, UserRole
 from app.models.tenants import Tenant
+from app.schemas.user import UserOut  # ✅ Added import for the response model
 from app.services.email import send_investor_invite_email
 
 router = APIRouter(prefix="/investors", tags=["Investors"])
@@ -87,7 +88,6 @@ async def invite_investor(
             agency_name = tenant.name
 
     # 6. Send the Email (Non-blocking / Graceful Failure)
-    # ✅ USE settings.frontend_url directly instead of request.app.state.settings
     invite_link = f"{settings.frontend_url}/accept-invite?token={invite_token}"
     
     try:
@@ -99,11 +99,45 @@ async def invite_investor(
             expires_at=expires_at.strftime("%B %d, %Y")
         )
     except Exception as e:
-        print(f"️ Failed to send investor invite email: {e}")
-        # We don't raise an error here. The user is created, admin can resend later.
+        print(f"⚠️ Failed to send investor invite email: {e}")
 
     return {
         "message": "Investor invite created successfully.",
-        "invite_token": invite_token, # Return token so frontend can show a "Copy Link" fallback
+        "invite_token": invite_token,
         "invite_link": invite_link
     }
+
+
+# ✅ NEW: List Investors Endpoint
+@router.get("/", response_model=List[UserOut])
+@limiter.limit("30/minute")
+async def list_investors(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List all investors for the current tenant.
+    Only Tenant Admins or Super Admins can perform this action.
+    """
+    # 1. Security Check
+    if current_user.role not in [UserRole.tenant_admin, UserRole.super_admin]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only agency administrators can view investors."
+        )
+
+    # 2. Query database for investors in this tenant
+    stmt = (
+        select(User)
+        .where(
+            User.tenant_id == current_user.tenant_id,
+            User.role == UserRole.investor
+        )
+        .order_by(desc(User.created_at))
+    )
+    
+    result = await db.execute(stmt)
+    investors = result.scalars().all()
+    
+    return investors

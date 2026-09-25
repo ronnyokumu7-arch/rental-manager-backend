@@ -37,14 +37,20 @@ class CommissionPaymentInfoOut(BaseModel):
     outstanding_balance: Decimal
     outstanding_count: int
 
-    # Platform payment details (from PlatformSettings singleton)
-    platform_paybill: Optional[str] = None
-    platform_account_name: Optional[str] = None
+    # ✅ PLATFORM PAYBILL TRIPLE — the paybill agencies pay COMMISSIONS to.
+    # Deliberately distinct from a tenant's own customer-facing paybill
+    # (which lives in payment-gateway config, not here).
+    platform_paybill: Optional[str] = None          # Business number (e.g., 400200)
+    platform_account_number: Optional[str] = None   # Account behind the Paybill
+    platform_account_name: Optional[str] = None     # Registered name tenant confirms
+
+    # Record keeping
     platform_phone: Optional[str] = None
     platform_email: Optional[str] = None
 
     # The reference the tenant should quote when paying (your matching key)
-    payment_reference_hint: str
+    # ✅ OPTIONAL: never blocks the response; supply per-tenant quoting later
+    payment_reference_hint: Optional[str] = None
 
     # Latest submission awaiting verification (if any)
     pending_payment: Optional[CommissionPaymentOut] = None
