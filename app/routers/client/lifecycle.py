@@ -30,13 +30,13 @@ async def activate_client(
     if client.status == ClientStatus.active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Client is already active."
+            detail="This client is already active."
         )
     
     if not client.id_image_front or not client.dl_image_front:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot activate client. ID and DL photos are required."
+            detail="Add photos of the client's ID and driver's licence before activating them."
         )
         
     client.status = ClientStatus.active
@@ -63,7 +63,7 @@ async def suspend_client(
     if client.status == ClientStatus.suspended:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Client is already suspended."
+            detail="This client is already suspended."
         )
         
     client.status = ClientStatus.suspended
@@ -89,7 +89,7 @@ async def reactivate_client(
     if client.status != ClientStatus.suspended:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only suspended clients can be reactivated."
+            detail="This client isn't suspended, so they can't be reactivated."
         )
         
     client.status = ClientStatus.active

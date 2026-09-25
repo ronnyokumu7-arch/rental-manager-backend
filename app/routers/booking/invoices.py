@@ -65,7 +65,7 @@ async def generate_invoice(
         if payload.due_date.date() < datetime.now(timezone.utc).date():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Due date cannot be in the past."
+                detail="Choose today or a future date for the invoice due date."
             )
 
     # ✅ Pass customizations (including rate override) to the robust service

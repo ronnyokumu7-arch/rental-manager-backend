@@ -39,7 +39,7 @@ async def generate_contract_for_booking(
 
     if existing_contract:
         return {
-            "message": "Contract already exists for this booking",
+            "message": "A contract already exists for this booking.",
             "contract_id": existing_contract.id,
             "contract_number": existing_contract.contract_number,
             "pdf_path": existing_contract.pdf_path
@@ -52,7 +52,7 @@ async def generate_contract_for_booking(
     await invalidate_contract_cache(current_user.tenant_id)   # ✅ ADD
 
     return {
-        "message": "Contract generated successfully",
+        "message": "The contract is ready to review.",
         "contract_id": contract.id,
         "contract_number": contract.contract_number,
         "pdf_path": contract.pdf_path

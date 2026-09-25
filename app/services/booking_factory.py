@@ -67,9 +67,9 @@ async def _load_vehicle(db: AsyncSession, tenant_id: int, vehicle_id: int) -> Ve
         Vehicle.id == vehicle_id, Vehicle.tenant_id == tenant_id,
     ))).scalars().first()
     if not vehicle:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Vehicle not found.")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "We couldn't find this vehicle. Refresh the list and try again.")
     if vehicle.status != VehicleStatus.available or vehicle.is_archived:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Vehicle is not available.")
+        raise HTTPException(status.HTTP_409_CONFLICT, "This vehicle is not available for booking. Choose another available vehicle.")
     return vehicle
 
 
@@ -81,11 +81,11 @@ async def load_driver_assignment(db: AsyncSession, tenant_id: int, driver_id: Op
         Driver.id == driver_id, Driver.tenant_id == tenant_id,
     ))).scalars().first()
     if not driver:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Driver not found.")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "We couldn't find this driver. Refresh the list and try again.")
     if driver.is_archived:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Driver is archived and cannot be assigned.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This driver is archived. Choose an active driver instead.")
     if driver.status == DriverStatus.suspended:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Driver is suspended and cannot be assigned.")
+        raise HTTPException(status.HTTP_409_CONFLICT, "This driver is suspended. Choose an active driver instead.")
     return driver
 
 
@@ -110,7 +110,7 @@ async def _assert_vehicle_free(
     if (await db.execute(stmt)).scalars().first():
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"Vehicle {plate} is already booked for these dates.",
+            f"Vehicle {plate} is already booked for these dates. Choose another vehicle or adjust the booking dates.",
         )
 
 
@@ -126,7 +126,7 @@ def _price(
     if service_type == AIRPORT_TRANSFER:
         if not vehicle.supports_airport_transfer or not vehicle.airport_transfer_base_rate:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                "Vehicle does not support airport transfers or has no base rate configured.")
+                                "This vehicle isn't set up for airport transfers. Choose another vehicle or ask an administrator to add an airport transfer rate.")
         try:
             quote = quote_airport_transfer(
                 base_rate=Decimal(vehicle.airport_transfer_base_rate),
@@ -140,7 +140,7 @@ def _price(
     if service_type == WEDDING:
         if not vehicle.supports_wedding_service or not vehicle.wedding_base_rate:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                "Vehicle does not support wedding services or has no base rate configured.")
+                                "This vehicle isn't set up for wedding bookings. Choose another vehicle or ask an administrator to add a wedding rate.")
         details = service_details or {}
         try:
             quote = quote_wedding(
@@ -160,13 +160,13 @@ def _price(
     if service_type == PRO_DRIVER:
         if not driver:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                "Pro Driver (Chauffeur) service requires a staff driver assignment.")
+                                "Choose a staff driver for this chauffeur booking before continuing.")
         details = service_details or {}
         base_rate = (Decimal(vehicle.daily_rate) if vehicle.daily_rate else Decimal("0.00")) + \
                     (Decimal(driver.daily_fee) if driver.daily_fee else Decimal("0.00"))
         if base_rate <= 0:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                "Pro Driver base rate cannot be zero. Check vehicle daily rate and driver daily fee.")
+                                "The chauffeur booking has no rate. Ask an administrator to add a vehicle rate and driver fee.")
         try:
             quote = quote_prodriver(
                 base_rate=base_rate,
@@ -183,7 +183,7 @@ def _price(
 
     # ✅ SELF-DRIVE: vehicle rate × days (the business rule, untouched)
     if not vehicle.daily_rate or Decimal(vehicle.daily_rate) <= 0:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Vehicle has no daily rate configured.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This vehicle has no daily rate. Ask an administrator to add one before creating the booking.")
     try:
         quote = quote_selfdrive(
             pickup_at=pickup, return_at=ret,
@@ -248,9 +248,9 @@ async def create_booking(db: AsyncSession, intent: BookingCreate, user: User) ->
         Client.id == intent.client_id, Client.tenant_id == user.tenant_id,
     ))).scalars().first()
     if not client:
-        raise HTTPException(404, "Client not found.")
+        raise HTTPException(404, "We couldn't find this client. Refresh the list and try again.")
     if client.status == ClientStatus.suspended or client.is_archived:
-        raise HTTPException(400, "Client cannot make bookings.")
+        raise HTTPException(400, "This client is suspended or archived. Activate the client or choose someone else.")
 
     # 2. Vehicle + driver
     vehicle = await _load_vehicle(db, user.tenant_id, intent.vehicle_id)
@@ -356,23 +356,23 @@ def _guard_change(booking: Booking, kind: str, old_p: datetime, new_p: datetime,
     now = timeutils.now_utc()
     if booking.status in IMMUTABLE_STATUSES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            f"Booking is {booking.status.value} and can no longer be changed.")
+                            f"This booking is {booking.status.value} and can no longer be changed.")
     if kind == "noop":
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "No change supplied.")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Make at least one change before saving.")
     # ✅ Overdue-active guard: an active trip can't be changed to a past return
     if booking.status == BookingStatus.active and kind in ("extend", "reduce") and new_r < now:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            "Trip already started — new return cannot be in the past.")
+                            "The trip has started, so the new return time must be in the future.")
     if kind == "reschedule":
         if booking.status == BookingStatus.active:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                                "Trip already started — only extensions or reductions are allowed.")
+                                "The trip has started. You can only extend or shorten the booking.")
         if old_p <= now:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                                "Pickup time has passed — booking can no longer be rescheduled.")
+                                "The pickup time has passed, so this booking can no longer be rescheduled.")
         if new_p < now - timeutils.PAST_GRACE:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                                "New pickup time cannot be in the past.")
+                                "Choose a pickup time in the future.")
 
 
 async def _driver_fee_for(db: AsyncSession, booking: Booking) -> Optional[Decimal]:
@@ -394,7 +394,7 @@ async def _reprice_change(db: AsyncSession, booking: Booking, new_p: datetime, n
 
     rate = Decimal(booking.daily_rate) if booking.daily_rate else None
     if not rate:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Booking has no locked daily rate.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This booking has no saved daily rate, so its price can't be updated. Contact support for help.")
     fee = await _driver_fee_for(db, booking)
 
     try:

@@ -87,7 +87,7 @@ async def check_identity_conflicts(
         if row:
             suffix = " (archived record)" if row.is_archived else ""
             conflicts.append(IdentityConflict(
-                "phone", f"A client with this phone number already exists{suffix}."
+                "phone", f"A client with this phone number already exists{suffix}. Check that record before adding another client."
             ))
 
     # 2) Email (case-insensitive)
@@ -96,7 +96,7 @@ async def check_identity_conflicts(
         row = (await db.execute(base.where(func.lower(Client.email) == em))).scalars().first()
         if row:
             conflicts.append(IdentityConflict(
-                "email", "A client with this email address already exists."
+                "email", "A client with this email address already exists. Check the existing record before adding another client."
             ))
 
     # 3) Identity slot (type-aware)
@@ -108,7 +108,7 @@ async def check_identity_conflicts(
         if row:
             label = "National ID" if id_type == IdType.national_id else "Passport"
             conflicts.append(IdentityConflict(
-                "id_number", f"A client with this {label} number already exists."
+                "id_number", f"A client with this {label} number already exists. Check the existing record before adding another client."
             ))
 
     # 4) Driver's licence (only when provided)
@@ -117,7 +117,7 @@ async def check_identity_conflicts(
         row = (await db.execute(base.where(Client.dl_number == dl))).scalars().first()
         if row:
             conflicts.append(IdentityConflict(
-                "dl_number", "A client with this driver's licence number already exists."
+                "dl_number", "A client with this driver's licence number already exists. Check the existing record before adding another client."
             ))
 
     return conflicts

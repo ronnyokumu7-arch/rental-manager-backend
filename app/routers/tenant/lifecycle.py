@@ -1,6 +1,6 @@
 # app/routers/tenant/lifecycle.py
 """
-✅ TENANT LIFECYCLE — single owner of suspend / unsuspend / vault / restore.
+✅ TENANT LIFECYCLE — single owner of suspend / unsuspend / vault / restore / billing-mode switch.
 
 CONTRACT RULES:
   - Lifecycle transitions NEVER flow through the generic TenantUpdate endpoint.
@@ -9,12 +9,16 @@ CONTRACT RULES:
   - Unsuspend & Restore ARE allowed on own tenant (recovery path while session lives).
   - suspended_at / vaulted_at timestamps are ALWAYS written — they are the
     audit truth and the source for effective_status derivation.
+  - ✅ PAYG TRANSITION is self-service (tenant owner OR super-admin) and DEBT-GATED:
+    any unpaid platform commission must be settled FIRST. NO automatic waivers —
+    waiver remains a manual super-admin correction tool, never a side effect.
 """
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,6 +26,8 @@ from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
+from app.models.commission import CommissionEvent, CommissionStatus
+from app.models.subscriptions import BillingCycle, PlanType, Subscription, SubscriptionStatus
 from app.models.tenants import Tenant
 from app.models.users import User, UserRole
 from app.schemas.tenant import (
@@ -31,7 +37,7 @@ from app.schemas.tenant import (
     TenantVaultPayload,
     TenantRestorePayload,
 )
-from app.services.cache import invalidate_tenant_cache
+from app.services.cache import invalidate_subscription_cache, invalidate_tenant_cache
 from app.services.activity_log import TenantActivityLogger
 
 router = APIRouter()
@@ -195,6 +201,108 @@ async def restore_tenant(
         await TenantActivityLogger.on_activated(db, current_user.id, tenant)
     await db.commit()
 
+    return tenant
+
+
+@router.post("/{tenant_id}/transition-to-payg", response_model=TenantOut)
+@limiter.limit("10/minute")  # 🚨 Billing-mode change
+async def transition_to_payg(
+    request: Request,
+    tenant_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    ✅ SELF-SERVICE PAYG SWITCH — tenant admin (own tenant) or super-admin (any).
+    CONTRACT RULES:
+      - NO automatic waivers: any unpaid platform commission must be settled
+        FIRST (409 otherwise). Waiver stays a manual super-admin correction tool.
+      - Idempotent: already-PAYG tenants return unchanged.
+      - Vaulted / suspended tenants cannot switch billing mode.
+      - Clears trial/subscription dates: PAYG has no renewal cycle.
+      - Keeps the subscriptions ledger consistent (latest row flips to PAYG).
+    """
+    if current_user.role != UserRole.super_admin and current_user.tenant_id != tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only change your own agency's billing mode.",
+        )
+    tenant = await _load_tenant(db, tenant_id)
+
+    if tenant.is_archived:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vaulted tenants cannot change billing mode. Restore from the Vault first.",
+        )
+    if not tenant.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Suspended tenants cannot change billing mode. Activate first.",
+        )
+
+    if tenant.billing_cycle == "pay_as_you_go":
+        return tenant  # idempotent
+
+    # ✅ DEBT GATE: they owe the system → settle first. No silent forgiveness.
+    owed = (
+        await db.execute(
+            select(func.coalesce(func.sum(CommissionEvent.amount), 0)).where(
+                CommissionEvent.tenant_id == tenant_id,
+                CommissionEvent.status == CommissionStatus.unpaid,
+            )
+        )
+    ).scalar() or 0
+    if Decimal(owed) > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Outstanding platform commission of KES {Decimal(owed):,} must be "
+                "settled before changing plan. Settle it via Commission → Pay, or "
+                "contact support."
+            ),
+        )
+
+    now = datetime.now(timezone.utc)
+    tenant.plan = "pay_as_you_go"
+    tenant.billing_cycle = "pay_as_you_go"
+    tenant.subscription_status = SubscriptionStatus.active
+    tenant.trial_ends_at = None
+    tenant.subscription_ends_at = None
+    tenant.grace_period_ends_at = None
+
+    # ✅ Keep the subscription ledger consistent (latest row flips to PAYG, no expiry)
+    sub = (
+        await db.execute(
+            select(Subscription)
+            .where(Subscription.tenant_id == tenant_id)
+            .order_by(Subscription.created_at.desc())
+        )
+    ).scalars().first()
+    if sub:
+        sub.plan = PlanType.pay_as_you_go
+        sub.billing_cycle = BillingCycle.pay_as_you_go
+        sub.status = SubscriptionStatus.active
+        sub.starts_at = now
+        sub.ends_at = None
+        sub.grace_period_ends_at = None
+        sub.auto_renew = False
+    else:
+        db.add(Subscription(
+            tenant_id=tenant_id,
+            plan=PlanType.pay_as_you_go,
+            billing_cycle=BillingCycle.pay_as_you_go,
+            status=SubscriptionStatus.active,
+            starts_at=now,
+            ends_at=None,
+            auto_renew=False,
+        ))
+
+    await db.commit()
+    await db.refresh(tenant)
+    await db.refresh(tenant.profile)
+
+    await invalidate_tenant_cache()
+    await invalidate_subscription_cache(tenant_id)
     return tenant
 
 

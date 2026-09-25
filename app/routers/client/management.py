@@ -76,7 +76,7 @@ async def create_client(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A client with these details already exists.",
+            detail="A client with these details already exists. Check the existing record before adding another client.",
         )
 
     await ClientTaskService.on_client_created(db, db_client, db_client.tenant_id)
@@ -235,7 +235,7 @@ async def update_client(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A client with these details already exists.",
+            detail="A client with these details already exists. Check the existing record before updating this client.",
         )
 
     # ✅ Invalidate cache
@@ -261,7 +261,7 @@ async def archive_client(
     if client.is_archived:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Client is already archived."
+            detail="This client is already archived."
         )
 
     # ✅ Check for active bookings
@@ -273,7 +273,7 @@ async def archive_client(
     if active_bookings:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot archive client with active bookings. Please complete or cancel bookings first."
+            detail="This client has active bookings. Complete or cancel them before archiving this client."
         )
 
     client.is_archived = True
@@ -300,7 +300,7 @@ async def restore_client(
     if not client.is_archived:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Client is not archived."
+            detail="This client is not archived, so there is nothing to restore."
         )
 
     client.is_archived = False
@@ -327,7 +327,7 @@ async def delete_client(
     if not client.is_archived:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Client must be archived before deletion."
+            detail="Archive this client before deleting them."
         )
 
     # ✅ Check for active bookings
@@ -339,7 +339,7 @@ async def delete_client(
     if active_bookings:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete client with active bookings. Please complete or cancel bookings first."
+            detail="This client has active bookings. Complete or cancel them before deleting this client."
         )
 
     try:
@@ -349,7 +349,7 @@ async def delete_client(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete client with historical bookings. Please archive instead."
+            detail="This client has past bookings and cannot be deleted. Keep the record archived instead."
         )
 
     # ✅ Invalidate cache

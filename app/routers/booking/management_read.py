@@ -158,7 +158,7 @@ async def get_booking(
     booking = result.scalars().unique().first()
 
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
+        raise HTTPException(status_code=404, detail="We couldn't find this booking. Refresh the list and try again.")
 
     # ✅ Return serialized with denormalized UI fields
     return serialize_booking(booking)

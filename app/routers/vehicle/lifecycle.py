@@ -31,17 +31,17 @@ async def activate_vehicle(
     if vehicle.status != VehicleStatus.pending_activation:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only vehicles pending activation can be activated."
+            detail="Only vehicles awaiting activation can be activated."
         )
     if not vehicle.insurance_number or not vehicle.insurance_expiry:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Insurance policy number and expiry date are required before activation."
+            detail="Add the insurance policy number and expiry date before activating this vehicle."
         )
     if vehicle.insurance_expiry <= datetime.now(timezone.utc):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Insurance is already expired. Cannot activate vehicle."
+            detail="This vehicle's insurance has expired. Update the policy details before activation."
         )
         
     vehicle.status = VehicleStatus.available
@@ -67,17 +67,17 @@ async def send_to_maintenance(
     if vehicle.status == VehicleStatus.retired:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Retired vehicles cannot be sent to maintenance."
+            detail="This vehicle is retired and cannot be sent to maintenance."
         )
     if vehicle.status == VehicleStatus.rented:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Vehicle is currently rented."
+            detail="This vehicle is currently rented. Complete or cancel its booking before sending it to maintenance."
         )
     if vehicle.status == VehicleStatus.maintenance:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Vehicle is already in maintenance."
+            detail="This vehicle is already in maintenance."
         )
         
     vehicle.status = VehicleStatus.maintenance
@@ -103,12 +103,12 @@ async def reactivate_vehicle(
     if vehicle.status == VehicleStatus.retired:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Retired vehicles cannot be reactivated."
+            detail="This vehicle is retired and cannot be reactivated."
         )
     if vehicle.status == VehicleStatus.available:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Vehicle is already available."
+            detail="This vehicle is already available."
         )
         
     vehicle.status = VehicleStatus.available
@@ -134,12 +134,12 @@ async def retire_vehicle(
     if vehicle.status == VehicleStatus.rented:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot retire a vehicle that is currently rented."
+            detail="This vehicle is currently rented. Complete or cancel its booking before retiring it."
         )
     if vehicle.status == VehicleStatus.retired:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Vehicle is already retired."
+            detail="This vehicle is already retired."
         )
         
     vehicle.status = VehicleStatus.retired
@@ -174,14 +174,14 @@ async def update_vehicle_mileage(
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Mileage can only be updated for vehicles with pending mileage or in operational status."
+            detail="Update mileage only when it is due or when the vehicle is available or in maintenance."
         )
         
     # 2. Validate Logic: Odometer must move forward
     if payload.current_mileage < vehicle.current_mileage:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"New mileage ({payload.current_mileage} km) must be greater than or equal to current mileage ({vehicle.current_mileage} km)."
+            detail=f"Enter mileage equal to or greater than the current mileage of {vehicle.current_mileage} km."
         )
         
     # 3. Apply Updates

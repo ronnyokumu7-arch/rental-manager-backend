@@ -64,7 +64,7 @@ class BookingLifecycleService:
         )
         booking = (await db.execute(stmt)).scalars().unique().first()
         if not booking:
-            raise HTTPException(status_code=404, detail="Booking not found.")
+            raise HTTPException(status_code=404, detail="We couldn't find this booking. Refresh the list and try again.")
         return booking
 
     @staticmethod
@@ -74,7 +74,7 @@ class BookingLifecycleService:
         stmt = select(Vehicle).where(Vehicle.id == vehicle_id).with_for_update()
         vehicle = (await db.execute(stmt)).scalars().first()
         if not vehicle or vehicle.tenant_id != tenant_id:
-            raise HTTPException(status_code=404, detail="Vehicle not found.")
+            raise HTTPException(status_code=404, detail="We couldn't find this vehicle. Refresh the list and try again.")
         return vehicle
 
     @staticmethod
@@ -133,7 +133,7 @@ class BookingLifecycleService:
         if booking.status == BookingStatus.confirmed:
             return await cls._reload(db, booking.id)          # idempotent
         if booking.status != BookingStatus.pending:
-            raise HTTPException(status_code=400, detail="Only pending bookings can be confirmed.")
+            raise HTTPException(status_code=400, detail="Only pending bookings can be confirmed. Check the booking status and try again.")
 
         booking.status = BookingStatus.confirmed
 
@@ -163,19 +163,19 @@ class BookingLifecycleService:
         if booking.status == BookingStatus.active:
             return await cls._reload(db, booking.id)          # idempotent
         if booking.status not in (BookingStatus.pending, BookingStatus.confirmed):
-            raise HTTPException(status_code=400, detail="Only pending or confirmed bookings can start.")
+            raise HTTPException(status_code=400, detail="Only pending or confirmed bookings can start. Check the booking status and try again.")
 
         # ✅ TRIP-START GATE: friendly, specific blockers (contract → payment order)
         issues = await cls._start_preconditions(db, booking)
         if "contract" in issues:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Trip can't start yet — the rental contract hasn't been signed. Send the contract link and wait for the client's signature.",
+                detail="This trip can't start yet because the rental contract isn't signed. Send the contract to the client and wait for them to sign it.",
             )
         if "payment" in issues:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Trip can't start yet — no payment has been recorded. Record at least a partial payment (deposit) before handing over the vehicle.",
+                detail="This trip can't start yet because no payment has been recorded. Record at least a partial payment before handing over the vehicle.",
             )
 
         # Client must be active
@@ -183,11 +183,11 @@ class BookingLifecycleService:
             select(Client).where(Client.id == booking.client_id)
         )).scalars().first()
         if not client or client.status != ClientStatus.active:
-            raise HTTPException(status_code=400, detail="Client must be active to start a trip.")
+            raise HTTPException(status_code=400, detail="Activate the client before starting this trip.")
 
         vehicle = await cls._load_vehicle_locked(db, booking.vehicle_id, current_user.tenant_id)
         if vehicle.status != VehicleStatus.available:
-            raise HTTPException(status_code=409, detail="Vehicle is not available.")
+            raise HTTPException(status_code=409, detail="This vehicle is not available. Choose another vehicle or check its current booking.")
 
         old_status = booking.status
         booking.status = BookingStatus.active
@@ -234,7 +234,7 @@ class BookingLifecycleService:
         if booking.status == BookingStatus.completed:
             return await cls._reload(db, booking.id)          # idempotent
         if booking.status != BookingStatus.active:
-            raise HTTPException(status_code=400, detail="Only active bookings can be completed.")
+            raise HTTPException(status_code=400, detail="Only active bookings can be completed. Start the trip before marking it complete.")
 
         vehicle = await cls._load_vehicle_locked(db, booking.vehicle_id, current_user.tenant_id)
 
@@ -290,7 +290,7 @@ class BookingLifecycleService:
         if booking.status == BookingStatus.cancelled:
             return await cls._reload(db, booking.id)          # idempotent
         if booking.status == BookingStatus.completed:
-            raise HTTPException(status_code=400, detail="Cannot cancel a completed booking.")
+            raise HTTPException(status_code=400, detail="This booking is complete and can no longer be cancelled.")
 
         old_status = booking.status
         was_active = booking.status == BookingStatus.active
@@ -420,7 +420,7 @@ async def _create_commission_event(
         if booking.status == BookingStatus.cancelled:
             return booking
         if booking.status == BookingStatus.completed:
-            raise HTTPException(status_code=400, detail="Cannot cancel a completed booking.")
+            raise HTTPException(status_code=400, detail="This booking is complete and can no longer be cancelled.")
 
         old_status = booking.status
         was_active = booking.status == BookingStatus.active
@@ -473,24 +473,24 @@ async def _create_commission_event(
         if booking.status == BookingStatus.active:
             return booking
         if booking.status not in (BookingStatus.pending, BookingStatus.confirmed):
-            raise HTTPException(status_code=400, detail="Booking cannot start.")
+            raise HTTPException(status_code=400, detail="This booking can't start in its current status. Check the booking status and try again.")
 
         # ✅ TRIP-START GATE: silently skip until signed + paid (scheduler retries)
         if await cls._start_preconditions(db, booking):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="Auto-start skipped: contract not signed or no payment recorded.",
+                detail="The trip hasn't started because the contract isn't signed or no payment is recorded yet.",
             )
 
         client = (await db.execute(
             select(Client).where(Client.id == booking.client_id)
         )).scalars().first()
         if not client or client.status != ClientStatus.active:
-            raise HTTPException(status_code=400, detail="Client must be active.")
+            raise HTTPException(status_code=400, detail="Activate the client before starting this trip.")
 
         vehicle = await cls._load_vehicle_locked(db, booking.vehicle_id, booking.tenant_id)
         if vehicle.status != VehicleStatus.available:
-            raise HTTPException(status_code=409, detail="Vehicle is not available.")
+            raise HTTPException(status_code=409, detail="This vehicle is not available. Check its current booking or choose another vehicle.")
 
         old_status = booking.status
         booking.status = BookingStatus.active
@@ -539,7 +539,7 @@ async def _create_commission_event(
         if booking.status == BookingStatus.completed:
             return booking  # idempotent
         if booking.status != BookingStatus.active:
-            raise HTTPException(status_code=400, detail="Only active trips can be auto-ended.")
+            raise HTTPException(status_code=400, detail="Only active trips can be completed automatically.")
 
         vehicle = await cls._load_vehicle_locked(db, booking.vehicle_id, booking.tenant_id)
 

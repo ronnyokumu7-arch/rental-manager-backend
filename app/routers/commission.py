@@ -14,6 +14,7 @@ from app.dependencies.auth import get_current_user
 from app.models.commission import CommissionEvent, CommissionStatus
 from app.models.commission_payment import CommissionPayment, CommissionPaymentStatus
 from app.models.platform_settings import PlatformSettings
+from app.models.tenants import Tenant  # ✅ NEW: billing-mode scope gate
 from app.models.users import User, UserRole
 from app.schemas.platform_settings import PlatformSettingsOut, PlatformSettingsUpdate
 from app.schemas.commission import CommissionEventOut, CommissionSummaryOut
@@ -130,6 +131,16 @@ async def commission_summary(
         ).days
         days_until_lock = grace_days - age_days
         soft_locked = days_until_lock <= 0
+
+    # ✅ BILLING-MODE SCOPE: the operational soft-lock applies ONLY to PAYG tenants.
+    # Subscription tenants are never commission-locked (their leverage is
+    # subscription expiry, not commission). Outstanding debt STILL reports for
+    # everyone, so it remains visible and settleable before any plan transition.
+    tenant_row = await db.get(Tenant, target)
+    is_payg = tenant_row is not None and tenant_row.billing_cycle == "pay_as_you_go"
+    if not is_payg:
+        soft_locked = False
+        days_until_lock = None
 
     return CommissionSummaryOut(
         currency_code="KES",

@@ -22,7 +22,7 @@ def get_authorized_client(client_id: int, user: User, db: Session) -> Client:
         if user.tenant_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User has no tenant association"
+                detail="Your account isn't linked to an agency. Contact your administrator for access."
             )
         stmt = select(Client).where(
             Client.id == client_id,
@@ -35,7 +35,7 @@ def get_authorized_client(client_id: int, user: User, db: Session) -> Client:
     if not client:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Client not found or access denied"
+            detail="We couldn't find this client, or you may not have access to them."
         )
     return client
 
@@ -55,7 +55,7 @@ async def get_authorized_client_async(client_id: int, user: User, db: AsyncSessi
         if user.tenant_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User has no tenant association"
+                detail="Your account isn't linked to an agency. Contact your administrator for access."
             )
         stmt = select(Client).where(
             Client.id == client_id,
@@ -68,6 +68,6 @@ async def get_authorized_client_async(client_id: int, user: User, db: AsyncSessi
     if not client:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Client not found or access denied"
+            detail="We couldn't find this client, or you may not have access to them."
         )
     return client

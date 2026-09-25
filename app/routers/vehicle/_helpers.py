@@ -31,7 +31,7 @@ def get_authorized_vehicle(vehicle_id: int, user: User, db: Session) -> Vehicle:
         if user.tenant_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User has no tenant association"
+                detail="Your account isn't linked to an agency. Contact your administrator for access."
             )
         stmt = select(Vehicle).where(
             Vehicle.id == vehicle_id,
@@ -44,7 +44,7 @@ def get_authorized_vehicle(vehicle_id: int, user: User, db: Session) -> Vehicle:
     if not vehicle:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found or access denied"
+            detail="We couldn't find this vehicle, or you may not have access to it."
         )
     return vehicle
 
@@ -73,7 +73,7 @@ async def get_authorized_vehicle_async(vehicle_id: int, user: User, db: AsyncSes
         if user.tenant_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User has no tenant association"
+                detail="Your account isn't linked to an agency. Contact your administrator for access."
             )
         stmt = select(Vehicle).where(
             Vehicle.id == vehicle_id,
@@ -86,6 +86,6 @@ async def get_authorized_vehicle_async(vehicle_id: int, user: User, db: AsyncSes
     if not vehicle:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vehicle not found or access denied"
+            detail="We couldn't find this vehicle, or you may not have access to it."
         )
     return vehicle

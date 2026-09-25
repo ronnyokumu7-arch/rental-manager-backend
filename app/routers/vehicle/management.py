@@ -177,7 +177,7 @@ async def update_vehicle(
         if new_expiry <= datetime.now(timezone.utc):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Insurance expiry cannot be set to a past date."
+                detail="Choose a future date for the insurance expiry."
             )
             
     for field, value in update_data.items():
@@ -209,12 +209,12 @@ async def archive_vehicle(
     if vehicle.status == VehicleStatus.rented:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot archive a vehicle that is currently rented."
+            detail="This vehicle is currently rented. Complete or cancel its booking before archiving it."
         )
     if vehicle.is_archived:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Vehicle is already archived."
+            detail="This vehicle is already archived."
         )
     
     # ✅ Check for active bookings
@@ -226,7 +226,7 @@ async def archive_vehicle(
     if active_bookings:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot archive vehicle with active bookings. Please complete or cancel bookings first."
+            detail="This vehicle has active bookings. Complete or cancel them before archiving it."
         )
         
     vehicle.is_archived = True
@@ -253,7 +253,7 @@ async def restore_vehicle(
     if not vehicle.is_archived:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Vehicle is not archived."
+            detail="This vehicle is not archived, so there is nothing to restore."
         )
         
     vehicle.is_archived = False
@@ -281,7 +281,7 @@ async def delete_vehicle(
     if vehicle.status == VehicleStatus.rented:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete a vehicle that is currently rented."
+            detail="This vehicle is currently rented. Complete or cancel its booking before deleting it."
         )
     
     # ✅ Check for active bookings
@@ -293,7 +293,7 @@ async def delete_vehicle(
     if active_bookings:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete vehicle with active bookings. Please complete or cancel bookings first."
+            detail="This vehicle has active bookings. Complete or cancel them before deleting it."
         )
         
     try:
@@ -303,7 +303,7 @@ async def delete_vehicle(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete vehicle with historical bookings. Please archive it instead."
+            detail="This vehicle has past bookings and cannot be deleted. Archive it instead."
         )
     
     # ✅ Invalidate cache

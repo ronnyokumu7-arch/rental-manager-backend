@@ -25,7 +25,7 @@ def get_authorized_booking(booking_id: int, user: User, db: Session) -> Booking:
         if user.tenant_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User has no tenant association"
+                detail="Your account isn't linked to an agency. Contact your administrator for access."
             )
         stmt = select(Booking).where(
             Booking.id == booking_id,
@@ -44,7 +44,7 @@ def get_authorized_booking(booking_id: int, user: User, db: Session) -> Booking:
     if not booking:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Booking not found or access denied"
+            detail="We couldn't find this booking, or you may not have access to it."
         )
     return booking
 
@@ -67,7 +67,7 @@ async def get_authorized_booking_async(booking_id: int, user: User, db: AsyncSes
         if user.tenant_id is None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User has no tenant association"
+                detail="Your account isn't linked to an agency. Contact your administrator for access."
             )
         stmt = select(Booking).where(
             Booking.id == booking_id,
@@ -86,6 +86,6 @@ async def get_authorized_booking_async(booking_id: int, user: User, db: AsyncSes
     if not booking:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Booking not found or access denied"
+            detail="We couldn't find this booking, or you may not have access to it."
         )
     return booking
