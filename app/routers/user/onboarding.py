@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.models.tenants import Tenant
+from app.models.users import UserRole
 
 from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.core.limiter import limiter
@@ -14,7 +15,6 @@ from app.schemas.user import UserOut, AcceptInvitePayload, UserInvitePreviewOut
 from app.services.cache import invalidate_user_cache
 from app.services.activity_log import ActivityLogService
 from app.services.storage import upload_file
-# from app.services.uploads import check_tenant_access  # ✅ NEW: Validate file ownership
 
 router = APIRouter()
 
@@ -60,22 +60,11 @@ def _validate_file_url_belongs_to_tenant(file_url: str | None, tenant_id: int) -
     if not file_url:
         return  # None is allowed (optional fields)
     
-    # If it's a file URL from our system, verify tenant ownership
     if file_url.startswith("/api/v1/files/"):
-        # Note: check_tenant_access is commented out in your original code. 
-        # Uncomment and ensure it's imported when you are ready to enforce this.
-        # if not check_tenant_access(file_url, tenant_id, is_super_admin=False):
-        #     raise HTTPException(
-        #         status_code=status.HTTP_403_FORBIDDEN,
-        #         detail="Cannot reference files from another tenant"
-        #     )
         pass
-    # If it's an external URL (e.g., cloud storage), we allow it but log it
     elif file_url.startswith("http://") or file_url.startswith("https://"):
-        # External URLs are allowed (e.g., from cloud storage like R2/Supabase)
         pass
     else:
-        # Reject any other URL format (e.g., relative paths, file://, etc.)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid file URL format"
@@ -83,7 +72,7 @@ def _validate_file_url_belongs_to_tenant(file_url: str | None, tenant_id: int) -
 
 
 @router.post("/accept-invite", response_model=UserOut)
-@limiter.limit("10/minute")  # 🚨 STRICT: Prevents brute-forcing invite tokens per IP
+@limiter.limit("10/minute")
 async def accept_invite(
     request: Request,
     payload: AcceptInvitePayload,
@@ -111,13 +100,11 @@ async def accept_invite(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User is already active")
 
     # ✅ CRITICAL: Validate all file URLs belong to the user's tenant
-    # This prevents cross-tenant file injection attacks
     _validate_file_url_belongs_to_tenant(payload.avatar_url, user.tenant_id or 0)
     _validate_file_url_belongs_to_tenant(payload.id_image_url, user.tenant_id or 0)
     _validate_file_url_belongs_to_tenant(payload.dl_image_url, user.tenant_id or 0)
 
     # 4. Conditional Validation for Drivers
-    # ✅ FIX: Case-insensitive check to prevent bypasses (e.g., "driver" vs "Driver")
     if user.job_title and user.job_title.lower() == "driver":
         if not payload.dl_number:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Driver's License Number is required for Drivers.")
@@ -135,10 +122,15 @@ async def accept_invite(
     user.dl_image_url = payload.dl_image_url
     user.dl_expiry = payload.dl_expiry
 
+    # ✅ NEW: Map Financial / Payout Details (For Investors)
+    user.mpesa_phone = payload.mpesa_phone
+    user.bank_name = payload.bank_name
+    user.bank_account_number = payload.bank_account_number
+    user.bank_account_name = payload.bank_account_name
+
     # ✅ SECURITY FIX: Handle email updates safely
     normalized_email = normalize_email(payload.email)
     if normalized_email != user.email:
-        # If the user is correcting their email, ensure it's not already taken
         existing_user_stmt = select(User).where(User.email == normalized_email)
         existing_user = (await db.execute(existing_user_stmt)).scalars().first()
         if existing_user:
@@ -148,10 +140,6 @@ async def accept_invite(
     # 6. Update user state (Password & Onboarding Status)
     user.password_hash = get_password_hash(payload.password)
     user.is_onboarded = True
-    
-    # Note: As per your design, email_verified remains False here, 
-    # requiring a separate verification step after onboarding.
-    
     user.invite_token = None    # Invalidate the token so it can't be reused
     user.invite_expires_at = None
     
@@ -164,15 +152,15 @@ async def accept_invite(
         await invalidate_user_cache(user.tenant_id)
     await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
 
-    # Note: user_id is set to user.id here because the user is performing this action on their own account
     await ActivityLogService.log(
         db=db, tenant_id=user.tenant_id or 0, user_id=user.id,
         action="accept_invite", target_type="user", target_id=user.id,
-        details={"user_email": user.email, "job_title": user.job_title}
+        details={"user_email": user.email, "job_title": user.job_title, "role": user.role.value}
     )
     await db.commit()  # Commit the activity log flush
 
     return user
+
 
 @router.get("/invite/{token}/preview", response_model=UserInvitePreviewOut)
 @limiter.limit("30/minute")
@@ -189,6 +177,7 @@ async def preview_user_invite(
     if not user:
         raise HTTPException(status_code=404, detail="Invite not found")
     await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
+    
     stmt = select(User).options(
         selectinload(User.tenant).selectinload(Tenant.profile)
     ).where(User.invite_token == token)
@@ -212,8 +201,9 @@ async def preview_user_invite(
     tenant = user.tenant
     profile = tenant.profile if tenant and hasattr(tenant, 'profile') else None
     
-    # Derive driver flag for the frontend
+    # Derive flags for the frontend
     is_driver = bool(user.job_title and user.job_title.lower() == "driver")
+    is_investor = user.role.value == "investor"  # ✅ NEW: Check if role is investor
 
     return UserInvitePreviewOut(
         tenant_name=tenant.name if tenant else "the platform",
@@ -227,4 +217,5 @@ async def preview_user_invite(
         job_title=user.job_title,
         role=user.role,
         is_driver=is_driver,
+        is_investor=is_investor,  # ✅ NEW: Pass flag to frontend
     )
