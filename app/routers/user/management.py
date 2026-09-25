@@ -146,6 +146,88 @@ async def list_users(
 
 
 # =============================================================================
+# 1.5 UPDATE SELF (PATCH /me)
+# =============================================================================
+@router.patch("/me", response_model=UserOut)
+@limiter.limit("30/minute")
+async def update_my_profile(
+    request: Request,
+    update_data: UserUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Allows the current authenticated user to update their own profile.
+    Investors use this to update payout details, name, phone, etc.
+    """
+    # 1. Get the raw update data, excluding unset fields
+    safe_update_data = update_data.model_dump(exclude_unset=True)
+
+    # 2. STRICTLY PROTECT sensitive fields from self-modification
+    protected_fields = {
+        "role", "tenant_id", "is_active", "is_suspended", "permissions", 
+        "is_onboarded", "invite_token", "invite_expires_at", "email_verified", 
+        "phone_verified", "account_locked_until", "last_login_at", 
+        "created_at", "updated_at", "is_tenant_owner", "suspension_reason"
+    }
+    for field in protected_fields:
+        safe_update_data.pop(field, None)
+
+    # 3. Handle Email Change (Normalization & Uniqueness Check)
+    if "email" in safe_update_data:
+        new_email = normalize_email(safe_update_data["email"])
+        if new_email != current_user.email:
+            existing_user_stmt = select(User).where(
+                User.email == new_email, 
+                User.id != current_user.id
+            )
+            existing_user = (await db.execute(existing_user_stmt)).scalars().first()
+            if existing_user:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This email is already in use.")
+            safe_update_data["email"] = new_email
+            # Force re-verification if email changes
+            safe_update_data["email_verified"] = False
+
+    # 4. Handle Password Change (Hashing)
+    if "password" in safe_update_data:
+        safe_update_data["password_hash"] = get_password_hash(safe_update_data.pop("password"))
+        # Reset security counters on password change
+        safe_update_data["failed_login_attempts"] = 0
+        safe_update_data["account_locked_until"] = None
+
+    # 5. Apply Updates
+    for field, value in safe_update_data.items():
+        setattr(current_user, field, value)
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Update failed due to database constraint")
+
+    await db.refresh(current_user)
+
+    # 6. Invalidate Cache
+    if current_user.tenant_id:
+        await invalidate_user_cache(current_user.tenant_id)
+
+    # 7. Log Activity
+    await ActivityLogService.log(
+        db=db, 
+        tenant_id=current_user.tenant_id or 0, 
+        user_id=current_user.id,
+        action="update_profile_self", 
+        target_type="user", 
+        target_id=current_user.id,
+        details={"changed_fields": list(safe_update_data.keys())}
+    )
+    await db.commit()  # Commit log flush
+
+    # Return enriched user (though for self-view, enrichment is less critical, it keeps response consistent)
+    return (await _enrich_users_with_owner_status([current_user], db))[0]
+
+
+# =============================================================================
 # 2. GET SINGLE USER (GET /{user_id})
 # =============================================================================
 @router.get("/{user_id}", response_model=UserOut)
