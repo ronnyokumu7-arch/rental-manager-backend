@@ -6,16 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.core.limiter import limiter
+from app.core.config import get_settings  # ✅ ADD THIS IMPORT
 from app.dependencies.auth import get_current_user
 from app.models.users import User, UserRole
 from app.models.tenants import Tenant
 from app.services.email import send_investor_invite_email
 
 router = APIRouter(prefix="/investors", tags=["Investors"])
+
+# ✅ Get settings at module level
+settings = get_settings()
 
 # ✅ Schema for the invite request
 class InvestorInviteCreate(BaseModel):
@@ -84,7 +87,8 @@ async def invite_investor(
             agency_name = tenant.name
 
     # 6. Send the Email (Non-blocking / Graceful Failure)
-    invite_link = f"{request.app.state.settings.frontend_url}/accept-invite?token={invite_token}"
+    # ✅ USE settings.frontend_url directly instead of request.app.state.settings
+    invite_link = f"{settings.frontend_url}/accept-invite?token={invite_token}"
     
     try:
         await send_investor_invite_email(
