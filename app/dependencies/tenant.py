@@ -1,6 +1,6 @@
 """Central tenant-scope resolution for request handlers.
 
-Tenant members are always restricted to their own tenant.  A super admin can
+Tenant members are always restricted to their own tenant. A super admin can
 inspect the whole platform or deliberately select one tenant for an operation.
 Create operations must use ``require_mutation_tenant_scope`` so data is never
 created with a NULL tenant id.
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Query, status
 
-from app.dependencies.auth import get_current_user, get_optional_current_user
+from app.dependencies.auth import get_current_user
 from app.models.users import User, UserRole
 
 
@@ -19,23 +19,11 @@ class TenantScope:
     is_system_scope: bool
 
 
-def reject_investor_tenant_access(user: User) -> None:
-    if user.role == UserRole.investor:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Investors can only access investor-specific resources",
-        )
-
-
-async def block_investors_from_tenant_data(
-    current_user: User | None = Depends(get_optional_current_user),
-) -> None:
-    if current_user is not None:
-        reject_investor_tenant_access(current_user)
-
-
 def resolve_tenant_scope(user: User, requested_tenant_id: int | None = None) -> TenantScope:
-    """Resolve a safe read scope without trusting caller supplied tenant ids."""
+    """
+    Resolve a safe read scope without trusting caller supplied tenant ids.
+    SECURITY: This strictly binds Staff and Investors to their own tenant_id.
+    """
     if user.role == UserRole.super_admin:
         return TenantScope(tenant_id=requested_tenant_id, is_system_scope=requested_tenant_id is None)
 
@@ -44,11 +32,16 @@ def resolve_tenant_scope(user: User, requested_tenant_id: int | None = None) -> 
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User has no tenant association",
         )
+        
+    # CRITICAL: Prevent tenant hopping. 
+    # If a user tries to pass a different tenant_id in the query params, block them.
     if requested_tenant_id is not None and requested_tenant_id != user.tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You cannot access another tenant",
         )
+        
+    # Return their own tenant scope. This is safe for Investors, Staff, and Admins.
     return TenantScope(tenant_id=user.tenant_id, is_system_scope=False)
 
 
@@ -67,6 +60,6 @@ async def require_mutation_tenant_scope(
     if scope.tenant_id is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Super-admin writes require an explicit tenant_id",
+            detail="Writes require a valid tenant context",
         )
     return scope
