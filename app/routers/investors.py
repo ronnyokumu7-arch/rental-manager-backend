@@ -11,9 +11,10 @@ from app.db.database import get_db
 from app.core.limiter import limiter
 from app.core.config import get_settings
 from app.dependencies.auth import get_current_user
+from app.dependencies.tenant import TenantScope, get_tenant_scope, require_mutation_tenant_scope
 from app.models.users import User, UserRole
 from app.models.tenants import Tenant
-from app.schemas.user import UserOut  # ✅ Added import for the response model
+from app.schemas.user import UserOut
 from app.services.email import send_investor_invite_email
 
 router = APIRouter(prefix="/investors", tags=["Investors"])
@@ -27,6 +28,9 @@ class InvestorInviteCreate(BaseModel):
     email: EmailStr
     phone_number: Optional[str] = None
 
+# ---------------------------------------------------------------------------
+# CREATE (INVITE)
+# ---------------------------------------------------------------------------
 @router.post("/invite", status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute")
 async def invite_investor(
@@ -34,20 +38,22 @@ async def invite_investor(
     payload: InvestorInviteCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    # ✅ CRITICAL: Sets RLS context and ensures user has mutation rights for this tenant
+    scope: TenantScope = Depends(require_mutation_tenant_scope),
 ):
     """
     Invite a new investor to the agency's fleet.
-    Only Tenant Admins or Super Admins can perform this action.
+    Strictly scoped to the current tenant context.
     """
     
-    # 1. Security Check: Ensure the inviter is an admin
+    # 1. Security Check: Ensure the inviter is an admin of THIS tenant
     if current_user.role not in [UserRole.tenant_admin, UserRole.super_admin]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only agency administrators can invite investors."
         )
 
-    # 2. Check if user already exists
+    # 2. Check if user already exists (Global check is fine here, but we scope the creation)
     stmt = select(User).where(User.email == payload.email.lower())
     existing_user = (await db.execute(stmt)).scalars().first()
     
@@ -61,18 +67,25 @@ async def invite_investor(
     invite_token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
 
+    # ✅ CRITICAL: Use scope.tenant_id to ensure RLS allows the INSERT
+    if not scope.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid tenant context for invitation."
+        )
+
     # 4. Create placeholder User record
     new_investor = User(
         email=payload.email.lower(),
         full_name=payload.full_name,
         phone_number=payload.phone_number,
         role=UserRole.investor,
-        tenant_id=current_user.tenant_id, # Link to the inviting agency
+        tenant_id=scope.tenant_id, # ✅ SECURE: Uses scoped tenant ID
         invite_token=invite_token,
         invite_expires_at=expires_at,
         is_onboarded=False,
         is_active=True,
-        email_verified=False, # They verify when they accept
+        email_verified=False,
     )
     db.add(new_investor)
     await db.commit()
@@ -80,12 +93,11 @@ async def invite_investor(
 
     # 5. Fetch tenant name properly (async)
     agency_name = "Rental Garage"  # Default fallback
-    if current_user.tenant_id:
-        tenant_stmt = select(Tenant).where(Tenant.id == current_user.tenant_id)
-        tenant_result = await db.execute(tenant_stmt)
-        tenant = tenant_result.scalars().first()
-        if tenant:
-            agency_name = tenant.name
+    tenant_stmt = select(Tenant).where(Tenant.id == scope.tenant_id)
+    tenant_result = await db.execute(tenant_stmt)
+    tenant = tenant_result.scalars().first()
+    if tenant:
+        agency_name = tenant.name
 
     # 6. Send the Email (Non-blocking / Graceful Failure)
     invite_link = f"{settings.frontend_url}/accept-invite?token={invite_token}"
@@ -108,17 +120,21 @@ async def invite_investor(
     }
 
 
-# ✅ NEW: List Investors Endpoint
+# ---------------------------------------------------------------------------
+# READ (LIST)
+# ---------------------------------------------------------------------------
 @router.get("/", response_model=List[UserOut])
 @limiter.limit("30/minute")
 async def list_investors(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    # ✅ CRITICAL: Sets RLS context for reading data
+    scope: TenantScope = Depends(get_tenant_scope),
 ):
     """
     List all investors for the current tenant.
-    Only Tenant Admins or Super Admins can perform this action.
+    Scoped strictly to the tenant context provided by the dependency.
     """
     # 1. Security Check
     if current_user.role not in [UserRole.tenant_admin, UserRole.super_admin]:
@@ -127,11 +143,12 @@ async def list_investors(
             detail="Only agency administrators can view investors."
         )
 
-    # 2. Query database for investors in this tenant
+    # 2. Query database using the scoped tenant_id
+    # ✅ SECURE: The DB session now has the RLS context set by get_tenant_scope
     stmt = (
         select(User)
         .where(
-            User.tenant_id == current_user.tenant_id,
+            User.tenant_id == scope.tenant_id,
             User.role == UserRole.investor
         )
         .order_by(desc(User.created_at))
