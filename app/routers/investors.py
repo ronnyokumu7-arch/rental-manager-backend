@@ -14,8 +14,10 @@ from app.dependencies.auth import get_current_user
 from app.dependencies.tenant import TenantScope, get_tenant_scope, require_mutation_tenant_scope
 from app.models.users import User, UserRole
 from app.models.tenants import Tenant
-from app.schemas.user import UserOut
+from app.schemas.user import UserOut, UserUpdate
 from app.services.email import send_investor_invite_email
+from app.models.vehicles import Vehicle # Ensure this is imported at the top
+
 
 router = APIRouter(prefix="/investors", tags=["Investors"])
 
@@ -158,3 +160,113 @@ async def list_investors(
     investors = result.scalars().all()
     
     return investors
+
+
+# ---------------------------------------------------------------------------
+# UPDATE INVESTOR (PATCH)
+# ---------------------------------------------------------------------------
+@router.patch("/{investor_id}", response_model=UserOut)
+@limiter.limit("30/minute")
+async def update_investor(
+    request: Request,
+    investor_id: int,
+    updates: UserUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    scope: TenantScope = Depends(require_mutation_tenant_scope),
+):
+    """
+    Update an investor's profile. 
+    Restricted to Tenant Admins. Prevents privilege escalation.
+    """
+    # 1. Fetch the target user
+    stmt = select(User).where(User.id == investor_id)
+    investor = (await db.execute(stmt)).scalars().first()
+
+    if not investor:
+        raise HTTPException(status_code=404, detail="Investor not found")
+
+    # 2. Security: Verify Tenant Isolation
+    if investor.tenant_id != scope.tenant_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # 3. Security: Verify Role (Ensure we aren't accidentally updating an Admin)
+    if investor.role != UserRole.investor:
+        raise HTTPException(status_code=400, detail="Target user is not an investor")
+
+    # 4. Prepare Safe Update Data
+    update_data = updates.model_dump(exclude_unset=True)
+    
+    # 🚨 CRITICAL: Prevent Privilege Escalation
+    # Admins cannot change an investor's role or move them to another tenant via this endpoint
+    update_data.pop("role", None)
+    update_data.pop("tenant_id", None)
+    update_data.pop("permissions", None)
+    update_data.pop("is_suspended", None) # Use a dedicated suspend endpoint if needed
+
+    # 5. Apply Updates
+    for field, value in update_data.items():
+        setattr(investor, field, value)
+
+    await db.commit()
+    await db.refresh(investor)
+    
+    # Invalidate cache
+    if investor.tenant_id:
+        from app.services.cache import invalidate_user_cache
+        await invalidate_user_cache(investor.tenant_id)
+
+    return investor
+
+
+# ---------------------------------------------------------------------------
+# DELETE INVESTOR
+# ---------------------------------------------------------------------------
+@router.delete("/{investor_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("10/minute")
+async def delete_investor(
+    request: Request,
+    investor_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    scope: TenantScope = Depends(require_mutation_tenant_scope),
+):
+    """
+    Remove an investor. 
+    Fails if the investor owns vehicles (to prevent orphaned assets).
+    """
+    # 1. Fetch the target user
+    stmt = select(User).where(User.id == investor_id)
+    investor = (await db.execute(stmt)).scalars().first()
+
+    if not investor:
+        raise HTTPException(status_code=404, detail="Investor not found")
+
+    # 2. Security: Verify Tenant Isolation
+    if investor.tenant_id != scope.tenant_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # 3. Security: Verify Role
+    if investor.role != UserRole.investor:
+        raise HTTPException(status_code=400, detail="Target user is not an investor")
+
+    # 4. Constraint Check: Do they own vehicles?
+    vehicle_stmt = select(Vehicle).where(Vehicle.owner_id == investor.id)
+    vehicles = (await db.execute(vehicle_stmt)).scalars().all()
+    
+    if vehicles:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete investor. They own {len(vehicles)} vehicle(s). Please reassign or delete vehicles first."
+        )
+
+    # 5. Perform Deletion
+    await db.delete(investor)
+    await db.commit()
+
+    # Invalidate cache
+    if investor.tenant_id:
+        from app.services.cache import invalidate_user_cache
+        await invalidate_user_cache(investor.tenant_id)
+
+    return None

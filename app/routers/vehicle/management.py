@@ -33,14 +33,17 @@ async def create_vehicle(
     vehicle: VehicleCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_not_commission_locked),
-    scope: TenantScope = Depends(require_mutation_tenant_scope),
+    # ✅ CHANGED: Use get_tenant_scope instead of require_mutation_tenant_scope
+    # This allows Investors (non-admins) to create vehicles as long as they have a tenant_id.
+    scope: TenantScope = Depends(get_tenant_scope), 
 ):
     data = vehicle.model_dump()
     data["status"] = VehicleStatus.pending_activation
     
-    # ✅ NEW: If an investor is adding this, tag them as the owner
+    # ✅ If an investor is adding this, tag them as the owner
     owner_id = current_user.id if current_user.role.value == "investor" else None
     
+    # ✅ SECURE: scope.tenant_id is guaranteed to be valid by the dependency
     db_vehicle = Vehicle(**data, tenant_id=scope.tenant_id, owner_id=owner_id)
     db.add(db_vehicle)
     await db.commit()
