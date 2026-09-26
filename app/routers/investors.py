@@ -1,5 +1,4 @@
 import secrets
-import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 
@@ -31,7 +30,7 @@ class InvestorInviteCreate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 1. CREATE (INVITE) - Mirrors create_user_invite in users.py
+# 1. CREATE (INVITE)
 # ---------------------------------------------------------------------------
 @router.post("/invite", status_code=status.HTTP_201_CREATED)
 @limiter.limit("20/minute")
@@ -43,7 +42,7 @@ async def invite_investor(
 ):
     """
     Invite a new investor. 
-    PATTERN: Uses current_user.tenant_id directly (proven working pattern).
+    Stores the REAL email address. Security is enforced by password_hash=None and is_onboarded=False.
     """
     # 1. Security: Block Super Admins from tenant invites (matches users.py)
     if current_user.role == UserRole.super_admin:
@@ -68,15 +67,15 @@ async def invite_investor(
 
     # 5. Create User
     invite_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=48) # Matches users.py (48h)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=48)
 
     new_investor = User(
         full_name=payload.full_name,
-        email=f"invite-{uuid.uuid4().hex}@pending.setup", # Placeholder email (matches users.py)
+        email=payload.email.lower(), # ✅ FIXED: Stores the REAL email address
         phone_number=payload.phone_number,
         role=UserRole.investor,
         tenant_id=tenant_id, # ✅ SECURE: Uses direct tenant_id
-        password_hash=None,
+        password_hash=None, # Prevents login until onboarding is complete
         invite_token=invite_token,
         invite_expires_at=expires_at,
         is_onboarded=False,
@@ -91,7 +90,6 @@ async def invite_investor(
         raise HTTPException(status_code=400, detail="Failed to create invite")
         
     await db.refresh(new_investor)
-    await invalidate_user_cache(tenant_id)
 
     # 6. Email Logic
     agency_name = "Rental Garage"
@@ -103,14 +101,14 @@ async def invite_investor(
     
     try:
         await send_investor_invite_email(
-            to=payload.email, # Send to the real email, not the placeholder
+            to=payload.email, # Send to the real email
             full_name=payload.full_name,
             invite_link=invite_link,
             agency_name=agency_name,
             expires_at=expires_at.strftime("%B %d, %Y")
         )
     except Exception as e:
-        print(f"️ Email failed: {e}")
+        print(f"⚠️ Email failed: {e}")
 
     if tenant_id:
         await invalidate_user_cache(tenant_id)
@@ -123,7 +121,7 @@ async def invite_investor(
 
 
 # ---------------------------------------------------------------------------
-# 2. READ (LIST) - Mirrors list_users in users.py
+# 2. READ (LIST)
 # ---------------------------------------------------------------------------
 @router.get("/", response_model=List[UserOut])
 @limiter.limit("60/minute")
@@ -138,7 +136,7 @@ async def list_investors(
     if current_user.role not in [UserRole.tenant_admin, UserRole.super_admin]:
         raise HTTPException(status_code=403, detail="Access denied.")
 
-    # 2. ✅ CRITICAL: Query using current_user.tenant_id (The Proven Pattern)
+    # 2. ✅ CRITICAL: Query using current_user.tenant_id
     stmt = select(User).where(
         User.tenant_id == current_user.tenant_id,
         User.role == UserRole.investor
@@ -149,7 +147,7 @@ async def list_investors(
 
 
 # ---------------------------------------------------------------------------
-# 3. UPDATE (PATCH) - Mirrors update_user in users.py
+# 3. UPDATE (PATCH)
 # ---------------------------------------------------------------------------
 @router.patch("/{investor_id}", response_model=UserOut)
 @limiter.limit("30/minute")
@@ -198,7 +196,7 @@ async def update_investor(
 
 
 # ---------------------------------------------------------------------------
-# 4. DELETE - Mirrors delete_user in users.py
+# 4. DELETE
 # ---------------------------------------------------------------------------
 @router.delete("/{investor_id}", status_code=status.HTTP_204_NO_CONTENT)
 @limiter.limit("10/minute")
