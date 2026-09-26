@@ -91,6 +91,7 @@ async def invite_investor(
         raise HTTPException(status_code=400, detail="Failed to create invite")
         
     await db.refresh(new_investor)
+    await invalidate_user_cache(tenant_id)
 
     # 6. Email Logic
     agency_name = "Rental Garage"
