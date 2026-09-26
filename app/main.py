@@ -21,7 +21,6 @@ from app.core.exceptions import (
 )
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 from app.db.database import test_db_connection
-from app.dependencies.tenant import block_investors_from_tenant_data
 
 from app.routers import (
     activity_logs,
@@ -180,10 +179,9 @@ routers = [
     health,
 ]
 
-investor_scoped_routers = (auth, users, vehicles, investors, user_preferences, health)
-
+# ✅ CLEAN: Register all routers without the blunt global block.
+# Security is now handled precisely at the endpoint level via dependencies.
 for router in routers:
-    dependencies = [] if router in investor_scoped_routers else [Depends(block_investors_from_tenant_data)]
-    app.include_router(router.router, prefix="/api/v1", dependencies=dependencies)
+    app.include_router(router.router, prefix="/api/v1")
 
 app.include_router(agency_health_router, prefix="/api/v1")
