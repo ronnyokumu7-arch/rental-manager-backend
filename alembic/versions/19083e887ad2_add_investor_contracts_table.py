@@ -9,7 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '19083e887ad2'
@@ -30,6 +30,7 @@ def upgrade() -> None:
     """)
 
     # 2. Create the Table
+    # Note: postgresql.ENUM with create_type=False prevents SQLAlchemy from trying to create the enum again
     op.create_table(
         'investor_contracts',
         sa.Column('id', sa.Integer(), primary_key=True, index=True),
@@ -42,7 +43,7 @@ def upgrade() -> None:
         sa.Column('duration_months', sa.Integer(), nullable=True),
         sa.Column('start_date', sa.DateTime(timezone=True), nullable=False),
         sa.Column('end_date', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('status', sa.Enum('draft', 'pending_signature', 'signed', 'terminated', name='investorcontractstatus'), nullable=False, server_default='draft'),
+        sa.Column('status', postgresql.ENUM('draft', 'pending_signature', 'signed', 'terminated', name='investorcontractstatus', create_type=False), nullable=False, server_default='draft'),
         sa.Column('pdf_path', sa.String(length=500), nullable=True),
         sa.Column('share_token', sa.String(length=36), unique=True, nullable=True),
         sa.Column('share_token_expires_at', sa.DateTime(timezone=True), nullable=True),
