@@ -37,6 +37,7 @@ from app.routers import (
     financials,
     health,
     invoices,
+    investor_contracts,  # ✅ NEW: Import investor contracts router
     investors,
     payment_verifications,
     payments,
@@ -65,7 +66,7 @@ async def lifespan(app: FastAPI):
     # ✅ 1. TEST DATABASE CONNECTIVITY FIRST
     db_ok = await test_db_connection()
     if not db_ok:
-        print("⚠️ WARNING: Database connection failed at startup. The app will continue, but authenticated requests will fail.")
+        print("️ WARNING: Database connection failed at startup. The app will continue, but authenticated requests will fail.")
         print("   Check that DATABASE_URL points to a resolvable hostname (same region as this web service).")
     
     # ✅ 2. Initialize Redis cache using the centralized fail-safe client
@@ -96,7 +97,7 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # ─── SHUTDOWN PHASE ─────────────────────────────────────────────────────
+    # ─── SHUTDOWN PHASE ────────────────────────────────────────────────────
     print("🔄 Shutting down application gracefully...")
     
     stop_scheduler()
@@ -167,7 +168,8 @@ routers = [
     services,
     contracts,
     financials,
-    investors,             # ✅ NEW: Add to registration list
+    investors,
+    investor_contracts,  # ✅ NEW: Register investor contracts router
     admin,
     reports,
     activity_logs,

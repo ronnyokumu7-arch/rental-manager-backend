@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Investor Lease Agreement - {{ contract.contract_number }}</title>
+    <style>
+        /* ═══════════════════════════════════════════════════════════
+           PDF-ENGINE OPTIMIZED BASE STYLES
+           ══════════════════════════════════════════════════════════ */
+        @page {
+            size: A4;
+            margin: 12mm 15mm;
+            @bottom-center {
+                content: "Page " counter(page) " of " counter(pages);
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+                font-size: 8pt;
+                color: #64748b;
+                margin-top: 8mm;
+            }
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 9.5pt;
+            line-height: 1.45;
+            color: #0f172a;
+            background: white;
+            padding: 0;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+
+        .document-wrapper { width: 100%; max-width: 100%; }
+
+        .contract-section { margin-bottom: 14pt; }
+        .page-break { break-after: page; page-break-after: always; }
+        .no-break { break-inside: avoid; page-break-inside: avoid; }
+        .header { break-inside: avoid; page-break-inside: avoid; }
+        .charges-table { break-inside: avoid; page-break-inside: avoid; }
+        .signature-box { break-inside: avoid; page-break-inside: avoid; }
+        .audit-stamp { break-inside: avoid; page-break-inside: avoid; }
+
+        .section-title {
+            font-size: 10pt;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: #020617;
+            border-bottom: 1.5pt solid #e2e8f0;
+            padding-bottom: 2pt;
+            margin-bottom: 8pt;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4pt 20pt;
+            margin-bottom: 6pt;
+        }
+        .info-grid.full-width { grid-template-columns: 1fr; }
+        .info-grid .col-span-2 { grid-column: 1 / -1; }
+        
+        .info-label {
+            font-weight: 600;
+            color: #0f172a;
+            font-size: 8.5pt;
+            display: inline-block;
+            margin-right: 3pt;
+        }
+        .info-value {
+            color: #334155;
+            font-weight: 500;
+            font-size: 9pt;
+            white-space: pre-line;
+        }
+
+        .divider { border-top: 1pt dashed #e2e8f0; margin: 6pt 0; padding-top: 6pt; }
+
+        .header {
+            margin-bottom: 14pt;
+            padding-bottom: 10pt;
+            border-bottom: 1.5pt solid #e2e8f0;
+        }
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16pt;
+        }
+        .logo-section { display: flex; align-items: flex-start; gap: 10pt; }
+        
+        .logo-box {
+            width: 90pt;
+            height: 45pt;
+            background: transparent;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 3pt;
+            flex-shrink: 0;
+            overflow: hidden;
+            border: 1pt solid #e2e8f0;
+        }
+        .logo-box img { width: 100%; height: 100%; object-fit: contain; padding: 4pt; }
+        .logo-fallback {
+            display: flex; align-items: center; justify-content: center;
+            width: 100%; height: 100%; background: #f8fafc; color: #0f172a;
+            font-weight: bold; font-size: 9pt; letter-spacing: 0.04em;
+        }
+        
+        .agency-info h1 {
+            font-size: 12pt; font-weight: 800; text-transform: uppercase;
+            letter-spacing: -0.02em; margin: 0 0 2pt 0; color: #020617;
+        }
+        .agency-info p { margin: 1pt 0; color: #475569; font-weight: 500; font-size: 8.5pt; }
+        
+        .status-badge {
+            display: inline-flex; align-items: center; gap: 4pt;
+            font-size: 8pt; font-weight: bold; text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .status-signed { color: #065f46; }
+        .status-pending { color: #92400e; }
+        .secured-text {
+            font-size: 7.5pt; color: #94a3b8; font-family: monospace;
+            margin-top: 2pt; text-align: right;
+        }
+        
+        .meta-grid {
+            display: grid; grid-template-columns: repeat(4, 1fr);
+            gap: 10pt; margin-top: 12pt; padding-top: 8pt;
+            border-top: 1pt solid #e2e8f0; background: #f8fafc;
+            padding: 6pt 8pt; border-radius: 3pt;
+        }
+        .meta-item p:first-child {
+            font-size: 7.5pt; font-weight: bold; text-transform: uppercase;
+            color: #0f172a; margin: 0 0 2pt 0;
+        }
+        .meta-item p:last-child { font-weight: 600; color: #334155; margin: 0; font-size: 9pt; }
+
+        .charges-table {
+            width: 100%; border-collapse: collapse; margin-top: 8pt;
+            text-align: left; font-size: 9pt;
+        }
+        .charges-table th {
+            background: #f1f5f9; color: #0f172a; font-weight: bold;
+            padding: 5pt 6pt; border: 1pt solid #e2e8f0; font-size: 8pt;
+        }
+        .charges-table td {
+            padding: 5pt 6pt; border: 1pt solid #e2e8f0;
+            color: #334155; font-weight: 500;
+        }
+        .charges-table .text-right { text-align: right; }
+        .charges-table .total-row { background: #f8fafc; font-weight: bold; color: #020617; }
+
+        .signature-box {
+            margin-top: 10pt; padding: 8pt; background: #f8fafc;
+            border: 1pt solid #e2e8f0; border-radius: 3pt;
+            break-inside: avoid; page-break-inside: avoid;
+        }
+        .signature-quote {
+            font-size: 8.5pt; color: #475569; font-family: Georgia, serif;
+            font-style: italic; margin: 0 0 6pt 0; line-height: 1.4;
+        }
+        .signature-row {
+            display: flex; justify-content: space-between;
+            align-items: flex-end; padding-top: 2pt;
+        }
+        .signature-label { font-size: 8.5pt; font-weight: bold; color: #0f172a; }
+        .signature-text { text-align: right; max-width: 45%; }
+        .signature-name {
+            font-family: Georgia, serif; font-style: italic; font-weight: bold;
+            color: #1e293b; font-size: 11pt; margin: 0;
+        }
+        .signature-date { font-size: 8pt; color: #94a3b8; font-family: monospace; margin: 1pt 0 0 0; }
+        .signature-image { max-height: 40pt; max-width: 150pt; margin-bottom: 2pt; display: block; }
+
+        .legal-text { color: #475569; font-weight: 500; font-size: 9.5pt; margin-bottom: 10pt; line-height: 1.45; }
+        
+        .execution-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 20pt; padding-top: 6pt;
+        }
+        .execution-block { border-top: 1pt solid #cbd5e1; padding-top: 6pt; }
+        .execution-title {
+            font-weight: bold; text-transform: uppercase; color: #0f172a;
+            margin: 0 0 5pt 0; font-size: 8.5pt;
+        }
+        .execution-detail { color: #475569; font-weight: 500; margin: 2pt 0; font-size: 8.5pt; }
+
+        .audit-stamp {
+            margin-top: 14pt; padding: 10pt; background: #0f172a;
+            color: #f1f5f9; border-radius: 3pt;
+        }
+        .audit-header {
+            display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 1pt solid #1e293b; padding-bottom: 5pt; margin-bottom: 5pt;
+        }
+        .audit-title {
+            display: flex; align-items: center; gap: 5pt; font-size: 8pt;
+            font-weight: bold; text-transform: uppercase; letter-spacing: 0.04em; color: #34d399;
+        }
+        .audit-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 3pt 14pt;
+            font-family: monospace; font-size: 7.5pt; color: #cbd5e1;
+        }
+        .audit-label { color: #64748b; }
+
+        .document-footer {
+            margin-top: 16pt; padding-top: 6pt; border-top: 1pt solid #e2e8f0;
+            display: flex; justify-content: space-between;
+            font-size: 7.5pt; color: #94a3b8; font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="document-wrapper">
+        
+        <!-- [COMPONENT: HEADER] -->
+        <header class="header">
+            <div class="header-top">
+                <div class="logo-section">
+                    <div class="logo-box">
+                        {% if tenant_profile and tenant_profile.logo_url %}
+                            <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
+                        {% else %}
+                            <div class="logo-fallback">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4pt;">
+                                    <path d="M3 21h18M5 21V7l8-4 8 4v14M8 21v-9a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v9"/>
+                                </svg>
+                                <span>{{ (tenant.name[:8] if tenant else 'AGENCY') | upper }}</span>
+                            </div>
+                        {% endif %}
+                    </div>
+                    <div class="agency-info">
+                        <h1>{{ tenant.name if tenant else 'Rental Agency' }}</h1>
+                        <p>{{ tenant_profile.address if tenant_profile else '—' }}</p>
+                        <p>Tel: {{ tenant_profile.phone if tenant_profile and tenant_profile.phone else '—' }}</p>
+                        <p>Email: {{ tenant_profile.email if tenant_profile and tenant_profile.email else '—' }}</p>
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <span class="status-badge {% if contract.signed_by_investor and contract.signed_by_agency %}status-signed{% else %}status-pending{% endif %}">
+                        {% if contract.signed_by_investor and contract.signed_by_agency %}
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                                <polyline points="9 12 11 14 15 10"></polyline>
+                            </svg>
+                        {% else %}
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <path d="M12 6v6l4 2"></path>
+                            </svg>
+                        {% endif %}
+                        {% if contract.signed_by_investor and contract.signed_by_agency %}FULLY EXECUTED{% else %}PENDING SIGNATURES{% endif %}
+                    </span>
+                    <p class="secured-text">SECURED BY Rental Garage</p>
+                </div>
+            </div>
+
+            <div class="meta-grid">
+                <div class="meta-item">
+                    <p>Contract No</p>
+                    <p>{{ contract.contract_number }}</p>
+                </div>
+                <div class="meta-item">
+                    <p>Issue Date</p>
+                    <p>{{ contract.created_at.strftime('%d, %b, %Y') if contract.created_at else '—' }}</p>
+                </div>
+                <div class="meta-item">
+                    <p>Lease Type</p>
+                    <p>{{ contract.lease_rate_type | capitalize }}</p>
+                </div>
+                <div class="meta-item">
+                    <p>Duration</p>
+                    <p>{% if contract.duration_months %}{{ contract.duration_months }} Month(s){% else %}Per Trip{% endif %}</p>
+                </div>
+            </div>
+        </header>
+
+        <!-- [COMPONENT: INVESTOR_PROFILE] -->
+        <section class="contract-section">
+            <h2 class="section-title">1. Investor (Lessor) Profile</h2>
+            <div class="info-grid">
+                <div><span class="info-label">Full Name:</span> <span class="info-value">{{ investor.full_name if investor else '—' }}</span></div>
+                <div><span class="info-label">Phone Number:</span> <span class="info-value">{{ investor.phone_number if investor else '—' }}</span></div>
+                <div class="col-span-2"><span class="info-label">Email Address:</span> <span class="info-value">{{ investor.email if investor else '—' }}</span></div>
+                <div class="col-span-2"><span class="info-label">Residential Address:</span> <span class="info-value">{{ investor.address if investor and investor.address else '—' }}</span></div>
+            </div>
+        </section>
+
+        <!-- [COMPONENT: AGENCY_PROFILE] -->
+        <section class="contract-section">
+            <h2 class="section-title">2. Agency (Lessee) Profile</h2>
+            <div class="info-grid">
+                <div class="col-span-2"><span class="info-label">Agency Name:</span> <span class="info-value">{{ tenant.name if tenant else '—' }}</span></div>
+                <div><span class="info-label">Phone Number:</span> <span class="info-value">{{ tenant_profile.phone if tenant_profile and tenant_profile.phone else '—' }}</span></div>
+                <div><span class="info-label">Email Address:</span> <span class="info-value">{{ tenant_profile.email if tenant_profile and tenant_profile.email else '—' }}</span></div>
+                <div class="col-span-2"><span class="info-label">Business Address:</span> <span class="info-value">{{ tenant_profile.address if tenant_profile else '—' }}</span></div>
+            </div>
+        </section>
+
+        <!-- [COMPONENT: VEHICLE_ASSET] -->
+        <section class="contract-section">
+            <h2 class="section-title">3. Vehicle Asset Details</h2>
+            <div class="info-grid">
+                <div><span class="info-label">Make & Model:</span> <span class="info-value">{{ vehicle.make }} {{ vehicle.model }} {% if vehicle and vehicle.year %}({{ vehicle.year }}){% endif %}</span></div>
+                <div><span class="info-label">License Plate:</span> <span class="info-value">{{ vehicle.plate_number if vehicle else '—' }}</span></div>
+                <div><span class="info-label">Vehicle VIN:</span> <span class="info-value">{{ vehicle.vin if vehicle else '—' }}</span></div>
+                <div><span class="info-label">Insurance Policy:</span> <span class="info-value">{{ vehicle.insurance_number if vehicle else '—' }}</span></div>
+            </div>
+        </section>
+
+        <!-- [COMPONENT: LEASE_SCHEDULE] -->
+        <section class="contract-section">
+            <h2 class="section-title">4. Lease Schedule & Financial Terms</h2>
+            <div class="info-grid" style="margin-bottom: 8pt;">
+                <div><span class="info-label">Start Date:</span> <span class="info-value">{{ contract.start_date.strftime('%d, %b, %Y') if contract.start_date else '—' }}</span></div>
+                <div><span class="info-label">End Date:</span> <span class="info-value">{{ contract.end_date.strftime('%d, %b, %Y') if contract.end_date else '—' }}</span></div>
+            </div>
+
+            <table class="charges-table no-break">
+                <thead>
+                    <tr>
+                        <th>Itemized Description</th>
+                        <th class="text-right" style="width: 110pt;">Rate Type</th>
+                        <th class="text-right" style="width: 110pt;">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Vehicle Lease Charge</td>
+                        <td class="text-right">Per {{ contract.lease_rate_type }}</td>
+                        <td class="text-right">KES {{ '%.2f'|format(contract.lease_rate|float) }}</td>
+                    </tr>
+                    
+                    {% if total_value %}
+                    <tr class="total-row">
+                        <td colspan="2" class="text-right" style="border-top: 2pt solid #e2e8f0;">Total Contract Value ({{ contract.duration_months }} Months)</td>
+                        <td class="text-right" style="border-top: 2pt solid #e2e8f0;">KES {{ '%.2f'|format(total_value|float) }}</td>
+                    </tr>
+                    {% else %}
+                    <tr class="total-row">
+                        <td colspan="2" class="text-right" style="border-top: 2pt solid #e2e8f0;">Billing Basis</td>
+                        <td class="text-right" style="border-top: 2pt solid #e2e8f0;">Per Active Rental Day</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </section>
+
+        <!-- [COMPONENT: LEASE_TERMS] -->
+        <section class="contract-section">
+            <h2 class="section-title">5. Lease Terms & Conditions</h2>
+            <p class="legal-text">
+                This agreement constitutes the complete and legally binding vehicle lease contract between the Investor (Lessor) and the Agency (Lessee). By affixing digital signatures below, both parties certify acceptance of all terms, schedule rates, and conditions across this document.
+            </p>
+            <ul class="policy-list" style="list-style-type: disc; padding-left: 14pt; margin: 0 0 8pt 0; color: #475569; font-weight: 500; font-size: 9pt;">
+                <li>The Agency agrees to pay the Investor the agreed lease rate as specified in Section 4.</li>
+                <li>The Agency shall maintain comprehensive insurance coverage on the vehicle during the lease period.</li>
+                <li>The Agency is responsible for routine maintenance and servicing of the vehicle.</li>
+                <li>This agreement shall commence on the start date and terminate on the end date unless terminated earlier by mutual agreement.</li>
+            </ul>
+        </section>
+        
+        <!-- [COMPONENT: EXECUTION] -->
+        <section class="contract-section">
+            <h2 class="section-title">6. Digital Execution & Signatures</h2>
+
+            <div class="execution-grid">
+                <!-- Investor Signature -->
+                <div class="execution-block">
+                    <p class="execution-title">Investor (Lessor)</p>
+                    <p class="execution-detail">Name: {{ investor.full_name if investor else '—' }}</p>
+                    <p class="execution-detail">Date: {{ contract.investor_signed_at.strftime('%d, %b, %Y') if contract.investor_signed_at else '—' }}</p>
+                    
+                    <div style="margin-top: 12pt; height: 45pt; position: relative;">
+                        {% if contract.signed_by_investor and investor_signature_uri %}
+                            <img src="{{ investor_signature_uri }}" style="display: block; max-height: 40pt; max-width: 140pt; margin-bottom: 2pt;" alt="Investor Signature" />
+                        {% endif %}
+                        <div style="border-bottom: 1pt solid #0f172a; position: absolute; bottom: 0; left: 0; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- Agency Signature -->
+                <div class="execution-block">
+                    <p class="execution-title">Agency Representative (Lessee)</p>
+                    <p class="execution-detail">Name: {{ tenant.name if tenant else 'Agency Operations' }}</p>
+                    <p class="execution-detail">Date: {{ contract.agency_signed_at.strftime('%d, %b, %Y') if contract.agency_signed_at else '—' }}</p>
+                    
+                    <div style="margin-top: 12pt; height: 45pt; position: relative;">
+                        {% if contract.signed_by_agency and agency_signature_uri %}
+                            <img src="{{ agency_signature_uri }}" style="display: block; max-height: 40pt; max-width: 140pt; margin-bottom: 2pt;" alt="Agency Signature" />
+                        {% endif %}
+                        <div style="border-bottom: 1pt solid #0f172a; position: absolute; bottom: 0; left: 0; width: 100%;"></div>
+                    </div>
+                </div>
+            </div>
+
+            {% if contract.signed_by_investor and contract.signed_by_agency %}
+            <div class="audit-stamp no-break">
+                <div class="audit-header">
+                    <div class="audit-title">CRYPTOGRAPHIC NON-REPUDIATION AUDIT STAMP</div>
+                    <div style="font-size: 7.5pt; font-family: monospace; color: #94a3b8;">SEALED</div>
+                </div>
+                <div class="audit-grid">
+                    <div><span class="audit-label">Contract:</span> {{ contract.contract_number }}</div>
+                    <div><span class="audit-label">Token:</span> {{ contract.share_token or 'N/A' }}</div>
+                    <div><span class="audit-label">Investor Signed:</span> {{ contract.investor_signed_at.isoformat() if contract.investor_signed_at else 'N/A' }}</div>
+                    <div><span class="audit-label">Agency Signed:</span> {{ contract.agency_signed_at.isoformat() if contract.agency_signed_at else 'N/A' }}</div>
+                </div>
+            </div>
+            {% endif %}
+        </section>
+
+        <!-- [COMPONENT: FOOTER] -->
+        <footer class="document-footer">
+            <div>CONTRACT #{{ contract.contract_number }}</div>
+            <div>POWERED BY Rental Garage PLATFORM</div>
+        </footer>
+
+    </div>
+</body>
+</html>

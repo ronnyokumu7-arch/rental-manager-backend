@@ -10,6 +10,11 @@ from .subscription import (
 from .vehicle import get_cached_vehicle_list, set_cached_vehicle_list, invalidate_vehicle_cache
 from .client import get_cached_client_list, set_cached_client_list, invalidate_client_cache
 from .contract import get_cached_contract_list, set_cached_contract_list, invalidate_contract_cache
+from .investor_contract import (
+    get_cached_investor_contract_list, 
+    set_cached_investor_contract_list, 
+    invalidate_investor_contract_cache
+)
 from .invoice import get_cached_invoice_list, set_cached_invoice_list, invalidate_invoice_cache
 from .payment import get_cached_payment_list, set_cached_payment_list, invalidate_payment_cache
 from .activity_log import get_cached_activity_logs, set_cached_activity_logs, invalidate_activity_log_cache
@@ -25,6 +30,7 @@ __all__ = [
     "get_cached_vehicle_list", "set_cached_vehicle_list", "invalidate_vehicle_cache",
     "get_cached_client_list", "set_cached_client_list", "invalidate_client_cache",
     "get_cached_contract_list", "set_cached_contract_list", "invalidate_contract_cache",
+    "get_cached_investor_contract_list", "set_cached_investor_contract_list", "invalidate_investor_contract_cache",
     "get_cached_invoice_list", "set_cached_invoice_list", "invalidate_invoice_cache",
     "get_cached_payment_list", "set_cached_payment_list", "invalidate_payment_cache",
     "get_cached_activity_logs", "set_cached_activity_logs", "invalidate_activity_log_cache",
