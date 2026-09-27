@@ -29,6 +29,9 @@ from app.models.payment_gateways import (
 # ✅ NEW: Import Investor Lease models
 from app.models.investor_leases import InvestorLease, LeaseType, LeaseStatus
 
+# ✅ CRITICAL FIX: Import InvestorContract so SQLAlchemy can resolve the string "InvestorContract" in Booking/Vehicle/Tenant
+from app.models.investor_contracts import InvestorContract
+
 __all__ = [
     "Driver",
     "DriverEmploymentType",
@@ -65,4 +68,6 @@ __all__ = [
     "InvestorLease",
     "LeaseType",
     "LeaseStatus",
+    # ✅ CRITICAL FIX: Export InvestorContract
+    "InvestorContract",
 ]
