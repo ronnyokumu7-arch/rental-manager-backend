@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
@@ -20,6 +21,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    
+    # ✅ CRITICAL FIX: If the table already exists, skip creation entirely
+    if inspector.has_table('investor_contracts'):
+        print("✅ Table 'investor_contracts' already exists. Skipping creation.")
+        return
+
     # 1. Create the Enum type for PostgreSQL safely (ignores if it already exists)
     op.execute("""
         DO $$ BEGIN
@@ -30,7 +39,6 @@ def upgrade() -> None:
     """)
 
     # 2. Create the Table
-    # Note: postgresql.ENUM with create_type=False prevents SQLAlchemy from trying to create the enum again
     op.create_table(
         'investor_contracts',
         sa.Column('id', sa.Integer(), primary_key=True, index=True),
@@ -76,5 +84,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_table('investor_contracts')
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    
+    if inspector.has_table('investor_contracts'):
+        op.drop_table('investor_contracts')
+    
     op.execute("DROP TYPE IF EXISTS investorcontractstatus")
