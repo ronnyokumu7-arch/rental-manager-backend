@@ -151,6 +151,7 @@ class Booking(Base, AuditMixin):
     tenant = relationship("Tenant", back_populates="bookings", foreign_keys=[tenant_id])
     client = relationship("Client", back_populates="bookings", foreign_keys=[client_id])
     vehicle = relationship("Vehicle", back_populates="bookings", foreign_keys=[vehicle_id])
+    investor_contracts = relationship("InvestorContract", back_populates="booking", foreign_keys="InvestorContract.booking_id")
     driver = relationship("Driver", back_populates="bookings", foreign_keys=[driver_id])
 
     # ✅ CRITICAL FIX: Removed 'delete-orphan' from invoices and contract.

@@ -119,6 +119,7 @@ class Tenant(Base, AuditMixin):
     profile = relationship("TenantProfile", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     policies = relationship("TenantPolicy", back_populates="tenant", cascade="all, delete-orphan")
     contracts = relationship("Contract", back_populates="tenant", cascade="all, delete-orphan")
+    investor_contracts = relationship("InvestorContract", back_populates="tenant", cascade="all, delete-orphan")
     tasks = relationship("Task", back_populates="tenant", cascade="all, delete-orphan")
     
     # ✅ ADDED: These were missing and causing the mapper errors
