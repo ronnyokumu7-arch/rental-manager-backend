@@ -20,12 +20,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    # 1. Create the Enum type for PostgreSQL
-    investor_contract_status = sa.Enum(
-        'draft', 'pending_signature', 'signed', 'terminated',
-        name='investorcontractstatus'
-    )
-    investor_contract_status.create(op.get_bind(), checkfirst=True)
+    # 1. Create the Enum type for PostgreSQL safely (ignores if it already exists)
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE investorcontractstatus AS ENUM ('draft', 'pending_signature', 'signed', 'terminated');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """)
 
     # 2. Create the Table
     op.create_table(
@@ -40,7 +42,7 @@ def upgrade() -> None:
         sa.Column('duration_months', sa.Integer(), nullable=True),
         sa.Column('start_date', sa.DateTime(timezone=True), nullable=False),
         sa.Column('end_date', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('status', investor_contract_status, nullable=False, server_default='draft'),
+        sa.Column('status', sa.Enum('draft', 'pending_signature', 'signed', 'terminated', name='investorcontractstatus'), nullable=False, server_default='draft'),
         sa.Column('pdf_path', sa.String(length=500), nullable=True),
         sa.Column('share_token', sa.String(length=36), unique=True, nullable=True),
         sa.Column('share_token_expires_at', sa.DateTime(timezone=True), nullable=True),
@@ -48,12 +50,12 @@ def upgrade() -> None:
         # Investor Signatures
         sa.Column('signed_by_investor', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('investor_signed_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('investor_signature_path', sa.String(length=500), nullable=True), # ✅ ADDED
+        sa.Column('investor_signature_path', sa.String(length=500), nullable=True),
         
         # Agency Signatures
         sa.Column('signed_by_agency', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('agency_signed_at', sa.DateTime(timezone=True), nullable=True),
-        sa.Column('agency_signature_path', sa.String(length=500), nullable=True),    # ✅ ADDED
+        sa.Column('agency_signature_path', sa.String(length=500), nullable=True),
         
         # AuditMixin columns
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
