@@ -46,6 +46,12 @@ class Vehicle(Base, AuditMixin):
     # Financial & Operational Metrics
     # ✅ UPDATED: Added default=0 so investor cars can be saved without a daily_rate
     daily_rate = Column(Numeric(10, 2), nullable=False, default=0, server_default="0")
+    
+    # ✅ NEW: Investor Lease Agreement Fields
+    investor_lease_rate = Column(Numeric(10, 2), nullable=True)
+    lease_rate_type = Column(String(20), nullable=True, default="daily")
+    lease_rate_locked = Column(Boolean, nullable=False, default=False, server_default="false")
+
     current_mileage = Column(Integer, nullable=False, default=0, server_default="0")
     next_service_km = Column(Integer, nullable=True)
 

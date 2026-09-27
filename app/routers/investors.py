@@ -1,9 +1,11 @@
 import secrets
+import os
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status, UploadFile, File
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -100,7 +102,7 @@ async def invite_investor(
             expires_at=expires_at.strftime("%B %d, %Y")
         )
     except Exception as e:
-        print(f"⚠️ Email failed: {e}")
+        print(f"️ Email failed: {e}")
 
     if tenant_id: await invalidate_user_cache(tenant_id)
 
@@ -188,7 +190,7 @@ async def delete_investor(
 @limiter.limit("10/minute")
 async def create_investor_vehicle(
     request: Request,
-    payload: InvestorVehicleCreate, # ✅ Imported from app.schemas.vehicle
+    payload: InvestorVehicleCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -247,7 +249,7 @@ async def create_investor_vehicle(
 async def update_investor_vehicle(
     request: Request,
     vehicle_id: int,
-    updates: InvestorVehicleAgencyUpdate, # ✅ Imported from app.schemas.vehicle
+    updates: InvestorVehicleAgencyUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -272,6 +274,11 @@ async def update_investor_vehicle(
 
     # Apply restricted updates
     update_data = updates.model_dump(exclude_unset=True)
+    
+    # ✅ CRITICAL FIX: Force lock the lease rate if a new rate is provided
+    if 'investor_lease_rate' in update_data and update_data['investor_lease_rate'] is not None:
+        update_data['lease_rate_locked'] = True
+        
     for field, value in update_data.items():
         setattr(vehicle, field, value)
 
@@ -284,3 +291,72 @@ async def update_investor_vehicle(
     await invalidate_vehicle_cache(vehicle.tenant_id)
 
     return vehicle
+
+
+# ---------------------------------------------------------------------------
+# 4. INVESTOR VEHICLE DOCUMENT UPLOADS
+# ---------------------------------------------------------------------------
+
+@router.post("/vehicles/{vehicle_id}/upload-{doc_type}")
+async def upload_investor_vehicle_document(
+    vehicle_id: int,
+    doc_type: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Allows an investor to upload compliance documents for their own vehicles.
+    """
+    # 1. Enforce Role
+    if current_user.role != UserRole.investor:
+        raise HTTPException(status_code=403, detail="Only investors can upload documents here.")
+    
+    # 2. Validate doc_type (allow 'service_tag' which maps to registration_doc)
+    valid_docs = ["insurance", "registration", "inspection", "service_tag"]
+    if doc_type not in valid_docs:
+        raise HTTPException(status_code=400, detail=f"Invalid document type. Must be one of: {', '.join(valid_docs)}")
+        
+    # 3. Set RLS and verify ownership
+    await set_rls_context(
+        db, 
+        user_id=current_user.id, 
+        tenant_id=current_user.tenant_id, 
+        is_super_admin=False
+    )
+    
+    stmt = select(Vehicle).where(
+        Vehicle.id == vehicle_id, 
+        Vehicle.owner_id == current_user.id
+    )
+    vehicle = (await db.execute(stmt)).scalars().first()
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found or you do not own it.")
+        
+    # 4. Handle file upload (Local filesystem for now; replace with S3/MinIO logic if applicable)
+    ext = file.filename.split(".")[-1] if "." in file.filename else "bin"
+    filename = f"{vehicle_id}_{doc_type}_{uuid.uuid4().hex}.{ext}"
+    
+    upload_dir = "uploads/vehicles"
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, filename)
+    
+    with open(file_path, "wb") as buffer:
+        buffer.write(await file.read())
+        
+    # 5. Update database with the new document URL
+    # Map 'service_tag' to the existing 'registration_doc' column to avoid DB migration
+    db_column_name = "registration_doc" if doc_type == "service_tag" else f"{doc_type}_doc"
+    
+    file_url = f"/uploads/vehicles/{filename}" 
+    
+    setattr(vehicle, db_column_name, file_url)
+    
+    await db.commit()
+    await db.refresh(vehicle)
+    await invalidate_vehicle_cache(vehicle.tenant_id)
+    
+    return {
+        "message": f"{doc_type.capitalize()} document uploaded successfully",
+        "url": file_url
+    }
