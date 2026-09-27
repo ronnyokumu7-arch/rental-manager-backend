@@ -7,7 +7,8 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_db
+# ✅ CRITICAL FIX: Import set_rls_context to propagate tenant/user ID to the DB session
+from app.db.database import get_db, set_rls_context
 from app.core.limiter import limiter
 from app.core.config import get_settings
 from app.dependencies.auth import get_current_user
@@ -44,6 +45,14 @@ async def invite_investor(
     Invite a new investor. 
     Stores the REAL email address. Security is enforced by password_hash=None and is_onboarded=False.
     """
+    # ✅ CRITICAL FIX: Set RLS context immediately so DB queries respect tenant isolation
+    await set_rls_context(
+        db,
+        user_id=current_user.id,
+        tenant_id=current_user.tenant_id,
+        is_super_admin=current_user.role == UserRole.super_admin,
+    )
+
     # 1. Security: Block Super Admins from tenant invites (matches users.py)
     if current_user.role == UserRole.super_admin:
         raise HTTPException(
@@ -132,6 +141,14 @@ async def list_investors(
 ):
     """List investors for the current tenant."""
     
+    # ✅ CRITICAL FIX: Set RLS context so the DB allows the admin to see investor rows
+    await set_rls_context(
+        db,
+        user_id=current_user.id,
+        tenant_id=current_user.tenant_id,
+        is_super_admin=current_user.role == UserRole.super_admin,
+    )
+
     # 1. Security
     if current_user.role not in [UserRole.tenant_admin, UserRole.super_admin]:
         raise HTTPException(status_code=403, detail="Access denied.")
@@ -160,6 +177,14 @@ async def update_investor(
 ):
     """Update an investor. Restricted to Tenant Admins."""
     
+    # ✅ CRITICAL FIX: Set RLS context
+    await set_rls_context(
+        db,
+        user_id=current_user.id,
+        tenant_id=current_user.tenant_id,
+        is_super_admin=current_user.role == UserRole.super_admin,
+    )
+
     # 1. Security
     if current_user.role not in [UserRole.tenant_admin, UserRole.super_admin]:
         raise HTTPException(status_code=403, detail="Access denied.")
@@ -208,6 +233,14 @@ async def delete_investor(
 ):
     """Delete an investor."""
     
+    # ✅ CRITICAL FIX: Set RLS context
+    await set_rls_context(
+        db,
+        user_id=current_user.id,
+        tenant_id=current_user.tenant_id,
+        is_super_admin=current_user.role == UserRole.super_admin,
+    )
+
     # 1. Security
     if current_user.role not in [UserRole.tenant_admin, UserRole.super_admin]:
         raise HTTPException(status_code=403, detail="Access denied.")
