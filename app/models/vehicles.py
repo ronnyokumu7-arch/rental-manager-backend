@@ -87,7 +87,7 @@ class Vehicle(Base, AuditMixin):
     # Relationships
     tenant = relationship("Tenant", back_populates="vehicles", foreign_keys=[tenant_id])
 
-    investor_contracts = relationship("InvestorContract", back_populates="vehicle", cascade="all, delete-orphan")    
+    investor_contracts = relationship("app.models.investor_contracts.InvestorContract", back_populates="vehicle", cascade="all, delete-orphan")
     # ✅ NEW: Relationship to the Investor (User)
     owner = relationship("User", foreign_keys=[owner_id])
 
