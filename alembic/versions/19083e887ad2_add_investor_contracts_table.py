@@ -9,7 +9,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
@@ -21,22 +20,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    bind = op.get_bind()
-    inspector = inspect(bind)
-    
-    # ✅ CRITICAL FIX: If the table already exists, skip creation entirely
-    if inspector.has_table('investor_contracts'):
-        print("✅ Table 'investor_contracts' already exists. Skipping creation.")
-        return
-
-    # 1. Create the Enum type for PostgreSQL safely (ignores if it already exists)
-    op.execute("""
-        DO $$ BEGIN
-            CREATE TYPE investorcontractstatus AS ENUM ('draft', 'pending_signature', 'signed', 'terminated');
-        EXCEPTION
-            WHEN duplicate_object THEN null;
-        END $$;
-    """)
+    # 1. Create the Enum type
+    investor_contract_status = postgresql.ENUM(
+        'draft', 'pending_signature', 'signed', 'terminated',
+        name='investorcontractstatus',
+        create_type=True
+    )
+    investor_contract_status.create(op.get_bind(), checkfirst=True)
 
     # 2. Create the Table
     op.create_table(
@@ -51,7 +41,7 @@ def upgrade() -> None:
         sa.Column('duration_months', sa.Integer(), nullable=True),
         sa.Column('start_date', sa.DateTime(timezone=True), nullable=False),
         sa.Column('end_date', sa.DateTime(timezone=True), nullable=False),
-        sa.Column('status', postgresql.ENUM('draft', 'pending_signature', 'signed', 'terminated', name='investorcontractstatus', create_type=False), nullable=False, server_default='draft'),
+        sa.Column('status', investor_contract_status, nullable=False, server_default='draft'),
         sa.Column('pdf_path', sa.String(length=500), nullable=True),
         sa.Column('share_token', sa.String(length=36), unique=True, nullable=True),
         sa.Column('share_token_expires_at', sa.DateTime(timezone=True), nullable=True),
@@ -84,10 +74,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    bind = op.get_bind()
-    inspector = inspect(bind)
-    
-    if inspector.has_table('investor_contracts'):
-        op.drop_table('investor_contracts')
-    
+    op.drop_table('investor_contracts')
     op.execute("DROP TYPE IF EXISTS investorcontractstatus")
