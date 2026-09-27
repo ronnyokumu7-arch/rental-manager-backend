@@ -19,14 +19,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    op.add_column('vehicles', sa.Column('investor_lease_rate', sa.Numeric(precision=10, scale=2), nullable=True))
-    op.add_column('vehicles', sa.Column('lease_rate_type', sa.String(length=20), nullable=True, server_default='daily'))
-    op.add_column('vehicles', sa.Column('lease_rate_locked', sa.Boolean(), nullable=False, server_default='false'))
+    """Upgrade schema safely (idempotent)."""
+    op.execute("ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS investor_lease_rate NUMERIC(10, 2)")
+    op.execute("ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS lease_rate_type VARCHAR(20) DEFAULT 'daily'")
+    op.execute("ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS lease_rate_locked BOOLEAN DEFAULT FALSE")
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_column('vehicles', 'lease_rate_locked')
-    op.drop_column('vehicles', 'lease_rate_type')
-    op.drop_column('vehicles', 'investor_lease_rate')
+    op.execute("ALTER TABLE vehicles DROP COLUMN IF EXISTS lease_rate_locked")
+    op.execute("ALTER TABLE vehicles DROP COLUMN IF EXISTS lease_rate_type")
+    op.execute("ALTER TABLE vehicles DROP COLUMN IF EXISTS investor_lease_rate")

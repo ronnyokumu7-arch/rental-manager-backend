@@ -37,7 +37,7 @@ from app.routers import (
     financials,
     health,
     invoices,
-    investors,               # ✅ NEW: Import investors router
+    investors,
     payment_verifications,
     payments,
     pricing,
