@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from app.models.vehicles import VehicleStatus
 
 
@@ -16,8 +16,9 @@ class VehicleBase(BaseModel):
     plate_number: str = Field(..., min_length=1, max_length=50)
     vin: Optional[str] = Field(default=None, max_length=50)
     
-    # ✅ AGENCY PRICING: What the end-client pays per day
-    daily_rate: Decimal = Field(..., gt=0, decimal_places=2)
+    # ✅ AGENCY PRICING: What the end-client pays per day.
+    # Changed to ge=0 to allow pending investor vehicles to have a 0.00 rate temporarily.
+    daily_rate: Decimal = Field(..., ge=0, decimal_places=2)
     
     current_mileage: int = Field(default=0, ge=0)
     next_service_km: Optional[int] = Field(default=None, ge=0)
@@ -31,15 +32,16 @@ class VehicleBase(BaseModel):
 
     # ✅ MILESTONE 2: Airport Transfer Support
     supports_airport_transfer: bool = Field(default=False)
-    airport_transfer_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+    airport_transfer_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
 
     # ✅ MILESTONE 3: Wedding Car Hire Support
     supports_wedding_service: bool = Field(default=False)
-    wedding_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+    wedding_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
 
     @field_validator("plate_number")
     @classmethod
     def normalize_plate_number(cls, v: str) -> str:
+        if v is None: return ""
         return v.strip().upper()
 
     @field_validator("vin")
@@ -58,7 +60,7 @@ class VehicleCreate(VehicleBase):
 class InvestorVehicleCreate(BaseModel):
     """
     ✅ Investors only provide physical car details. 
-    No pricing fields. Pricing is handled later via the Lease Agreement.
+    No pricing fields. Pricing is handled later via the Lease Agreement / Agency Handoff.
     """
     make: str = Field(..., min_length=1, max_length=100)
     model: str = Field(..., min_length=1, max_length=100)
@@ -99,7 +101,7 @@ class VehicleUpdate(BaseModel):
     year: Optional[int] = Field(default=None, ge=1900, le=datetime.now().year + 1)
     plate_number: Optional[str] = Field(default=None, min_length=1, max_length=50)
     vin: Optional[str] = Field(default=None, max_length=50)
-    daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+    daily_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     current_mileage: Optional[int] = Field(default=None, ge=0)
     next_service_km: Optional[int] = Field(default=None, ge=0)
     insurance_number: Optional[str] = Field(default=None, max_length=100)
@@ -108,9 +110,9 @@ class VehicleUpdate(BaseModel):
     notes: Optional[str] = None
 
     supports_airport_transfer: Optional[bool] = None
-    airport_transfer_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+    airport_transfer_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     supports_wedding_service: Optional[bool] = None
-    wedding_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+    wedding_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
 
     @field_validator("plate_number")
     @classmethod
@@ -135,21 +137,25 @@ class InvestorVehicleAgencyUpdate(BaseModel):
     Agencies CANNOT update core identity/ownership fields (plate, VIN, insurance).
     """
     # ✅ ALLOWED: Financial & Operational
-    daily_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+    daily_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     current_mileage: Optional[int] = Field(default=None, ge=0)
     next_service_km: Optional[int] = Field(default=None, ge=0)
     notes: Optional[str] = None
     
     # ✅ ALLOWED: Service Toggles
     supports_airport_transfer: Optional[bool] = None
-    airport_transfer_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+    airport_transfer_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     supports_wedding_service: Optional[bool] = None
-    wedding_base_rate: Optional[Decimal] = Field(default=None, gt=0, decimal_places=2)
+    wedding_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
 
 
 class VehicleOut(VehicleBase):
+    """
+    Response schema for returning vehicle data to the frontend.
+    """
     id: int
     tenant_id: int
+    owner_id: Optional[int] = None  # ✅ CRITICAL: Identifies investor-owned vehicles
     status: VehicleStatus
     mileage_due: bool = False
 
@@ -161,7 +167,7 @@ class VehicleOut(VehicleBase):
     created_at: datetime
     updated_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MileageUpdatePayload(BaseModel):
