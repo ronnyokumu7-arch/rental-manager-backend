@@ -133,7 +133,7 @@ class VehicleUpdate(BaseModel):
 class InvestorVehicleAgencyUpdate(BaseModel):
     """
     ✅ RESTRICTED: What agencies can update on an investor's car.
-    Agencies can update operational/financial fields (daily_rate, mileage, services).
+    Agencies can update operational/financial fields (daily_rate, mileage, services, lease rates).
     Agencies CANNOT update core identity/ownership fields (plate, VIN, insurance).
     """
     # ✅ ALLOWED: Financial & Operational
@@ -147,6 +147,11 @@ class InvestorVehicleAgencyUpdate(BaseModel):
     airport_transfer_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     supports_wedding_service: Optional[bool] = None
     wedding_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
+
+    # ✅ ALLOWED: Investor Lease Agreement
+    investor_lease_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
+    lease_rate_type: Optional[str] = Field(default=None, max_length=20)  # 'daily' or 'monthly'
+    lease_rate_locked: Optional[bool] = Field(default=None)
 
 
 class VehicleOut(VehicleBase):
@@ -166,6 +171,11 @@ class VehicleOut(VehicleBase):
     archived_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+
+    # ✅ NEW: Investor Lease Agreement Fields (for frontend display)
+    investor_lease_rate: Optional[Decimal] = None
+    lease_rate_type: Optional[str] = None
+    lease_rate_locked: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
