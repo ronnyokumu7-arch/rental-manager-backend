@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload  # ✅ ADDED for eager loading
 
 from app.core.config import get_settings
 from app.core.limiter import limiter
@@ -23,7 +24,6 @@ from app.schemas.investor_contract import (
     InvestorContractCreate, 
     InvestorContractSignPayload
 )
-# ✅ NEW: Import cache functions
 from app.services.cache import (
     get_cached_investor_contract_list,
     set_cached_investor_contract_list,
@@ -51,12 +51,7 @@ async def generate_investor_contract(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Generate a new lease contract for an investor vehicle.
-    Supports HYBRID flow:
-    - If booking_id is provided: Creates a daily contract tied to that specific rental.
-    - If duration_months is provided: Creates a fixed-term monthly contract.
-    """
+    """Generate a new lease contract for an investor vehicle."""
     # 1. Verify Vehicle Ownership & Tenant
     stmt = select(Vehicle).where(
         Vehicle.id == payload.vehicle_id, 
@@ -79,7 +74,6 @@ async def generate_investor_contract(
     lease_rate_type = vehicle.lease_rate_type or 'monthly'
     
     if payload.booking_id:
-        # ✅ DAILY FLOW: Fetch booking dates
         booking_stmt = select(Booking).where(
             Booking.id == payload.booking_id, 
             Booking.vehicle_id == vehicle.id
@@ -94,9 +88,9 @@ async def generate_investor_contract(
         end_date = booking.end_date
         lease_rate_type = 'daily'
     else:
-        # ✅ MONTHLY FLOW: Use duration
         duration_months = payload.duration_months
-        start_date = datetime.now()
+        # ✅ Use timezone-aware datetime to match DB schema
+        start_date = datetime.now(timezone.utc)
         end_date = add_months(start_date, duration_months)
 
     # 3. Generate Contract Number (ILC{YYYY}{MM}{###})
@@ -113,7 +107,7 @@ async def generate_investor_contract(
     new_contract = InvestorContract(
         tenant_id=current_user.tenant_id,
         vehicle_id=vehicle.id,
-        booking_id=payload.booking_id, # Links to booking if daily, null if monthly
+        booking_id=payload.booking_id,
         contract_number=contract_number,
         lease_rate=vehicle.investor_lease_rate,
         lease_rate_type=lease_rate_type,
@@ -122,17 +116,28 @@ async def generate_investor_contract(
         end_date=end_date,
         status=InvestorContractStatus.draft,
         share_token=str(uuid.uuid4()),
-        share_token_expires_at=now + timedelta(days=14) # Link valid for 14 days
+        share_token_expires_at=now + timedelta(days=14)
     )
     
     db.add(new_contract)
     await db.commit()
-    
-    # ✅ Invalidate cache so the new contract appears immediately in lists
     await invalidate_investor_contract_cache(current_user.tenant_id)
     
-    await db.refresh(new_contract)
-    return new_contract
+    # ✅ PRODUCTION FIX: Re-fetch with eager loading to prevent MissingGreenlet errors 
+    # during Pydantic serialization of computed fields (vehicle_plate, investor_name).
+    stmt = (
+        select(InvestorContract)
+        .where(InvestorContract.id == new_contract.id)
+        .options(
+            selectinload(InvestorContract.tenant),
+            selectinload(InvestorContract.vehicle).selectinload(Vehicle.owner),
+            selectinload(InvestorContract.booking)
+        )
+    )
+    result = await db.execute(stmt)
+    final_contract = result.scalars().first()
+    
+    return final_contract
 
 
 @router.get("/", response_model=list[InvestorContractOut])
@@ -145,8 +150,6 @@ async def list_investor_contracts(
     current_user: User = Depends(get_current_user),
 ):
     """List all investor contracts for the current tenant (with caching)."""
-    
-    # 1. Try cache first
     status_str = contract_status.value if contract_status else None
     cached = await get_cached_investor_contract_list(
         current_user.tenant_id, 
@@ -156,9 +159,15 @@ async def list_investor_contracts(
     if cached is not None:
         return cached
 
-    # 2. Cache miss, fetch from DB
-    stmt = select(InvestorContract).where(
-        InvestorContract.tenant_id == current_user.tenant_id
+    # ✅ PRODUCTION FIX: Eager load relationships for Pydantic serialization
+    stmt = (
+        select(InvestorContract)
+        .where(InvestorContract.tenant_id == current_user.tenant_id)
+        .options(
+            selectinload(InvestorContract.tenant),
+            selectinload(InvestorContract.vehicle).selectinload(Vehicle.owner),
+            selectinload(InvestorContract.booking)
+        )
     )
     
     if vehicle_id is not None:
@@ -170,7 +179,6 @@ async def list_investor_contracts(
     result = await db.execute(stmt)
     contracts = result.scalars().all()
     
-    # 3. Set cache for future requests
     await set_cached_investor_contract_list(
         current_user.tenant_id,
         vehicle_id=vehicle_id,
@@ -181,7 +189,7 @@ async def list_investor_contracts(
     return contracts
 
 
-@router.post("/{contract_id}/sign")
+@router.post("/{contract_id}/sign", response_model=InvestorContractOut)
 @limiter.limit("20/minute")
 async def sign_investor_contract(
     request: Request,
@@ -190,10 +198,7 @@ async def sign_investor_contract(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Sign the contract. 
-    signer_role must be 'agency' (for the tenant admin) or 'investor'.
-    """
+    """Sign the contract."""
     stmt = select(InvestorContract).where(
         InvestorContract.id == contract_id,
         InvestorContract.tenant_id == current_user.tenant_id
@@ -206,15 +211,14 @@ async def sign_investor_contract(
     if contract.status == InvestorContractStatus.signed:
         raise HTTPException(status_code=400, detail="Contract is already fully signed")
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     
-    # ✅ NEW: Decode and save the signature to disk
     signature_data = payload.signature
     if signature_data.startswith("data:"):
         signature_data = signature_data.split(",", 1)[1]
     
     decoded_bytes = base64.b64decode(signature_data)
-    ext = "png" # Frontend uses toDataURL("image/png")
+    ext = "png"
     
     upload_dir = Path("uploads/signatures")
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -225,32 +229,39 @@ async def sign_investor_contract(
     with open(file_path, "wb") as f:
         f.write(decoded_bytes)
 
-    # ✅ Apply signature and status updates
     if payload.signer_role == 'agency':
         if current_user.role != UserRole.tenant_admin:
             raise HTTPException(status_code=403, detail="Only Tenant Admins can sign for the agency")
         contract.signed_by_agency = True
         contract.agency_signed_at = now
-        contract.agency_signature_path = str(file_path) # ✅ SAVE PATH
+        contract.agency_signature_path = str(file_path)
         
     elif payload.signer_role == 'investor':
         contract.signed_by_investor = True
         contract.investor_signed_at = now
-        contract.investor_signature_path = str(file_path) # ✅ SAVE PATH
+        contract.investor_signature_path = str(file_path)
     else:
         raise HTTPException(status_code=400, detail="Invalid signer role")
 
-    # Check if fully signed
     if contract.signed_by_agency and contract.signed_by_investor:
         contract.status = InvestorContractStatus.signed
 
     await db.commit()
-    
-    # ✅ Invalidate cache so the updated signature status appears immediately
     await invalidate_investor_contract_cache(current_user.tenant_id)
     
-    await db.refresh(contract)
-    return contract
+    # ✅ PRODUCTION FIX: Re-fetch with eager loading before returning
+    stmt = (
+        select(InvestorContract)
+        .where(InvestorContract.id == contract_id)
+        .options(
+            selectinload(InvestorContract.tenant),
+            selectinload(InvestorContract.vehicle).selectinload(Vehicle.owner),
+            selectinload(InvestorContract.booking)
+        )
+    )
+    result = await db.execute(stmt)
+    final_contract = result.scalars().first()
+    return final_contract
 
 
 @router.get("/public/{token}")
@@ -260,10 +271,7 @@ async def public_view_investor_contract(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Public endpoint for investors to view contract details via email link.
-    No authentication required, just the valid share_token.
-    """
+    """Public endpoint for investors to view contract details via email link."""
     stmt = select(InvestorContract).where(InvestorContract.share_token == token)
     result = await db.execute(stmt)
     contract = result.scalars().first()
@@ -271,10 +279,9 @@ async def public_view_investor_contract(
     if not contract:
         raise HTTPException(status_code=404, detail="Invalid contract link")
         
-    if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now():
+    if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=410, detail="Contract link has expired")
         
-    # Fetch vehicle details for the view
     stmt = select(Vehicle).where(Vehicle.id == contract.vehicle_id)
     result = await db.execute(stmt)
     vehicle = result.scalars().first()
@@ -282,15 +289,14 @@ async def public_view_investor_contract(
     if not vehicle:
         raise HTTPException(status_code=404, detail="Vehicle not found")
 
-    # Fetch Investor (Owner) details
     investor_name = "Unknown Investor"
     if vehicle.owner_id:
         user_stmt = select(User).where(User.id == vehicle.owner_id)
         user_res = await db.execute(user_stmt)
         investor = user_res.scalars().first()
-        if investor: investor_name = investor.full_name
+        if investor: 
+            investor_name = investor.full_name
 
-    # Fetch Booking details if it's a daily contract
     booking_info = None
     if contract.booking_id:
         booking_stmt = select(Booking).where(Booking.id == contract.booking_id)
@@ -299,7 +305,7 @@ async def public_view_investor_contract(
         if booking:
             booking_info = {
                 "booking_number": booking.booking_number,
-                "client_name": booking.client_name if hasattr(booking, 'client_name') else "Client"
+                "client_name": getattr(booking, 'client_name', "Client")
             }
 
     return {
@@ -309,8 +315,8 @@ async def public_view_investor_contract(
         "lease_rate": float(contract.lease_rate),
         "lease_rate_type": contract.lease_rate_type,
         "duration_months": contract.duration_months,
-        "start_date": contract.start_date.isoformat(),
-        "end_date": contract.end_date.isoformat(),
+        "start_date": contract.start_date.isoformat() if contract.start_date else None,
+        "end_date": contract.end_date.isoformat() if contract.end_date else None,
         "booking_info": booking_info,
         "status": contract.status.value,
         "signed_by_agency": contract.signed_by_agency,
