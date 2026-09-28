@@ -1,7 +1,7 @@
 import os
 import uuid
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 import calendar
 from pathlib import Path
@@ -100,7 +100,7 @@ async def generate_investor_contract(
         end_date = add_months(start_date, duration_months)
 
     # 3. Generate Contract Number (ILC{YYYY}{MM}{###})
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     count_stmt = select(func.count(InvestorContract.id)).where(
         InvestorContract.tenant_id == current_user.tenant_id,
         func.extract('year', InvestorContract.created_at) == now.year,
