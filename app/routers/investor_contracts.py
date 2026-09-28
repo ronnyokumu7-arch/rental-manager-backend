@@ -7,9 +7,10 @@ import calendar
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse  # ✅ ADDED for PDF serving
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload  # ✅ ADDED for eager loading
+from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.core.limiter import limiter
@@ -89,7 +90,6 @@ async def generate_investor_contract(
         lease_rate_type = 'daily'
     else:
         duration_months = payload.duration_months
-        # ✅ Use timezone-aware datetime to match DB schema
         start_date = datetime.now(timezone.utc)
         end_date = add_months(start_date, duration_months)
 
@@ -124,7 +124,6 @@ async def generate_investor_contract(
     await invalidate_investor_contract_cache(current_user.tenant_id)
     
     # ✅ PRODUCTION FIX: Re-fetch with eager loading to prevent MissingGreenlet errors 
-    # during Pydantic serialization of computed fields (vehicle_plate, investor_name).
     stmt = (
         select(InvestorContract)
         .where(InvestorContract.id == new_contract.id)
@@ -198,7 +197,7 @@ async def sign_investor_contract(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Sign the contract."""
+    """Sign the contract (Authenticated flow)."""
     stmt = select(InvestorContract).where(
         InvestorContract.id == contract_id,
         InvestorContract.tenant_id == current_user.tenant_id
@@ -322,3 +321,85 @@ async def public_view_investor_contract(
         "signed_by_agency": contract.signed_by_agency,
         "signed_by_investor": contract.signed_by_investor,
     }
+
+
+# ✅ NEW: Public Sign Endpoint (For the shareable link flow)
+@router.post("/public/{token}/sign", response_model=InvestorContractOut)
+@limiter.limit("20/minute")
+async def public_sign_investor_contract(
+    request: Request,
+    token: str,
+    payload: InvestorContractSignPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    """Public endpoint for investors to sign via email link."""
+    if payload.signer_role != 'investor':
+        raise HTTPException(status_code=400, detail="Only investors can sign via public link")
+
+    stmt = select(InvestorContract).where(InvestorContract.share_token == token)
+    result = await db.execute(stmt)
+    contract = result.scalars().first()
+    
+    if not contract:
+        raise HTTPException(status_code=404, detail="Invalid contract link")
+    if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=410, detail="Contract link has expired")
+    if contract.status == InvestorContractStatus.signed:
+        raise HTTPException(status_code=400, detail="Contract is already fully signed")
+
+    now = datetime.now(timezone.utc)
+    signature_data = payload.signature.split(",", 1)[1] if payload.signature.startswith("data:") else payload.signature
+    
+    decoded_bytes = base64.b64decode(signature_data)
+    upload_dir = Path("uploads/signatures")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    file_path = upload_dir / f"sig_{contract.id}_investor_{uuid.uuid4().hex}.png"
+    with open(file_path, "wb") as f:
+        f.write(decoded_bytes)
+
+    contract.signed_by_investor = True
+    contract.investor_signed_at = now
+    contract.investor_signature_path = str(file_path)
+
+    if contract.signed_by_agency and contract.signed_by_investor:
+        contract.status = InvestorContractStatus.signed
+
+    await db.commit()
+    await invalidate_investor_contract_cache(contract.tenant_id)
+    
+    # Re-fetch with eager loading
+    stmt = select(InvestorContract).where(InvestorContract.id == contract.id).options(
+        selectinload(InvestorContract.tenant),
+        selectinload(InvestorContract.vehicle).selectinload(Vehicle.owner),
+        selectinload(InvestorContract.booking)
+    )
+    result = await db.execute(stmt)
+    return result.scalars().first()
+
+
+# ✅ NEW: PDF Download Endpoint
+@router.get("/{contract_id}/pdf")
+@limiter.limit("60/minute")
+async def get_investor_contract_pdf(
+    request: Request,
+    contract_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the generated PDF contract. Accessible via direct link."""
+    stmt = select(InvestorContract).where(InvestorContract.id == contract_id)
+    result = await db.execute(stmt)
+    contract = result.scalars().first()
+    
+    if not contract or not contract.pdf_path:
+        raise HTTPException(status_code=404, detail="PDF not found or not yet generated")
+    
+    file_location = Path(contract.pdf_path)
+    if not file_location.exists():
+        raise HTTPException(status_code=404, detail="PDF file missing on server")
+        
+    return FileResponse(
+        path=file_location,
+        media_type="application/pdf",
+        filename=f"Contract_{contract.contract_number}.pdf"
+    )
