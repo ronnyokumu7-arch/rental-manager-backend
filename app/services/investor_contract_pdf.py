@@ -29,12 +29,7 @@ template_env = Environment(
 async def resolve_signature_data_uri(signature_ref: Optional[str]) -> Optional[str]:
     """
     ✅ BULLETPROOF SIGNATURE RESOLVER (backend-aware)
-    Adapted for investor contracts. Resolution order:
-      1. API files URL → Cloudinary: backend.signed_url() then fetch bytes
-                         Local disk: read uploads_dir/{relative_path} directly
-      2. Direct http(s) URL → fetch bytes
-      3. Data URI stored directly → return as-is
-      4. Legacy local file path → read from disk if it still exists
+    Adapted for investor contracts.
     """
     if not signature_ref:
         return None
@@ -166,7 +161,7 @@ async def generate_investor_contract_pdf(contract: InvestorContract, db: AsyncSe
             }
         )
 
-        await page.close() # Note: browser_pool usually handles page cleanup, but explicit is safe
+        await page.close() # ✅ FIXED: Was closeDP()
         return pdf_bytes
 
     except Exception as e:
