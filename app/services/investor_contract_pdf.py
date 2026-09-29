@@ -166,7 +166,7 @@ async def generate_investor_contract_pdf(contract: InvestorContract, db: AsyncSe
             }
         )
 
-        await page.closeDP() # Note: browser_pool usually handles page cleanup, but explicit is safe
+        await page.close() # Note: browser_pool usually handles page cleanup, but explicit is safe
         return pdf_bytes
 
     except Exception as e:
