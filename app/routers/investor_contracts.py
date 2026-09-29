@@ -7,7 +7,7 @@ import calendar
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse  # ✅ ADDED for PDF serving
+from fastapi.responses import FileResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -212,6 +212,7 @@ async def sign_investor_contract(
 
     now = datetime.now(timezone.utc)
     
+    # Save signature to disk
     signature_data = payload.signature
     if signature_data.startswith("data:"):
         signature_data = signature_data.split(",", 1)[1]
@@ -323,7 +324,6 @@ async def public_view_investor_contract(
     }
 
 
-# ✅ NEW: Public Sign Endpoint (For the shareable link flow)
 @router.post("/public/{token}/sign", response_model=InvestorContractOut)
 @limiter.limit("20/minute")
 async def public_sign_investor_contract(
@@ -378,7 +378,6 @@ async def public_sign_investor_contract(
     return result.scalars().first()
 
 
-# ✅ NEW: PDF Download Endpoint
 @router.get("/{contract_id}/pdf")
 @limiter.limit("60/minute")
 async def get_investor_contract_pdf(
@@ -386,20 +385,28 @@ async def get_investor_contract_pdf(
     contract_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """Serve the generated PDF contract. Accessible via direct link."""
+    """Serve the generated PDF contract. Triggers generation if missing."""
+    from app.services.investor_contract import render_and_store_investor_contract_pdf
+    
     stmt = select(InvestorContract).where(InvestorContract.id == contract_id)
     result = await db.execute(stmt)
     contract = result.scalars().first()
     
-    if not contract or not contract.pdf_path:
-        raise HTTPException(status_code=404, detail="PDF not found or not yet generated")
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
     
-    file_location = Path(contract.pdf_path)
-    if not file_location.exists():
-        raise HTTPException(status_code=404, detail="PDF file missing on server")
+    # ✅ TRIGGER GENERATION: If PDF path is missing or file doesn't exist on disk, generate it now.
+    if not contract.pdf_path or not Path(contract.pdf_path).exists():
+        await render_and_store_investor_contract_pdf(contract_id)
+        # Re-fetch to get the newly saved path
+        result = await db.execute(stmt)
+        contract = result.scalars().first()
+
+    if not contract.pdf_path or not Path(contract.pdf_path).exists():
+        raise HTTPException(status_code=404, detail="PDF file missing on server and generation failed")
         
     return FileResponse(
-        path=file_location,
+        path=contract.pdf_path,
         media_type="application/pdf",
         filename=f"Contract_{contract.contract_number}.pdf"
     )

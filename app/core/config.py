@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # APP IDENTIFICATION
     # ─────────────────────────────────────────────────────────────────────────
     app_name: str = "Rental Garage API"
-    environment: str = "development"
+    environment: str = "development"  # ✅ KEEP: code default; Render overrides with ENVIRONMENT=production
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
     
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     SECRET_KEY: str = Field(..., min_length=32)  # ✅ Required, min 32 chars
     ENCRYPTION_KEY: str = Field(..., min_length=44)  # ✅ Required, 32-byte base64 = 44 chars
-    access_token_expire_minutes: int = 15  # ✅ Reduced from 60 for better security
+    access_token_expire_minutes: int = 60  # ✅ PHASE 2: raised from 15 → 60 to stop mid-session logout churn
     refresh_token_expire_days: int = 7
     
     # ─────────────────────────────────────────────────────────────────────────
@@ -36,8 +36,7 @@ class Settings(BaseSettings):
     password_reset_rate_limit: int = 3  # Max attempts per window
     password_reset_rate_window: int = 60  # Window in seconds
     
-    # ✅ NEW: Password reset token expiry (was hardcoded 15 min in two places;
-    # now configurable and defaulted to 60 min for email-based flows)
+    # ✅ Password reset token expiry (was hardcoded 15 min; now configurable, 60 min default)
     password_reset_token_expire_minutes: int = 60
     
     # General API endpoints: more lenient
@@ -94,7 +93,7 @@ class Settings(BaseSettings):
     # Force logout on password change
     logout_on_password_change: bool = True
     # Maximum concurrent sessions per user (0 = unlimited)
-    max_concurrent_sessions: int = 5
+    max_concurrent_sessions: int = 10  # ✅ PHASE 2: raised from 5 → 10 to stop legitimate multi-device evictions
     # Session timeout in minutes (0 = use token expiry)
     session_timeout_minutes: int = 0
     
@@ -384,7 +383,6 @@ class Settings(BaseSettings):
             warnings.warn("refresh_token_expire_days is very long (> 1 year), security risk")
         return v
     
-    # ✅ NEW: Password reset token expiry validator
     @field_validator("password_reset_token_expire_minutes")
     @classmethod
     def validate_password_reset_token_expiry(cls, v: int) -> int:
