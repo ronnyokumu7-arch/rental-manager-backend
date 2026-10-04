@@ -16,7 +16,7 @@ from app.core.errors import (
     BadRequestError,
     ConflictError,
     NotFoundError,
-    TooManyRequestsError,
+    RateLimitedError,
 )
 from app.db.database import get_db  # ✅ Updated to async DB path
 from app.core.limiter import limiter   # 🚨 Rate limiter
