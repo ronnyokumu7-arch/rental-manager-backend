@@ -9,8 +9,10 @@
                              to the factory so old calls get correct behavior.
 
 Pricing: recompute-and-diff on the rate LOCKED at creation (rate × days intact).
+
+✅ ERROR SYSTEM: all errors raised by booking_factory (typed AppException subclasses).
 """
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload

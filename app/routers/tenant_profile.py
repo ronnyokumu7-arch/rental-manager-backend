@@ -1,12 +1,18 @@
 # app/api/routes/tenant_profile.py (or app/routers/tenant_profile.py)
+"""
+Tenant Profile CRUD — self-service for Tenant Admins, management for Super Admins.
 
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError, ConflictError, NotFoundError
 from app.db.database import get_db  # ✅ Updated to async DB path
-from app.core.limiter import limiter   #  Rate limiter
+from app.core.limiter import limiter   # 🚨 Rate limiter
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
 from app.models.tenant_profile import TenantProfile
@@ -29,9 +35,9 @@ def _get_target_tenant_id(user: User, tenant_id: Optional[int] = None) -> int:
             return tenant_id
         if user.tenant_id:
             return user.tenant_id
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Super Admins must specify a tenant_id parameter."
+        raise BadRequestError(
+            title="Missing Tenant ID",
+            message="Super Admins must specify a tenant_id parameter.",
         )
     return user.tenant_id
 
@@ -58,14 +64,14 @@ async def get_profile(
     profile = (await db.execute(stmt)).scalars().first()
     
     if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant profile has not been set up yet."
+        raise NotFoundError(
+            title="Profile Not Found",
+            message="Tenant profile has not been set up yet.",
         )
     return profile
 
 
-@router.post("/", response_model=TenantProfileOut, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=TenantProfileOut, status_code=201)
 @limiter.limit("10/minute")  # 🚨 STRICT: Profile creation is a rare, heavy operation
 async def create_profile(
     request: Request,
@@ -81,9 +87,9 @@ async def create_profile(
     existing = (await db.execute(stmt)).scalars().first()
     
     if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Profile already exists for this tenant. Use PATCH to update.",
+        raise ConflictError(
+            title="Profile Exists",
+            message="Profile already exists for this tenant. Use PATCH to update.",
         )
         
     # Generate consistent contract prefix
@@ -144,9 +150,9 @@ async def update_profile(
     profile = (await db.execute(stmt)).scalars().first()
     
     if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Profile not found. Please create one first."
+        raise NotFoundError(
+            title="Profile Not Found",
+            message="Profile not found. Please create one first.",
         )
         
     # Update only provided fields

@@ -1,13 +1,31 @@
+# app/routers/invoice/public.py
+"""
+✅ PUBLIC INVOICE/QUOTATION PAGE — view / accept / cancel / reschedule / pay / pdf.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ COPY RULE: this is client-facing — messages speak to the client and point
+   them at the agency ("contact the agency"), never at dashboard concepts.
+✅ AUDIT (Phase B): PDF failures → typed ServerError (was raw 500).
+"""
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import (
+    AppException,
+    BadRequestError,
+    GoneError,
+    NotFoundError,
+    ServerError,
+    ValidationFailedError,
+    navigate_action,
+)
 from app.core.limiter import limiter
 from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.models.bookings import Booking, BookingStatus, CancellationReason
@@ -31,6 +49,9 @@ from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure 
 
 router = APIRouter()
 
+# ✅ Client-facing errors lead home, never to the dashboard
+_PUBLIC_HOME = navigate_action("Go Home", "/")
+
 
 class ReschedulePayload(BaseModel):
     """Client proposes a new schedule; re-prices and requires re-accept."""
@@ -42,14 +63,30 @@ class ReschedulePayload(BaseModel):
         return self.scheduled_return_at > self.pickup_at
 
 
+def _voided_doc_error(doc_word: str = "invoice") -> BadRequestError:
+    return BadRequestError(
+        title="No Longer Valid",
+        message=f"This {doc_word} was cancelled by the agency. Contact them if you believe this is a mistake.",
+        action=_PUBLIC_HOME,
+    )
+
+
 async def _load_invoice_by_token(db: AsyncSession, token: str) -> Invoice:
     await set_public_rls_context(db, token)
     stmt = select(Invoice).where(Invoice.share_token == token)
     invoice = (await db.execute(stmt)).scalars().first()
     if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+        raise NotFoundError(
+            title="Link Not Recognized",
+            message="We couldn't find this invoice. Check that the link is complete and try again.",
+            action=_PUBLIC_HOME,
+        )
     if invoice.share_token_expires_at and invoice.share_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="This link has expired")
+        raise GoneError(
+            title="Link Expired",
+            message="This link has expired. Ask the agency to send you a new one.",
+            action=_PUBLIC_HOME,
+        )
     await set_rls_context(db, tenant_id=invoice.tenant_id)
     return invoice
 
@@ -58,7 +95,11 @@ async def _load_booking_locked(db: AsyncSession, booking_id: int) -> Booking:
     stmt = select(Booking).where(Booking.id == booking_id).with_for_update()
     booking = (await db.execute(stmt)).scalars().first()
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="We couldn't find this booking. Contact the agency for help.",
+            action=_PUBLIC_HOME,
+        )
     return booking
 
 
@@ -72,7 +113,11 @@ async def _build_public_view(
             select(Invoice).where(Invoice.share_token == token)
         )).scalars().first()
         if not token_invoice or token_invoice.id != invoice_id:
-            raise HTTPException(status_code=404, detail="Invoice not found")
+            raise NotFoundError(
+                title="Link Not Recognized",
+                message="We couldn't find this invoice. Check that the link is complete and try again.",
+                action=_PUBLIC_HOME,
+            )
         await set_rls_context(db, tenant_id=token_invoice.tenant_id)
 
     stmt = select(Invoice).options(
@@ -167,13 +212,20 @@ async def accept_quotation_public(
     """
     invoice = await _load_invoice_by_token(db, token)
     if invoice.status == InvoiceStatus.void:
-        raise HTTPException(status_code=400, detail="This quotation has been voided")
+        raise _voided_doc_error("quotation")
     if invoice.doc_type != "quotation":
-        raise HTTPException(status_code=400, detail="This invoice has already been accepted")
+        raise BadRequestError(
+            title="Already Accepted",
+            message="This quotation has already been accepted. Your invoice and payment options are shown on this page.",
+        )
 
     booking = await _load_booking_locked(db, invoice.booking_id)
     if booking.status in (BookingStatus.cancelled, BookingStatus.completed):
-        raise HTTPException(status_code=400, detail="This booking can no longer be accepted")
+        raise BadRequestError(
+            title="No Longer Available",
+            message="This booking can no longer be accepted. Contact the agency for help.",
+            action=_PUBLIC_HOME,
+        )
 
     # Morph + contract + confirm (all flush-only), then ONE commit.
     await morph_quotation_to_invoice(booking, db)
@@ -206,7 +258,11 @@ async def cancel_booking_public(
     if booking.status == BookingStatus.cancelled:
         return await _build_public_view(db, invoice.id, token)   # idempotent
     if booking.status == BookingStatus.completed:
-        raise HTTPException(status_code=400, detail="Cannot cancel a completed booking")
+        raise BadRequestError(
+            title="Trip Already Completed",
+            message="Completed bookings can't be cancelled online. Contact the agency for help.",
+            action=_PUBLIC_HOME,
+        )
 
     await BookingLifecycleService.cancel_client(db, booking, CancellationReason.client_cancelled)
     if invoice.status != InvoiceStatus.void:
@@ -233,17 +289,29 @@ async def reschedule_booking_public(
     Not allowed once the trip is active.
     """
     if not payload.valid:
-        raise HTTPException(status_code=422, detail="Return must be after pickup")
+        raise ValidationFailedError(
+            title="Invalid Schedule",
+            message="The return time must be after the pickup time.",
+            field_errors={"scheduled_return_at": "Must be after the pickup time"},
+        )
 
     invoice = await _load_invoice_by_token(db, token)
     if invoice.status == InvoiceStatus.void:
-        raise HTTPException(status_code=400, detail="This booking has been voided")
+        raise _voided_doc_error("booking")
 
     booking = await _load_booking_locked(db, invoice.booking_id)
     if booking.status == BookingStatus.active:
-        raise HTTPException(status_code=400, detail="Cannot reschedule an active trip")
+        raise BadRequestError(
+            title="Trip Already Started",
+            message="Active trips can't be rescheduled online. Contact the agency to extend your booking.",
+            action=_PUBLIC_HOME,
+        )
     if booking.status == BookingStatus.cancelled:
-        raise HTTPException(status_code=400, detail="Cannot reschedule a cancelled booking")
+        raise BadRequestError(
+            title="Booking Cancelled",
+            message="This booking was cancelled and can't be rescheduled. Contact the agency for help.",
+            action=_PUBLIC_HOME,
+        )
 
     # Apply new schedule
     booking.pickup_at = payload.pickup_at
@@ -254,7 +322,11 @@ async def reschedule_booking_public(
     # ✅ PHASE 1: Re-price server-side via the pure self-drive engine
     rate = Decimal(booking.daily_rate or 0)
     if rate <= 0:
-        raise HTTPException(status_code=422, detail="Booking has no daily rate configured")
+        raise ValidationFailedError(
+            title="Pricing Unavailable",
+            message="This booking has no rate configured. Contact the agency to update your quotation.",
+            action=_PUBLIC_HOME,
+        )
 
     try:
         # Driver fee via explicit query (never lazy-load in async context)
@@ -273,7 +345,10 @@ async def reschedule_booking_public(
             driver_daily_fee=Decimal(driver_daily_fee) if driver_daily_fee else None,
         )
     except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid schedule")
+        raise ValidationFailedError(
+            title="Invalid Schedule",
+            message="The dates you chose can't be priced. Adjust the pickup or return time and try again.",
+        )
 
     # New terms → engine truth (operator can re-adjust via invoice afterwards)
     booking.billable_days = quote.billable_days
@@ -297,14 +372,14 @@ async def reschedule_booking_public(
 
 
 # =============================================================================
-# EXISTING: view / pay / pdf (unchanged)
+# EXISTING: view / pay / pdf
 # =============================================================================
 @router.get("/public/{token}", response_model=PublicInvoiceView)
 @limiter.limit("30/minute")
 async def view_invoice_public(request: Request, token: str, db: AsyncSession = Depends(get_db)):
     invoice = await _load_invoice_by_token(db, token)
     if invoice.status == InvoiceStatus.void:
-        raise HTTPException(status_code=400, detail="This invoice has been voided")
+        raise _voided_doc_error()
     return await _build_public_view(db, invoice.id, token)
 
 
@@ -315,15 +390,19 @@ async def record_payment_public(
 ):
     invoice = await _load_invoice_by_token(db, token)
     if invoice.status == InvoiceStatus.void:
-        raise HTTPException(status_code=400, detail="Cannot record payment against a void invoice")
+        raise _voided_doc_error()
     if invoice.status == InvoiceStatus.paid:
-        raise HTTPException(status_code=400, detail="Invoice is already fully paid")
+        raise BadRequestError(
+            title="Already Fully Paid",
+            message="This invoice is fully paid. Thank you!",
+        )
 
     remaining = (invoice.amount_due or Decimal("0")) - (invoice.amount_paid or Decimal("0"))
     if payload.amount > remaining:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Amount exceeds remaining balance of {remaining} {invoice.currency_code}",
+        raise ValidationFailedError(
+            title="Amount Exceeds Balance",
+            message=f"The remaining balance is {remaining} {invoice.currency_code}. Enter that amount or less.",
+            field_errors={"amount": f"Maximum {remaining} {invoice.currency_code}"},
         )
 
     now = datetime.now(timezone.utc)
@@ -357,8 +436,20 @@ async def record_payment_public(
 async def download_invoice_pdf_public(request: Request, token: str, db: AsyncSession = Depends(get_db)):
     invoice = await _load_invoice_by_token(db, token)
     if invoice.status == InvoiceStatus.void:
-        raise HTTPException(status_code=400, detail="This invoice has been voided")
-    pdf_bytes = await generate_invoice_pdf(invoice, db)
+        raise _voided_doc_error()
+
+    # ✅ Phase B: PDF engine failures → typed, retryable error (was raw 500)
+    try:
+        pdf_bytes = await generate_invoice_pdf(invoice, db)
+    except (AppException,):
+        raise
+    except Exception as e:
+        print(f"⚠️ Public PDF generation failed for invoice {invoice.id}: {e}")
+        raise ServerError(
+            title="PDF Not Available Yet",
+            message="We couldn't generate the PDF just now. Please try again in a moment.",
+        )
+
     return Response(
         content=pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=Invoice_{invoice.invoice_number}.pdf"},

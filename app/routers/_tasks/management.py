@@ -1,7 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+# app/routers/_tasks/management.py
+"""
+Task Management — creation and archival.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Cross-tenant assignment error shifted from 400 → 403 
+   (AuthorizationError) since this is a scope/permission boundary, not a bad request.
+"""
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AuthorizationError, NotFoundError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -17,7 +26,7 @@ router = APIRouter()
 admin_or_above = Depends(require_role([UserRole.super_admin, UserRole.tenant_admin]))
 
 
-@router.post("/", response_model=TaskOut)
+@router.post("/", response_model=TaskOut, status_code=201)
 @limiter.limit("30/minute")
 async def create_task(
     request: Request,
@@ -27,7 +36,10 @@ async def create_task(
 ):
     # 1. Permission Check
     if task.user_id and task.user_id != current_user.id and current_user.role not in [UserRole.tenant_admin, UserRole.super_admin]:
-        raise HTTPException(status_code=403, detail="Only admins can assign tasks to others")
+        raise AuthorizationError(
+            title="Permission Denied",
+            message="Only admins can assign tasks to others.",
+        )
         
     # 2. ✅ SECURITY FIX: Validate that assignee belongs to the current tenant
     if task.user_id:
@@ -37,7 +49,11 @@ async def create_task(
         )
         user_check_result = await db.execute(user_check_stmt)
         if not user_check_result.scalars().first():
-            raise HTTPException(status_code=400, detail="Cannot assign task to a user outside your tenant")
+            # ✅ Phase B: Shifted from 400 to 403 (AuthorizationError)
+            raise AuthorizationError(
+                title="Cross-Tenant Assignment Blocked",
+                message="Cannot assign task to a user outside your tenant.",
+            )
 
     task_data = task.model_dump(exclude={"is_system_generated", "created_by"})
     
@@ -82,12 +98,18 @@ async def delete_task(
     task = result.scalars().first()
     
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise NotFoundError(
+            title="Task Not Found",
+            message="Task not found.",
+        )
         
     # Permission Check
     if current_user.role not in [UserRole.tenant_admin, UserRole.super_admin]:
         if task.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Not authorized to delete this task")
+            raise AuthorizationError(
+                title="Permission Denied",
+                message="Not authorized to delete this task.",
+            )
             
     # ✅ ARCHITECTURE FIX: Soft Delete (Archive) instead of Hard Delete
     # This preserves the audit trail for system-generated tasks and completed work.

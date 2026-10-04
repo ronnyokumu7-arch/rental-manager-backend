@@ -1,9 +1,17 @@
 # app/routers/tenant_policies.py
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+"""
+Tenant Policies CRUD — defaults, effective document, and custom overrides.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Invalid clause keys now return field_errors so the UI 
+   can highlight the specific bad input.
+"""
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ConflictError, NotFoundError, UnprocessableEntityError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -41,9 +49,9 @@ async def get_authorized_policy_async(policy_id: int, user: User, db: AsyncSessi
     policy = result.scalars().first()
 
     if not policy:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Policy not found"
+        raise NotFoundError(
+            title="Policy Not Found",
+            message="Policy not found.",
         )
     return policy
 
@@ -94,7 +102,7 @@ async def list_policies(
     return paginate_items(policies, total=len(policies), page=page, page_size=page_size)
 
 
-@router.post("/", response_model=TenantPolicyOut, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=TenantPolicyOut, status_code=201)
 @limiter.limit("20/minute")
 async def create_policy(
     request: Request,
@@ -108,9 +116,10 @@ async def create_policy(
             c["clause_key"] for c in DEFAULT_POLICY_DOCUMENT.get(payload.category, [])
         }
         if payload.clause_key not in valid_keys:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Unknown clause key '{payload.clause_key}' for category '{payload.category.value}'.",
+            raise UnprocessableEntityError(
+                title="Invalid Clause Key",
+                message=f"Unknown clause key '{payload.clause_key}' for category '{payload.category.value}'.",
+                field_errors={"clause_key": f"Unknown clause key for category '{payload.category.value}'"},
             )
 
         # ✅ OVERRIDE RULE: one override per default clause — friendly 409
@@ -122,9 +131,9 @@ async def create_policy(
         )
         existing = (await db.execute(existing_stmt)).scalars().first()
         if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="This clause is already customized. Update the existing policy instead.",
+            raise ConflictError(
+                title="Clause Already Customized",
+                message="This clause is already customized. Update the existing policy instead.",
             )
 
     policy = TenantPolicy(**payload.model_dump(), tenant_id=current_user.tenant_id)
@@ -133,9 +142,9 @@ async def create_policy(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This clause is already customized. Update the existing policy instead.",
+        raise ConflictError(
+            title="Clause Already Customized",
+            message="This clause is already customized. Update the existing policy instead.",
         )
     await db.refresh(policy)
 
@@ -213,7 +222,7 @@ async def toggle_policy(
     return policy
 
 
-@router.delete("/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{policy_id}", status_code=204)
 @limiter.limit("10/minute")
 async def delete_policy(
     request: Request,

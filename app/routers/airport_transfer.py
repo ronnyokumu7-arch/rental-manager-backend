@@ -1,3 +1,4 @@
+# app/routers/airport_transfer.py
 """
 Airport Transfer CRUD Router.
 
@@ -6,11 +7,14 @@ Airport Transfer CRUD Router.
   - Strict Tenant Scoping: every query filters by current_user.tenant_id.
   - Async-safe: uses proper async session execution.
   - Idempotent creation: prevents duplicate transfers for the same booking.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 """
-from fastapi import APIRouter, Depends, HTTPException, Request, Query, status
-from sqlalchemy import select, func
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ConflictError, NotFoundError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -18,9 +22,9 @@ from app.models.airport_transfer import AirportTransfer
 from app.models.bookings import Booking
 from app.models.users import User
 from app.schemas.airport_transfer import (
-    AirportTransferCreate, 
-    AirportTransferOut, 
-    AirportTransferUpdate
+    AirportTransferCreate,
+    AirportTransferOut,
+    AirportTransferUpdate,
 )
 from app.schemas.pagination import PaginatedResponse, paginate_items
 
@@ -28,7 +32,7 @@ router = APIRouter(prefix="/airport-transfers", tags=["airport-transfers"])
 
 
 # ─── CREATE ───────────────────────────────────────────────────────────────
-@router.post("/", response_model=AirportTransferOut, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=AirportTransferOut, status_code=201)
 @limiter.limit("20/minute")
 async def create_airport_transfer(
     request: Request,
@@ -43,9 +47,9 @@ async def create_airport_transfer(
     )
     booking = (await db.execute(booking_stmt)).scalars().first()
     if not booking:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Booking not found or access denied."
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="Booking not found or access denied.",
         )
 
     # 2. Prevent duplicate transfers for the same booking (1:1 relationship)
@@ -54,9 +58,9 @@ async def create_airport_transfer(
         AirportTransfer.tenant_id == current_user.tenant_id,
     )
     if (await db.execute(dup_stmt)).scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An airport transfer already exists for this booking."
+        raise ConflictError(
+            title="Transfer Already Exists",
+            message="An airport transfer already exists for this booking.",
         )
 
     # 3. Create Transfer
@@ -73,6 +77,7 @@ async def create_airport_transfer(
 
 # ─── LIST ──────────────────────────────────────────────────────────────────
 @router.get("/", response_model=PaginatedResponse[AirportTransferOut])
+@limiter.limit("60/minute")
 async def list_airport_transfers(
     request: Request,
     booking_id: int = Query(None),
@@ -107,6 +112,7 @@ async def list_airport_transfers(
 
 # ─── READ ──────────────────────────────────────────────────────────────────
 @router.get("/{transfer_id}", response_model=AirportTransferOut)
+@limiter.limit("60/minute")
 async def get_airport_transfer(
     request: Request,
     transfer_id: int,
@@ -120,9 +126,9 @@ async def get_airport_transfer(
     transfer = (await db.execute(stmt)).scalars().first()
 
     if not transfer:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Airport transfer not found or access denied."
+        raise NotFoundError(
+            title="Transfer Not Found",
+            message="Airport transfer not found or access denied.",
         )
     
     return transfer
@@ -145,9 +151,9 @@ async def update_airport_transfer(
     transfer = (await db.execute(stmt)).scalars().first()
 
     if not transfer:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Airport transfer not found or access denied."
+        raise NotFoundError(
+            title="Transfer Not Found",
+            message="Airport transfer not found or access denied.",
         )
 
     update_data = payload.model_dump(exclude_unset=True)
@@ -161,7 +167,7 @@ async def update_airport_transfer(
 
 
 # ─── DELETE ────────────────────────────────────────────────────────────────
-@router.delete("/{transfer_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{transfer_id}", status_code=204)
 @limiter.limit("10/minute")
 async def delete_airport_transfer(
     request: Request,
@@ -176,9 +182,9 @@ async def delete_airport_transfer(
     transfer = (await db.execute(stmt)).scalars().first()
 
     if not transfer:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Airport transfer not found or access denied."
+        raise NotFoundError(
+            title="Transfer Not Found",
+            message="Airport transfer not found or access denied.",
         )
 
     await db.delete(transfer)

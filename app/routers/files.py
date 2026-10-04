@@ -1,3 +1,4 @@
+# app/routers/files.py
 """
 Authenticated file-serving endpoint.
 Replaces public StaticFiles for sensitive tenant uploads (IDs, DLs, contracts).
@@ -11,14 +12,18 @@ Signed-URL exchange:
 - Browsers/<img> tags cannot send the JWT Authorization header, so the
   frontend calls GET .../signed (authenticated) to swap the stored API URL
   for a short-lived signed Cloudinary URL, then renders that.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Removed manual CORS headers that conflicted with credentials mode.
 """
 import mimetypes
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AuthorizationError, BadRequestError, NotFoundError
 from app.core.config import get_settings
 from app.core.limiter import limiter
 from app.db.database import get_db
@@ -51,21 +56,21 @@ def _enforce_access(current_user: User, tenant_id: int, category: str, filename:
     """
     if current_user.role != UserRole.super_admin:
         if current_user.tenant_id != tenant_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You do not have access to files from this tenant"
+            raise AuthorizationError(
+                title="Access Denied",
+                message="You do not have access to files from this tenant.",
             )
 
     if category not in VALID_CATEGORIES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file category"
+        raise BadRequestError(
+            title="Invalid Category",
+            message="Invalid file category.",
         )
 
     if ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid filename"
+        raise AuthorizationError(
+            title="Invalid Filename",
+            message="Invalid filename.",
         )
 
 
@@ -96,7 +101,7 @@ async def serve_secure_file(
     if signed:
         return RedirectResponse(
             url=signed,
-            status_code=status.HTTP_302_FOUND,
+            status_code=302,
             headers={
                 "Cache-Control": "private, max-age=300",
                 "X-Content-Type-Options": "nosniff",
@@ -111,15 +116,15 @@ async def serve_secure_file(
     try:
         file_path.relative_to(upload_dir)
     except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: invalid file path"
+        raise AuthorizationError(
+            title="Access Denied",
+            message="Access denied: invalid file path.",
         )
 
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found"
+        raise NotFoundError(
+            title="File Not Found",
+            message="File not found.",
         )
 
     # Determine content type safely
@@ -163,19 +168,17 @@ async def get_signed_file_url(
         ttl_seconds=SIGNED_URL_TTL_SECONDS,
     )
     if not signed:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Signed URLs unavailable for this storage backend"
+        raise NotFoundError(
+            title="Unavailable",
+            message="Signed URLs unavailable for this storage backend.",
         )
 
-    
+    # ✅ Phase B: Removed manual CORS headers. 
+    # Setting `Access-Control-Allow-Origin: *` alongside `Access-Control-Allow-Credentials: true`
+    # causes browsers to block the response. FastAPI's global CORSMiddleware handles this safely.
     return JSONResponse(
         content={"url": signed, "ttl_seconds": SIGNED_URL_TTL_SECONDS},
         headers={
-            # ✅ MOBILE CORS: Some mobile browsers reject responses without explicit CORS
-            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
-            "Access-Control-Allow-Credentials": "true",
-            "Vary": "Origin",
             # ✅ Prevent carrier proxy caching (critical for signed URLs)
             "Cache-Control": "no-store, no-cache, must-revalidate, private",
             "Pragma": "no-cache",

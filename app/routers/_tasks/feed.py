@@ -1,163 +1,194 @@
-from typing import List, Optional
+# app/routers/_tasks/feed.py
+"""
+Task Feed & Assignment — claim, assign, and update tasks.
 
-from fastapi import APIRouter, Depends, Query, Request
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Missing user_id during assignment now returns field_errors 
+   so the UI can highlight the specific bad input.
+"""
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError, NotFoundError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
 from app.models.users import User, UserRole
 from app.models.task import Task, TaskStatus
-from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
-from app.schemas.task import TaskOut
-from app.services.cache import get_cached_task_list, set_cached_task_list
+from app.schemas.task import TaskOut, TaskUpdate
+from app.services.cache import invalidate_task_cache
+from app.services.activity_log import ActivityLogService
 
 router = APIRouter()
 
 admin_or_above = Depends(require_role([UserRole.super_admin, UserRole.tenant_admin]))
 
 
-@router.get("/my-tasks", response_model=PaginatedResponse[TaskOut])
-@limiter.limit("60/minute")
-async def get_my_tasks(
+@router.patch("/{task_id}/claim", response_model=TaskOut)
+@limiter.limit("30/minute")
+async def claim_task(
     request: Request,
-    status: Optional[TaskStatus] = None,
-    category: Optional[str] = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    task_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # ✅ 1. Check cache first
-    cached = await get_cached_task_list(
-        tenant_id=None if current_user.role == UserRole.super_admin else current_user.tenant_id,
-        user_id=current_user.id,
-        status=status.value if status else None,
-        category=category
+    tenant_filter = Task.tenant_id == current_user.tenant_id if current_user.tenant_id else True
+    
+    stmt = select(Task).where(
+        Task.id == task_id,
+        tenant_filter,
+        Task.user_id == None,
+        Task.status == TaskStatus.unassigned
     )
-    if cached is not None:
-        return paginate_cached_items(cached, page=page, page_size=page_size)
+    result = await db.execute(stmt)
+    task = result.scalars().first()
+    
+    if not task:
+        raise NotFoundError(
+            title="Task Not Found",
+            message="Task not found or already claimed.",
+        )
+    
+    task.user_id = current_user.id
+    task.status = TaskStatus.pending
+    await db.commit()
+    await db.refresh(task)
 
-    # ✅ 2. Cache miss: Query DB
-    stmt = select(Task).where(Task.is_archived == False)
+    # ✅ Invalidate task caches (claimer's feed and the unassigned pool)
+    await invalidate_task_cache(task.tenant_id, current_user.id)
+    await invalidate_task_cache(task.tenant_id, 0)  # 0 represents the unassigned pool cache key
+    
+    # ✅ Log the claim action
+    await ActivityLogService.log(
+        db=db, tenant_id=task.tenant_id, user_id=current_user.id,
+        action="claim_task", target_type="task", target_id=task.id,
+        details={"task_title": task.title}
+    )
+    await db.commit()  # Commit the activity log flush
+
+    return task
+
+
+@router.patch("/{task_id}/assign", response_model=TaskOut)
+@limiter.limit("30/minute")
+async def assign_task(
+    request: Request,
+    task_id: int,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = admin_or_above
+):
+    if "user_id" not in payload:
+        raise BadRequestError(
+            title="Missing User ID",
+            message="user_id is required.",
+            field_errors={"user_id": "Required"},
+        )
+    
+    tenant_filter = Task.tenant_id == current_user.tenant_id if current_user.tenant_id else True
+    
+    stmt = select(Task).where(
+        Task.id == task_id,
+        tenant_filter
+    )
+    result = await db.execute(stmt)
+    task = result.scalars().first()
+    
+    if not task:
+        raise NotFoundError(
+            title="Task Not Found",
+            message="Task not found.",
+        )
+        
+    # The task's tenant, rather than the actor's tenant, is authoritative.
+    # This lets the system owner assign work in any agency without allowing
+    # tenant admins to cross their own boundary.
+    target_stmt = select(User).where(
+        User.id == payload["user_id"],
+        User.tenant_id == task.tenant_id
+    )
+    target_result = await db.execute(target_stmt)
+    target_user = target_result.scalars().first()
+    
+    if not target_user:
+        raise NotFoundError(
+            title="User Not Found",
+            message="Target user not found in your agency.",
+        )
+        
+    task.user_id = target_user.id
+    task.status = TaskStatus.pending
+    task.requires_role = None
+    await db.commit()
+    await db.refresh(task)
+
+    # ✅ Invalidate all task caches to ensure consistency across users
+    await invalidate_task_cache(task.tenant_id)
+    
+    # ✅ Log the assignment action
+    await ActivityLogService.log(
+        db=db, tenant_id=task.tenant_id, user_id=current_user.id,
+        action="assign_task", target_type="task", target_id=task.id,
+        details={"task_title": task.title, "assigned_to_user_id": target_user.id}
+    )
+    await db.commit()  # Commit the activity log flush
+
+    return task
+
+
+@router.patch("/{task_id}", response_model=TaskOut)
+@limiter.limit("30/minute")
+async def update_task(
+    request: Request,
+    task_id: int,
+    task_update: TaskUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    stmt = select(Task).where(Task.id == task_id)
     
     if current_user.role == UserRole.super_admin:
-        pass  # Super admins see all tasks across all tenants
+        pass
     elif current_user.role == UserRole.tenant_admin:
         stmt = stmt.where(Task.tenant_id == current_user.tenant_id)
     else:
-        # Staff only see tasks assigned to them
         stmt = stmt.where(
             Task.tenant_id == current_user.tenant_id,
             Task.user_id == current_user.id
         )
         
-    if status: 
-        stmt = stmt.where(Task.status == status)
-    if category: 
-        stmt = stmt.where(Task.category == category)
+    result = await db.execute(stmt)
+    task = result.scalars().first()
+    
+    if not task:
+        raise NotFoundError(
+            title="Task Not Found",
+            message="Task not found or you do not have permission to update it.",
+        )
         
-    stmt = stmt.order_by(Task.due_date.asc(), Task.priority.desc())
-    result = await db.execute(stmt)
-    tasks = result.scalars().all()
+    update_data = task_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(task, field, value)
+        
+    if task_update.status == TaskStatus.completed and not task.completed_at:
+        task.completed_at = datetime.now()
+        
+    await db.commit()
+    await db.refresh(task)
 
-    # ✅ 3. Write to cache
-    await set_cached_task_list(
-        tenant_id=None if current_user.role == UserRole.super_admin else current_user.tenant_id,
-        user_id=current_user.id,
-        status=status.value if status else None,
-        category=category,
-        tasks=tasks
+    # ✅ Invalidate all task caches
+    await invalidate_task_cache(task.tenant_id)
+    
+    # ✅ Log the update action
+    await ActivityLogService.log(
+        db=db, tenant_id=task.tenant_id, user_id=current_user.id,
+        action="update_task", target_type="task", target_id=task.id,
+        details={"task_title": task.title, "changed_fields": list(update_data.keys())}
     )
-    
-    return paginate_items(tasks, total=len(tasks), page=page, page_size=page_size)
+    await db.commit()  # Commit the activity log flush
 
-
-@router.get("/user/{user_id}", response_model=PaginatedResponse[TaskOut])
-@limiter.limit("60/minute")
-async def get_user_tasks(
-    request: Request,
-    user_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = admin_or_above
-):
-    # ✅ 1. Check cache first (using user_id as key)
-    cached = await get_cached_task_list(
-        tenant_id=None if current_user.role == UserRole.super_admin else current_user.tenant_id,
-        user_id=user_id,
-        status=None,
-        category=None
-    )
-    if cached is not None:
-        return paginate_cached_items(cached, page=page, page_size=page_size)
-
-    # ✅ 2. Cache miss: Query DB
-    tenant_filter = Task.tenant_id == current_user.tenant_id if current_user.tenant_id else True
-    
-    stmt = select(Task).where(
-        tenant_filter,
-        Task.user_id == user_id,
-        Task.is_archived == False
-    ).order_by(Task.due_date.asc(), Task.priority.desc())
-    
-    result = await db.execute(stmt)
-    tasks = result.scalars().all()
-
-    # ✅ 3. Write to cache
-    await set_cached_task_list(
-        tenant_id=None if current_user.role == UserRole.super_admin else current_user.tenant_id,
-        user_id=user_id,
-        status=None,
-        category=None,
-        tasks=tasks
-    )
-    
-    return paginate_items(tasks, total=len(tasks), page=page, page_size=page_size)
-
-
-@router.get("/unassigned", response_model=PaginatedResponse[TaskOut])
-@limiter.limit("60/minute")
-async def get_unassigned_tasks(
-    request: Request,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = admin_or_above
-):
-    # ✅ 1. Check cache first (using 0 as dummy user_id for unassigned pool)
-    cached = await get_cached_task_list(
-        tenant_id=None if current_user.role == UserRole.super_admin else current_user.tenant_id,
-        user_id=0, 
-        status=TaskStatus.unassigned.value,
-        category=None
-    )
-    if cached is not None:
-        return paginate_cached_items(cached, page=page, page_size=page_size)
-
-    # ✅ 2. Cache miss: Query DB
-    tenant_filter = Task.tenant_id == current_user.tenant_id if current_user.tenant_id else True
-    
-    stmt = select(Task).where(
-        tenant_filter,
-        Task.user_id == None,
-        Task.status == TaskStatus.unassigned,
-        Task.is_archived == False
-    ).order_by(Task.created_at.desc())
-    
-    result = await db.execute(stmt)
-    tasks = result.scalars().all()
-
-    # ✅ 3. Write to cache
-    await set_cached_task_list(
-        tenant_id=None if current_user.role == UserRole.super_admin else current_user.tenant_id,
-        user_id=0,
-        status=TaskStatus.unassigned.value,
-        category=None,
-        tasks=tasks
-    )
-    
-    return paginate_items(tasks, total=len(tasks), page=page, page_size=page_size)
+    return task

@@ -1,13 +1,28 @@
+# app/routers/invoice/admin.py  (invoice management router)
+"""
+✅ INVOICE MANAGEMENT — list / get / create / update / void / pdf / share-link.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B):
+  - PDF generation failures → typed ServerError (was raw 500).
+  - share-link response carries a success envelope.
+"""
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
+from app.core.errors import (
+    AppException,
+    BadRequestError,
+    NotFoundError,
+    ServerError,
+)
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -71,6 +86,26 @@ def serialize_invoice(invoice: Invoice) -> InvoiceOut:
     )
 
 
+async def _load_invoice_or_404(
+    db: AsyncSession, invoice_id: int, tenant_id: int, eager: bool = False,
+) -> Invoice:
+    """✅ DRY tenant-scoped loader; eager=True adds booking→client/vehicle."""
+    stmt = select(Invoice)
+    if eager:
+        stmt = stmt.options(
+            selectinload(Invoice.booking).selectinload(Booking.client),
+            selectinload(Invoice.booking).selectinload(Booking.vehicle),
+        )
+    stmt = stmt.where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    invoice = (await db.execute(stmt)).scalars().unique().first()
+    if not invoice:
+        raise NotFoundError(
+            title="Invoice Not Found",
+            message="We couldn't find this invoice, or you may not have access to it.",
+        )
+    return invoice
+
+
 @router.get("/", response_model=PaginatedResponse[InvoiceOut])
 @limiter.limit("60/minute")
 async def list_invoices(
@@ -117,25 +152,7 @@ async def get_invoice(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    # ✅ FIXED: Added selectinload for Invoice.booking.vehicle
-    stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client),
-        selectinload(Invoice.booking).selectinload(Booking.vehicle),
-    ).where(
-        Invoice.id == invoice_id,
-        Invoice.tenant_id == current_user.tenant_id
-    )
-    
-    result = await db.execute(stmt)
-    invoice = result.scalars().unique().first()
-    
-    if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice not found"
-        )
-    
-    # ✅ NEW: Return serialized with denormalized UI fields
+    invoice = await _load_invoice_or_404(db, invoice_id, current_user.tenant_id, eager=True)
     return serialize_invoice(invoice)
 
 
@@ -155,9 +172,9 @@ async def create_invoice(
     booking = booking_result.scalars().first()
     
     if not booking:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Booking not found or access denied"
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="We couldn't find this booking, or you may not have access to it.",
         )
 
     invoice = await create_invoice_for_booking(
@@ -172,12 +189,7 @@ async def create_invoice(
     )
     
     # ✅ FIXED: Re-fetch with eager loading for Invoice.booking.vehicle
-    stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client),
-        selectinload(Invoice.booking).selectinload(Booking.vehicle),
-    ).where(Invoice.id == invoice.id)
-    result = await db.execute(stmt)
-    invoice = result.scalars().unique().first()
+    invoice = await _load_invoice_or_404(db, invoice.id, current_user.tenant_id, eager=True)
 
     # ✅ Invalidate cache
     await invalidate_invoice_cache(current_user.tenant_id)
@@ -206,23 +218,12 @@ async def update_invoice(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    stmt = select(Invoice).where(
-        Invoice.id == invoice_id,
-        Invoice.tenant_id == current_user.tenant_id
-    )
-    result = await db.execute(stmt)
-    invoice = result.scalars().first()
-    
-    if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice not found"
-        )
+    invoice = await _load_invoice_or_404(db, invoice_id, current_user.tenant_id)
 
     if invoice.status in (InvoiceStatus.paid, InvoiceStatus.void) and updates.amount_due is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot modify amount of a paid or void invoice"
+        raise BadRequestError(
+            title="Invoice Locked",
+            message=f"Cannot modify the amount of a {invoice.status.value} invoice.",
         )
 
     update_data = updates.model_dump(exclude_unset=True)
@@ -237,12 +238,7 @@ async def update_invoice(
     await db.commit()
     
     # ✅ FIXED: Re-fetch with eager loading for Invoice.booking.vehicle
-    stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client),
-        selectinload(Invoice.booking).selectinload(Booking.vehicle),
-    ).where(Invoice.id == invoice.id)
-    result = await db.execute(stmt)
-    invoice = result.scalars().unique().first()
+    invoice = await _load_invoice_or_404(db, invoice.id, current_user.tenant_id, eager=True)
     
     # ✅ Invalidate caches
     await invalidate_invoice_cache(current_user.tenant_id)
@@ -261,39 +257,24 @@ async def void_invoice(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    stmt = select(Invoice).where(
-        Invoice.id == invoice_id,
-        Invoice.tenant_id == current_user.tenant_id
-    )
-    result = await db.execute(stmt)
-    invoice = result.scalars().first()
-    
-    if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice not found"
-        )
+    invoice = await _load_invoice_or_404(db, invoice_id, current_user.tenant_id)
+
     if invoice.status == InvoiceStatus.void:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invoice is already void"
+        raise BadRequestError(
+            title="Already Void",
+            message="This invoice is already void.",
         )
     if invoice.status == InvoiceStatus.paid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot void a paid invoice"
+        raise BadRequestError(
+            title="Paid Invoices Can't Be Voided",
+            message="This invoice has payments recorded. Void is unavailable once paid.",
         )
 
     invoice.status = InvoiceStatus.void
     await db.commit()
     
     # ✅ FIXED: Re-fetch with eager loading for Invoice.booking.vehicle
-    stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client),
-        selectinload(Invoice.booking).selectinload(Booking.vehicle),
-    ).where(Invoice.id == invoice.id)
-    result = await db.execute(stmt)
-    invoice = result.scalars().unique().first()
+    invoice = await _load_invoice_or_404(db, invoice.id, current_user.tenant_id, eager=True)
     
     # ✅ Invalidate both invoice and subscription caches
     await invalidate_invoice_cache(current_user.tenant_id)
@@ -322,24 +303,19 @@ async def download_invoice_pdf(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    # ✅ FIXED: Added eager loading for Invoice.booking.vehicle
-    stmt = select(Invoice).options(
-        selectinload(Invoice.booking).selectinload(Booking.client),
-        selectinload(Invoice.booking).selectinload(Booking.vehicle),
-    ).where(
-        Invoice.id == invoice_id,
-        Invoice.tenant_id == current_user.tenant_id
-    )
-    result = await db.execute(stmt)
-    invoice = result.scalars().unique().first()
-    
-    if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice not found"
-        )
+    invoice = await _load_invoice_or_404(db, invoice_id, current_user.tenant_id, eager=True)
 
-    pdf_bytes = await generate_invoice_pdf(invoice, db)
+    # ✅ Phase B: PDF engine failures → typed, retryable error (was raw 500)
+    try:
+        pdf_bytes = await generate_invoice_pdf(invoice, db)
+    except (AppException,):
+        raise
+    except Exception as e:
+        print(f"⚠️ PDF generation failed for invoice {invoice.id}: {e}")
+        raise ServerError(
+            title="PDF Generation Failed",
+            message="We couldn't generate the PDF just now. Please try again in a moment.",
+        )
     
     return Response(
         content=pdf_bytes,
@@ -356,18 +332,7 @@ async def generate_invoice_share_link(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    stmt = select(Invoice).where(
-        Invoice.id == invoice_id,
-        Invoice.tenant_id == current_user.tenant_id,
-    )
-    result = await db.execute(stmt)
-    invoice = result.scalars().first()
-    
-    if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice not found"
-        )
+    invoice = await _load_invoice_or_404(db, invoice_id, current_user.tenant_id)
 
     invoice.share_token = str(uuid.uuid4())
     invoice.share_token_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
@@ -385,6 +350,9 @@ async def generate_invoice_share_link(
     # ✅ Use settings.frontend_url instead of os.getenv
     base_url = settings.frontend_url.rstrip("/")
     return {
+        "type": "success",
+        "title": "Share Link Ready",
+        "message": "The payment link is valid for 30 days.",
         "share_token": invoice.share_token,
         "share_url": f"{base_url}/invoice/{invoice.share_token}",
         "expires_at": invoice.share_token_expires_at.isoformat(),

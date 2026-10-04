@@ -1,10 +1,23 @@
 # app/routers/tenants/recovery.py
+"""
+Tenant Admin Recovery — masked options, reset link nudges, and admin email changes.
 
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Notification failures (email/SMS) are now caught and logged
+   instead of crashing the endpoint with a 500, since this is just a "nudge".
+"""
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import (
+    BadRequestError,
+    ConflictError,
+    NotFoundError,
+    TooManyRequestsError,
+)
 from app.db.database import get_db  # ✅ Updated to async DB path
 from app.core.limiter import limiter   # 🚨 Rate limiter
 from app.dependencies.auth import get_current_user
@@ -55,7 +68,10 @@ async def get_recovery_options(
     tenant = result.scalars().first()
     
     if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found.",
+        )
 
     # Calculate rate limits
     now = datetime.now(timezone.utc)
@@ -84,7 +100,7 @@ async def get_recovery_options(
     )
 
 
-@router.post("/{tenant_id}/send-reset-link", status_code=status.HTTP_200_OK)
+@router.post("/{tenant_id}/send-reset-link", status_code=200)
 @limiter.limit("5/minute")  # 🚨 STRICT: Sensitive recovery action
 async def send_reset_link(
     request: Request,
@@ -98,7 +114,10 @@ async def send_reset_link(
     tenant = result.scalars().first()
     
     if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found.",
+        )
 
     # Rate limit check
     if tenant.last_reset_request_at:
@@ -108,9 +127,9 @@ async def send_reset_link(
             
         minutes_since = (datetime.now(timezone.utc) - last_reset).total_seconds() / 60
         if minutes_since < 15:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Please wait {int(15 - minutes_since)} minutes before requesting another reset link.",
+            raise TooManyRequestsError(
+                title="Rate Limit Exceeded",
+                message=f"Please wait {int(15 - minutes_since)} minutes before requesting another reset link.",
             )
 
     # Update timestamp
@@ -122,25 +141,35 @@ async def send_reset_link(
     await TenantActivityLogger.on_updated(db, current_user.id, tenant, ["last_reset_request_at"])
     await db.commit()  # Commit the activity log flush
 
-    # Trigger notifications
+    # ✅ Phase B: Trigger notifications safely. Failures are logged but don't crash the endpoint.
+    notification_errors = []
     if payload.send_to_email:
-        send_admin_recovery_notification(
-            to=tenant.admin_email,
-            full_name=tenant.admin_name,
-            subject="Password Reset Requested",
-            custom_message=payload.custom_message or "A password reset has been requested for your account. Please check your email for the reset link.",
-        )
+        try:
+            send_admin_recovery_notification(
+                to=tenant.admin_email,
+                full_name=tenant.admin_name,
+                subject="Password Reset Requested",
+                custom_message=payload.custom_message or "A password reset has been requested for your account. Please check your email for the reset link.",
+            )
+        except Exception as e:
+            notification_errors.append(f"Email failed: {e}")
 
     if payload.send_to_phone and tenant.admin_phone:
-        send_sms_otp(
-            phone=tenant.admin_phone,
-            message=f"Password reset requested for {tenant.name}. Check your email for the reset link.",
-        )
+        try:
+            send_sms_otp(
+                phone=tenant.admin_phone,
+                message=f"Password reset requested for {tenant.name}. Check your email for the reset link.",
+            )
+        except Exception as e:
+            notification_errors.append(f"SMS failed: {e}")
 
-    return {"message": "Reset instructions sent successfully."}
+    return {
+        "message": "Reset instructions sent successfully.",
+        "notification_errors": notification_errors if notification_errors else None,
+    }
 
 
-@router.post("/{tenant_id}/change-admin-email", status_code=status.HTTP_200_OK)
+@router.post("/{tenant_id}/change-admin-email", status_code=200)
 @limiter.limit("5/minute")  # 🚨 STRICT: Sensitive account alteration
 async def change_admin_email(
     request: Request,
@@ -154,7 +183,10 @@ async def change_admin_email(
     tenant = result.scalars().first()
     
     if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found.",
+        )
 
     # Enforce cooldown
     if tenant.email_change_cooldown_until:
@@ -164,17 +196,18 @@ async def change_admin_email(
             
         if datetime.now(timezone.utc) < cooldown_until:
             remaining = int((cooldown_until - datetime.now(timezone.utc)).total_seconds() / 60)
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Email change cooldown active. Wait {remaining} minutes.",
+            raise TooManyRequestsError(
+                title="Cooldown Active",
+                message=f"Email change cooldown active. Wait {remaining} minutes.",
             )
 
     # Validate OTP for non-manual methods
     if payload.verification_method != VerificationMethod.manual_override:
         if not payload.otp or len(payload.otp) != 6:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Valid 6-digit OTP is required for email/phone verification.",
+            raise BadRequestError(
+                title="Invalid OTP",
+                message="Valid 6-digit OTP is required for email/phone verification.",
+                field_errors={"otp": "Must be a valid 6-digit code"},
             )
         # TODO: Verify OTP against stored value before proceeding
 
@@ -183,9 +216,9 @@ async def change_admin_email(
     existing_user = (await db.execute(user_stmt)).scalars().first()
     
     if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This email is already registered to another user.",
+        raise ConflictError(
+            title="Email Already Registered",
+            message="This email is already registered to another user.",
         )
 
     old_email = tenant.admin_email
@@ -197,25 +230,28 @@ async def change_admin_email(
     tenant.admin_changed_by_user_id = current_user.id
     tenant.email_change_cooldown_until = datetime.now(timezone.utc) + timedelta(hours=24)
 
-    # Notify old contact channel
-    if payload.verification_method == VerificationMethod.email and old_email:
-        send_admin_recovery_notification(
-            to=old_email,
-            full_name=tenant.admin_name,
-            subject="Admin Email Changed",
-            custom_message=(
-                f"Your admin email was changed to {payload.new_email} on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} "
-                f"by Super Admin {current_user.full_name}. If this wasn't authorized, contact support immediately."
-            ),
-        )
-    elif payload.verification_method == VerificationMethod.phone and old_phone:
-        send_sms_otp(
-            phone=old_phone,
-            message=(
-                f"ALERT: Your admin email was changed to {payload.new_email}. "
-                f"If unauthorized, contact support immediately."
-            ),
-        )
+    # ✅ Phase B: Notify old contact channel safely
+    try:
+        if payload.verification_method == VerificationMethod.email and old_email:
+            send_admin_recovery_notification(
+                to=old_email,
+                full_name=tenant.admin_name,
+                subject="Admin Email Changed",
+                custom_message=(
+                    f"Your admin email was changed to {payload.new_email} on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} "
+                    f"by Super Admin {current_user.full_name}. If this wasn't authorized, contact support immediately."
+                ),
+            )
+        elif payload.verification_method == VerificationMethod.phone and old_phone:
+            send_sms_otp(
+                phone=old_phone,
+                message=(
+                    f"ALERT: Your admin email was changed to {payload.new_email}. "
+                    f"If unauthorized, contact support immediately."
+                ),
+            )
+    except Exception as e:
+        print(f"⚠️ Admin email change notification failed: {e}")
 
     await db.commit()
 

@@ -1,13 +1,24 @@
 # app/routers/auth/password_reset.py
+"""
+✅ PASSWORD RESET — forgot / reset flows.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B):
+  - forgot_password: email failures can no longer leak account existence
+    (always returns the generic 200 — enumeration oracle closed).
+  - reset_password: confirmation email failure no longer masks a successful
+    reset (password already changed → response must say so).
+"""
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.errors import ValidationFailedError
 from app.core.limiter import limiter
 from app.core.security import get_password_hash, normalize_email, verify_password
 from app.db.database import get_db, set_rls_context
@@ -28,6 +39,13 @@ from ._helpers import (
 router = APIRouter()
 settings = get_settings()
 
+# ✅ IDENTICAL in every outcome — never leak account existence
+_GENERIC_RESET_REPLY = {
+    "type": "info",
+    "title": "Check Your Email",
+    "message": "If that email exists, a reset link has been sent",
+}
+
 
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)
 @limiter.limit(lambda: f"{settings.password_reset_rate_limit}/{settings.password_reset_rate_window}second")
@@ -45,6 +63,7 @@ async def forgot_password(
     - Deletes any existing unused tokens before creating new one
     - Token is hashed before storage (SHA-256)
     - ✅ TTL is configurable (default 60 min) via password_reset_token_expire_minutes
+    - ✅ Phase B: email outage can NEVER change the response (oracle closed)
     """
     # ✅ Schema validation ensures email is valid format
     email = normalize_email(payload.email)
@@ -56,7 +75,7 @@ async def forgot_password(
     
     # ✅ CRITICAL: Return generic message even if user doesn't exist (prevents enumeration)
     if not user or not user.is_active:
-        return {"message": "If that email exists, a reset link has been sent"}
+        return _GENERIC_RESET_REPLY
 
     # Delete any existing unused tokens for this user
     delete_stmt = delete(PasswordResetToken).where(
@@ -79,15 +98,18 @@ async def forgot_password(
     db.add(db_token)
     await db.commit()
 
-    # Send email with reset link
-    reset_link = f"{settings.frontend_url}/reset-password?token={raw_token}"
-    await send_password_reset_email(
-        to=user.email,
-        full_name=user.full_name,
-        reset_link=reset_link,
-    )
+    # Send email with reset link — ✅ failure must NEVER alter the response
+    try:
+        reset_link = f"{settings.frontend_url}/reset-password?token={raw_token}"
+        await send_password_reset_email(
+            to=user.email,
+            full_name=user.full_name,
+            reset_link=reset_link,
+        )
+    except Exception as e:
+        print(f"⚠️ Password reset email failed for user {user.id}: {e}")
 
-    return {"message": "If that email exists, a reset link has been sent"}
+    return _GENERIC_RESET_REPLY
 
 
 @router.post("/reset-password", status_code=status.HTTP_200_OK)
@@ -116,9 +138,10 @@ async def reset_password(
 
     # ✅ Prevent password reuse
     if verify_password(payload.new_password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Your new password must be different from your current password.",
+        raise ValidationFailedError(
+            title="Password Reused",
+            message="Your new password must be different from your current password.",
+            field_errors={"new_password": "Must be different from your current password"},
         )
 
     # Update password
@@ -167,10 +190,17 @@ async def reset_password(
         details={"revoked_sessions": revoked_count},
     )
 
-    # Send confirmation email
-    await send_password_reset_success(
-        to=user.email,
-        full_name=user.full_name,
-    )
+    # ✅ Phase B: confirmation email failure must never mask the successful reset
+    try:
+        await send_password_reset_success(
+            to=user.email,
+            full_name=user.full_name,
+        )
+    except Exception as e:
+        print(f"⚠️ Password reset confirmation email failed for user {user.id}: {e}")
 
-    return {"message": "Password reset successfully. You can now log in with your new password."}
+    return {
+        "type": "success",
+        "title": "Password Updated",
+        "message": "Password reset successfully. You can now log in with your new password.",
+    }

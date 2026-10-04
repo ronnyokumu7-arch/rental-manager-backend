@@ -1,8 +1,16 @@
-from fastapi import HTTPException, status
+# app/routers/booking/_helpers.py
+"""
+✅ Shared tenant-isolation guards for booking endpoints.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ SECURITY: the 404 copy intentionally conflates "not found" and "no access"
+   to prevent booking-ID enumeration — preserved as-is.
+"""
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.errors import AuthorizationError, NotFoundError
 from app.models.bookings import Booking
 from app.models.users import User, UserRole
 
@@ -23,9 +31,9 @@ def get_authorized_booking(booking_id: int, user: User, db: Session) -> Booking:
         stmt = select(Booking).where(Booking.id == booking_id)
     else:
         if user.tenant_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account isn't linked to an agency. Contact your administrator for access."
+            raise AuthorizationError(
+                title="No Agency Linked",
+                message="Your account isn't linked to an agency. Contact your administrator for access.",
             )
         stmt = select(Booking).where(
             Booking.id == booking_id,
@@ -42,9 +50,9 @@ def get_authorized_booking(booking_id: int, user: User, db: Session) -> Booking:
     booking = result.scalars().first()
 
     if not booking:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="We couldn't find this booking, or you may not have access to it."
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="We couldn't find this booking, or you may not have access to it.",
         )
     return booking
 
@@ -65,9 +73,9 @@ async def get_authorized_booking_async(booking_id: int, user: User, db: AsyncSes
         stmt = select(Booking).where(Booking.id == booking_id)
     else:
         if user.tenant_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account isn't linked to an agency. Contact your administrator for access."
+            raise AuthorizationError(
+                title="No Agency Linked",
+                message="Your account isn't linked to an agency. Contact your administrator for access.",
             )
         stmt = select(Booking).where(
             Booking.id == booking_id,
@@ -84,8 +92,8 @@ async def get_authorized_booking_async(booking_id: int, user: User, db: AsyncSes
     booking = result.scalars().first()
 
     if not booking:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="We couldn't find this booking, or you may not have access to it."
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="We couldn't find this booking, or you may not have access to it.",
         )
     return booking

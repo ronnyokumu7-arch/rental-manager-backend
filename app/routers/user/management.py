@@ -1,14 +1,23 @@
+# app/routers/user/management.py
+"""
+User Management CRUD — tenant-scoped, RBAC-enforced.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): duplicate email/constraint failures now return structured
+   ConflictError (409) instead of generic 400, giving the frontend clearer
+   signals for form highlighting.
+"""
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
-
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AuthorizationError, BadRequestError, ConflictError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.core.config import get_settings
@@ -90,9 +99,9 @@ async def list_users(
 ):
     """List users with optional filtering. Strict tenant isolation enforced."""
     if current_user.role == UserRole.investor:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Investors cannot list tenant users",
+        raise AuthorizationError(
+            title="Access Denied",
+            message="Investors cannot list tenant users.",
         )
     
     # Determine the effective tenant_id for caching
@@ -188,7 +197,10 @@ async def update_my_profile(
             )
             existing_user = (await db.execute(existing_user_stmt)).scalars().first()
             if existing_user:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This email is already in use.")
+                raise ConflictError(
+                    title="Email Already In Use",
+                    message="This email is already in use by another account.",
+                )
             safe_update_data["email"] = new_email
             # Force re-verification if email changes
             safe_update_data["email_verified"] = False
@@ -208,7 +220,10 @@ async def update_my_profile(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Update failed due to database constraint")
+        raise ConflictError(
+            title="Update Failed",
+            message="Update failed due to a database constraint (e.g., duplicate email).",
+        )
 
     await db.refresh(current_user)
 
@@ -252,11 +267,17 @@ async def get_user(
         
     # 2. CROSS-USER VIEWING: Only admins can view others
     if current_user.role not in [UserRole.super_admin, UserRole.tenant_admin]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        raise AuthorizationError(
+            title="Access Denied",
+            message="Only administrators can view other user profiles.",
+        )
         
     # 3. TENANT ISOLATION: Admins can only view users in their own tenant
     if current_user.role == UserRole.tenant_admin and user.tenant_id != current_user.tenant_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        raise AuthorizationError(
+            title="Access Denied",
+            message="You can only view users within your own tenant.",
+        )
         
     return (await _enrich_users_with_owner_status([user], db))[0]
 
@@ -288,7 +309,10 @@ async def update_user(
         existing_user_stmt = select(User).where(User.email == new_email, User.id != user_id)
         existing_user = (await db.execute(existing_user_stmt)).scalars().first()
         if existing_user:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already in use")
+            raise ConflictError(
+                title="Email Already In Use",
+                message="This email is already in use by another account.",
+            )
         safe_update_data["email"] = new_email
 
     if "password" in safe_update_data:
@@ -316,7 +340,10 @@ async def update_user(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Update failed due to database constraint")
+        raise ConflictError(
+            title="Update Failed",
+            message="Update failed due to a database constraint (e.g., duplicate email).",
+        )
         
     await db.refresh(user)
 
@@ -383,9 +410,9 @@ async def transfer_user(
     # Prevent transferring the Agency Owner to another tenant
     if "tenant_id" in safe_update_data and safe_update_data["tenant_id"] != user.tenant_id:
         if await _is_agency_owner(user, db):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot transfer the Agency Owner to another tenant."
+            raise AuthorizationError(
+                title="Agency Owner Protected",
+                message="Cannot transfer the Agency Owner to another tenant.",
             )
         await _validate_tenant_for_role(db, user.role, safe_update_data["tenant_id"])
 
@@ -400,7 +427,10 @@ async def transfer_user(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Update failed due to database constraint")
+        raise ConflictError(
+            title="Transfer Failed",
+            message="Transfer failed due to a database constraint.",
+        )
         
     await db.refresh(user)
 
@@ -423,7 +453,7 @@ async def transfer_user(
 # =============================================================================
 # 4. CREATE USER (POST /)
 # =============================================================================
-@router.post("/", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=UserOut, status_code=201)
 @limiter.limit("20/minute")
 async def create_user(
     request: Request,
@@ -491,7 +521,10 @@ async def create_user(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A user with this email already exists")
+        raise ConflictError(
+            title="User Already Exists",
+            message="A user with this email already exists.",
+        )
         
     await db.refresh(db_user)
     
@@ -522,7 +555,7 @@ async def create_user(
 # =============================================================================
 # 4.5 CREATE USER INVITE (POST /invite) - GENERATES SHAREABLE LINK
 # =============================================================================
-@router.post("/invite", response_model=UserCreateResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/invite", response_model=UserCreateResponse, status_code=201)
 @limiter.limit("20/minute")
 async def create_user_invite(
     request: Request,
@@ -538,9 +571,9 @@ async def create_user_invite(
     """
     # 🚨 CRITICAL: Invites are tenant-scoped; tenant admins invite into their own tenant
     if current_user.role == UserRole.super_admin:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Super admins cannot generate tenant invite links.",
+        raise AuthorizationError(
+            title="Invalid Action",
+            message="Super admins cannot generate tenant invite links.",
         )
     tenant_id = current_user.tenant_id
 
@@ -591,7 +624,10 @@ async def create_user_invite(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to create invite")
+        raise ConflictError(
+            title="Invite Creation Failed",
+            message="Failed to create invite (likely a duplicate email or constraint violation).",
+        )
     await db.refresh(db_user)
 
     if tenant_id:
@@ -614,7 +650,7 @@ async def create_user_invite(
 # =============================================================================
 # 5. DELETE USER (DELETE /{user_id})
 # =============================================================================
-@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{user_id}", status_code=204)
 @limiter.limit("10/minute")
 async def delete_user(
     request: Request,
@@ -630,20 +666,29 @@ async def delete_user(
         pass # Super admins can delete anyone
     elif current_user.role == UserRole.tenant_admin:
         if user.tenant_id != current_user.tenant_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant admins can only delete users within their own tenant")
+            raise AuthorizationError(
+                title="Access Denied",
+                message="Tenant admins can only delete users within their own tenant.",
+            )
         
         # ✅ AGENCY OWNER PROTECTION
         if await _is_agency_owner(user, db):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, 
-                detail="You cannot delete the Agency Owner. Only a Super Admin can remove the primary tenant owner."
+            raise AuthorizationError(
+                title="Agency Owner Protected",
+                message="You cannot delete the Agency Owner. Only a Super Admin can remove the primary tenant owner.",
             )
     else:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Tenant Admins or Super Admins can delete users.")
+        raise AuthorizationError(
+            title="Access Denied",
+            message="Only Tenant Admins or Super Admins can delete users.",
+        )
         
     # 2. Prevent self-deletion
     if current_user.id == user.id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot delete your own account. Please contact a Super Admin.")
+        raise BadRequestError(
+            title="Self-Deletion Not Allowed",
+            message="You cannot delete your own account. Please contact a Super Admin.",
+        )
 
     # 3. Perform deletion
     user_tenant_id = user.tenant_id
@@ -652,9 +697,9 @@ async def delete_user(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Deletion failed due to database constraints (e.g., user has associated records like bookings or payments)."
+        raise ConflictError(
+            title="Deletion Blocked",
+            message="Deletion failed due to database constraints (e.g., user has associated records like bookings or payments).",
         )
         
     # ✅ Invalidate cache and log the deletion

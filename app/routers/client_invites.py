@@ -1,13 +1,33 @@
 # app/routers/client_invites.py
+"""
+✅ CLIENT INVITES — single-use onboarding links (tenant + public sides).
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B):
+  - Public uploads now validate image content-type (was: any file accepted).
+  - Storage failures → typed ServerError (was: raw 500 mid-onboarding).
+  - revoke/upload responses carry success envelopes (was: bare dicts).
+  - Public-side errors use "/" home action (not the dashboard).
+"""
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import (
+    AppException,
+    BadRequestError,
+    ConflictError,
+    GoneError,
+    NotFoundError,
+    ServerError,
+    ValidationFailedError,
+    navigate_action,
+)
 from app.core.limiter import limiter
 from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.dependencies.auth import get_current_user
@@ -27,6 +47,68 @@ from app.services.client_identity import check_identity_conflicts, compute_risk_
 from app.services.storage import upload_file, delete_file
 
 router = APIRouter()
+
+# ✅ Public-side errors send people to the marketing home, not the dashboard
+_PUBLIC_HOME = navigate_action("Go Home", "/")
+
+VALID_UPLOAD_FIELDS = {"avatar", "id_front", "id_back", "dl_front"}
+
+
+# ---------------------------------------------------------------------------
+# ✅ SHARED GUARDS (Phase B)
+# ---------------------------------------------------------------------------
+def _assert_image(file: UploadFile) -> None:
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise ValidationFailedError(
+            title="Invalid File Type",
+            message="Only image files (JPG, PNG, WEBP) are accepted.",
+            field_errors={"file": "Must be an image file"},
+        )
+
+
+async def _upload_public_image(file: UploadFile, tenant_id: int, category: str) -> str:
+    _assert_image(file)
+    try:
+        return await upload_file(file=file, tenant_id=tenant_id, category=category)
+    except (AppException,):
+        raise
+    except Exception as e:
+        print(f"⚠️ Public upload storage failure for tenant {tenant_id}: {e}")
+        raise ServerError(
+            title="Upload Failed",
+            message="We couldn't store this file. Please try again.",
+        )
+
+
+def _conflict_error(conflicts) -> ConflictError:
+    messages = [c.message for c in conflicts]
+    return ConflictError(
+        title="Duplicate Client Details",
+        message=messages[0] if messages else "A client with these details already exists.",
+        details={"conflicts": messages},
+    )
+
+
+def _invite_live_or_raise(invite) -> None:
+    """✅ Shared 404/410 guards for every token-scoped endpoint."""
+    if not invite:
+        raise NotFoundError(
+            title="Invite Not Found",
+            message="We couldn't find this invite. Check the link and try again.",
+            action=_PUBLIC_HOME,
+        )
+    if invite.status != ClientInviteStatus.pending:
+        raise GoneError(
+            title="Invite Already Used or Revoked",
+            message="This invite has already been used or was revoked. Ask the agency for a new link.",
+            action=_PUBLIC_HOME,
+        )
+    if invite.is_expired:
+        raise GoneError(
+            title="Invite Expired",
+            message="This invite has expired. Ask the agency for a new link.",
+            action=_PUBLIC_HOME,
+        )
 
 
 # ─── TENANT SIDE ─────────────────────────────────────────────────────────────
@@ -89,11 +171,14 @@ async def revoke_invite(
     invite = (await db.execute(stmt)).scalars().first()
 
     if not invite:
-        raise HTTPException(status_code=404, detail="Invite not found.")
+        raise NotFoundError(
+            title="Invite Not Found",
+            message="We couldn't find this invite. It may have already been removed.",
+        )
     if invite.status == ClientInviteStatus.accepted:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This invite was already used and cannot be revoked.",
+        raise BadRequestError(
+            title="Invite Already Used",
+            message="This invite was already used and cannot be revoked.",
         )
 
     # ✅ ORPHAN CLEANUP: the client never completed onboarding, so any files
@@ -108,7 +193,11 @@ async def revoke_invite(
     invite.status = ClientInviteStatus.revoked
     invite.uploaded_files = None
     await db.commit()
-    return {"message": "Invite revoked."}
+    return {
+        "type": "success",
+        "title": "Invite Revoked",
+        "message": "The onboarding link has been deactivated. Any uploaded files were cleaned up.",
+    }
 
 
 # ─── PUBLIC SIDE (no auth) ───────────────────────────────────────────────────
@@ -126,12 +215,7 @@ async def preview_invite(
         select(ClientInvite).where(ClientInvite.token == token)
     )).scalars().first()
 
-    if not invite:
-        raise HTTPException(status_code=404, detail="Invite not found.")
-    if invite.status != ClientInviteStatus.pending:
-        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invite has already been used or was revoked.")
-    if invite.is_expired:
-        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invite has expired.")
+    _invite_live_or_raise(invite)
 
     await set_rls_context(db, tenant_id=invite.tenant_id)
     stmt = select(ClientInvite).options(
@@ -144,8 +228,8 @@ async def preview_invite(
     return PublicInvitePreviewOut(
         tenant_name=tenant.name if tenant else "the agency",
         tenant_logo_url=profile.logo_url if profile else None,
-        tenant_phone=profile.phone if tenant else None,
-        tenant_email=profile.email if tenant else None,
+        tenant_phone=profile.phone if profile else None,
+        tenant_email=profile.email if profile else None,
         expires_at=invite.expires_at,
     )
 
@@ -170,17 +254,7 @@ async def submit_invite(
     stmt = select(ClientInvite).where(ClientInvite.token == token).with_for_update()
     invite = (await db.execute(stmt)).scalars().first()
 
-    if not invite:
-        raise HTTPException(status_code=404, detail="Invite not found.")
-    if invite.status != ClientInviteStatus.pending:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="This invite has already been used or was revoked.",
-        )
-    if invite.is_expired:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE, detail="This invite has expired.",
-        )
+    _invite_live_or_raise(invite)
     await set_rls_context(db, tenant_id=invite.tenant_id)
 
     # 1) HARD BLOCKS (per-tenant identity uniqueness)
@@ -194,10 +268,7 @@ async def submit_invite(
         dl_number=payload.dl_number,
     )
     if conflicts:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=[c.message for c in conflicts],
-        )
+        raise _conflict_error(conflicts)
 
     # 2) SOFT FLAGS (suspicion only — never blocks)
     is_flagged, flag_notes = await compute_risk_flags(
@@ -241,9 +312,10 @@ async def submit_invite(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A client with these details already exists.",
+        raise ConflictError(
+            title="Client Already Exists",
+            message="A client with these details already exists. Contact the agency if this is you.",
+            action=_PUBLIC_HOME,
         )
 
     await set_rls_context(db, tenant_id=client.tenant_id)
@@ -275,36 +347,22 @@ async def upload_invite_document(
     stmt = select(ClientInvite).where(ClientInvite.token == token)
     invite = (await db.execute(stmt)).scalars().first()
 
-    if not invite:
-        raise HTTPException(status_code=404, detail="Invite not found.")
-    if invite.status != ClientInviteStatus.pending:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="This invite has already been used or was revoked.",
-        )
-    if invite.is_expired:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE, detail="This invite has expired.",
-        )
+    _invite_live_or_raise(invite)
     await set_rls_context(db, tenant_id=invite.tenant_id)
 
     # Validate field
-    valid_fields = {"avatar", "id_front", "id_back", "dl_front"}
-    if field not in valid_fields:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid field. Must be one of: {', '.join(sorted(valid_fields))}",
+    if field not in VALID_UPLOAD_FIELDS:
+        raise ValidationFailedError(
+            title="Invalid Document Slot",
+            message=f"Unknown upload field. Must be one of: {', '.join(sorted(VALID_UPLOAD_FIELDS))}",
+            field_errors={"field": "Must be one of: avatar, id_front, id_back, dl_front"},
         )
 
     # Map field to category
     category = "avatar" if field == "avatar" else "compliance"
 
-    # ✅ Upload using the secure multi-tenant storage service (compression pipeline)
-    file_url = await upload_file(
-        file=file,
-        tenant_id=invite.tenant_id,
-        category=category
-    )
+    # ✅ Upload with validation + typed storage failures
+    file_url = await _upload_public_image(file, invite.tenant_id, category)
 
     # ✅ SLOT UPSERT: delete the replaced file AFTER successful new upload.
     # If upload failed (exception above), the old file stays — never lose data.
@@ -320,4 +378,10 @@ async def upload_invite_document(
         except Exception:
             pass  # idempotent — storage may already be gone
 
-    return {"url": file_url, "field": field}
+    return {
+        "type": "success",
+        "title": "Document Received",
+        "message": "Your document was uploaded successfully.",
+        "url": file_url,
+        "field": field,
+    }

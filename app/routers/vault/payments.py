@@ -1,21 +1,26 @@
 # app/routers/vault/payments.py
+"""
+Vault Payments — list, restore, and hard-delete voided/refunded/completed payments.
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select, or_
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.database import get_db
+from app.core.errors import NotFoundError
 from app.core.limiter import limiter
+from app.db.database import get_db
 from app.dependencies.auth import get_current_user
-from app.models.payments import Payment, PaymentStatus
-from app.models.invoices import Invoice
 from app.models.bookings import Booking
+from app.models.invoices import Invoice
+from app.models.payments import Payment, PaymentStatus
 from app.models.users import User
-from app.schemas.payment import PaymentOut
 from app.schemas.pagination import PaginatedResponse, paginate_items
-from app.services.cache import invalidate_payment_cache
+from app.schemas.payment import PaymentOut
 from app.services.activity_log import ActivityLogService
+from app.services.cache import invalidate_payment_cache
 
 router = APIRouter(prefix="/payments", tags=["vault-payments"])
 
@@ -74,7 +79,10 @@ async def restore_vault_payment(
     payment = result.scalars().first()
     
     if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found in vault")
+        raise NotFoundError(
+            title="Payment Not Found",
+            message="Payment not found in vault.",
+        )
         
     # Restore logic: Flip status back to completed (or pending if it was voided before completion)
     if payment.status in [PaymentStatus.void, PaymentStatus.refunded]:
@@ -96,7 +104,7 @@ async def restore_vault_payment(
 
     return payment
 
-@router.delete("/{payment_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{payment_id}", status_code=204)
 @limiter.limit("10/minute")
 async def hard_delete_vault_payment(
     request: Request,
@@ -112,7 +120,10 @@ async def hard_delete_vault_payment(
     payment = result.scalars().first()
     
     if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found in vault")
+        raise NotFoundError(
+            title="Payment Not Found",
+            message="Payment not found in vault.",
+        )
         
     # Capture details before permanent deletion
     payment_reference = payment.reference

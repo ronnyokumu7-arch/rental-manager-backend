@@ -1,13 +1,20 @@
+# app/routers/booking/invoices.py
+"""
+✅ Invoice generation from a booking (manual operator action).
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.errors import BadRequestError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -63,9 +70,10 @@ async def generate_invoice(
     # settlements). Only past days are rejected.
     if payload and payload.due_date:
         if payload.due_date.date() < datetime.now(timezone.utc).date():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Choose today or a future date for the invoice due date."
+            raise BadRequestError(
+                title="Invalid Due Date",
+                message="Choose today or a future date for the invoice due date.",
+                field_errors={"due_date": "Must be today or in the future"},
             )
 
     # ✅ Pass customizations (including rate override) to the robust service
@@ -92,7 +100,6 @@ async def generate_invoice(
     # ✅ Invalidate booking cache in case the service updated any booking-related state
     await invalidate_booking_cache(current_user.tenant_id)
     await invalidate_invoice_cache(current_user.tenant_id)
-    
     
     return {
         "share_url": f"{base_url}/invoice/{invoice.share_token}",

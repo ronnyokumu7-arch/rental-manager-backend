@@ -1,11 +1,16 @@
 # app/routers/vault/clients.py
+"""
+Vault Clients — list, restore, and hard-delete archived clients.
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_db
+from app.core.errors import NotFoundError
 from app.core.limiter import limiter
+from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.clients import Client
 from app.models.users import User
@@ -62,7 +67,10 @@ async def restore_vault_client(
     client = result.scalars().first()
     
     if not client:
-        raise HTTPException(status_code=404, detail="Client not found in vault")
+        raise NotFoundError(
+            title="Client Not Found",
+            message="Client not found in vault.",
+        )
         
     # Restore logic: Flip the archive flag
     client.is_archived = False
@@ -84,7 +92,7 @@ async def restore_vault_client(
 
     return client
 
-@router.delete("/{client_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{client_id}", status_code=204)
 @limiter.limit("10/minute")
 async def hard_delete_vault_client(
     request: Request,
@@ -100,7 +108,10 @@ async def hard_delete_vault_client(
     client = result.scalars().first()
     
     if not client:
-        raise HTTPException(status_code=404, detail="Client not found in vault")
+        raise NotFoundError(
+            title="Client Not Found",
+            message="Client not found in vault.",
+        )
         
     # Capture details before permanent deletion
     client_name = client.full_name

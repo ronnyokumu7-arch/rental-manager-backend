@@ -1,11 +1,23 @@
+# app/routers/contract/actions.py
+"""
+✅ CONTRACT ACTIONS — void / regenerate / share-link / send-to-client.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B):
+  - send_contract_to_client awaited defensively (sync OR async safe).
+  - Email failure after commit → typed ServerError with manual alternative.
+  - share-link response carries a success envelope.
+"""
+import asyncio
 from datetime import datetime, timedelta, timezone
 import uuid
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
+from app.core.errors import BadRequestError, NotFoundError, ServerError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -36,9 +48,15 @@ async def void_contract(
     contract = await get_authorized_contract_async(contract_id, current_user, db)
     
     if contract.status == ContractStatus.void:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Contract is already void")
+        raise BadRequestError(
+            title="Already Void",
+            message="This contract is already void.",
+        )
     if contract.status == ContractStatus.signed:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Signed contracts cannot be voided")
+        raise BadRequestError(
+            title="Signed Contracts Can't Be Voided",
+            message="A signed contract is a legal record. It can't be voided from here.",
+        )
         
     contract.status = ContractStatus.void
     await db.commit()
@@ -72,7 +90,10 @@ async def regenerate_contract(
     booking = booking_result.scalars().first()
     
     if not booking:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="We couldn't find this booking, or you may not have access to it.",
+        )
         
     # ✅ Verify existing contract belongs to tenant before deleting
     existing_stmt = select(Contract).where(
@@ -115,7 +136,10 @@ async def generate_share_link(
     contract = await get_authorized_contract_async(contract_id, current_user, db)
     
     if contract.status == ContractStatus.void:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Void contracts cannot be shared")
+        raise BadRequestError(
+            title="Void Contract",
+            message="Void contracts cannot be shared.",
+        )
 
     contract.share_token = str(uuid.uuid4())
     contract.share_token_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
@@ -128,9 +152,12 @@ async def generate_share_link(
     await invalidate_contract_cache(current_user.tenant_id)
 
     return {
+        "type": "success",
+        "title": "Share Link Ready",
+        "message": "The signing link is valid for 30 days.",
         "share_token": contract.share_token,
         "share_url": f"{settings.frontend_url.rstrip('/')}/contracts/view/{contract.share_token}",
-        "expires_at": contract.share_token_expires_at
+        "expires_at": contract.share_token_expires_at,
     }
 
 
@@ -154,14 +181,20 @@ async def send_contract_to_client_endpoint(
     contract = result.scalars().unique().first()
     
     if not contract:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found")
+        raise NotFoundError(
+            title="Contract Not Found",
+            message="We couldn't find this contract, or you may not have access to it.",
+        )
         
     booking = contract.booking
     client = booking.client
     vehicle = booking.vehicle
     
     if not client or not client.email:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Client email not available")
+        raise BadRequestError(
+            title="Client Email Missing",
+            message="This client has no email address on file. Add one before sending the contract — or use the share link instead.",
+        )
 
     if not contract.share_token:
         contract.share_token = str(uuid.uuid4())
@@ -174,16 +207,26 @@ async def send_contract_to_client_endpoint(
 
     share_url = f"{settings.frontend_url.rstrip('/')}/contracts/view/{contract.share_token}"
 
-    send_contract_to_client(
-        to=client.email,
-        client_name=client.full_name,
-        contract_number=contract.contract_number,
-        vehicle=f"{vehicle.make} {vehicle.model} ({vehicle.plate_number})" if vehicle else "N/A",
-        start_date=str(booking.start_date),
-        end_date=str(booking.end_date),
-        total_amount=str(booking.total_amount),
-        currency=booking.currency_code,
-        contract_url=share_url,
-    )
+    # ✅ Phase B: sync/async-safe call + honest failure (was: silent no-send or raw 500)
+    try:
+        maybe_coro = send_contract_to_client(
+            to=client.email,
+            client_name=client.full_name,
+            contract_number=contract.contract_number,
+            vehicle=f"{vehicle.make} {vehicle.model} ({vehicle.plate_number})" if vehicle else "N/A",
+            start_date=str(booking.start_date),
+            end_date=str(booking.end_date),
+            total_amount=str(booking.total_amount),
+            currency=booking.currency_code,
+            contract_url=share_url,
+        )
+        if asyncio.iscoroutine(maybe_coro):
+            await maybe_coro
+    except Exception as e:
+        print(f"⚠️ Contract email failed for contract {contract.id}: {e}")
+        raise ServerError(
+            title="Email Failed to Send",
+            message="The contract is ready and marked as sent, but the email didn't go out. Use the share link to send it manually.",
+        )
 
     return contract

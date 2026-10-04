@@ -5,12 +5,15 @@
 CONTRACT v2: pricing quotes MOVED to the booking factory
 (POST /quote lives in management_create.py → booking_factory.quote_new).
 This module is strictly read-only: no pricing math, no overrides, no lies.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 """
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, Request, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import NotFoundError
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.tenant import TenantScope, get_tenant_scope
@@ -158,7 +161,10 @@ async def get_booking(
     booking = result.scalars().unique().first()
 
     if not booking:
-        raise HTTPException(status_code=404, detail="We couldn't find this booking. Refresh the list and try again.")
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="We couldn't find this booking. Refresh the list and try again.",
+        )
 
     # ✅ Return serialized with denormalized UI fields
     return serialize_booking(booking)

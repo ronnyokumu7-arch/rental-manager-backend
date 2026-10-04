@@ -1,7 +1,18 @@
+# app/routers/vehicle/lifecycle.py
+"""
+✅ VEHICLE LIFECYCLE — activate / maintenance / reactivate / retire / mileage.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B):
+  - reactivate no longer accepts rented vehicles (double-rent race).
+  - reactivate no longer bypasses the insurance gate (pending_activation).
+  - Insurance/mileage guards return field_errors for form highlighting.
+"""
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.subscription import require_active_subscription
@@ -29,19 +40,28 @@ async def activate_vehicle(
     vehicle = await get_authorized_vehicle_async(vehicle_id, current_user, db)
     
     if vehicle.status != VehicleStatus.pending_activation:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only vehicles awaiting activation can be activated."
+        raise BadRequestError(
+            title="Not Awaiting Activation",
+            message="Only vehicles awaiting activation can be activated.",
         )
-    if not vehicle.insurance_number or not vehicle.insurance_expiry:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Add the insurance policy number and expiry date before activating this vehicle."
+
+    # ✅ KYC-style gate: field-level errors for the insurance form
+    missing_insurance: dict[str, str] = {}
+    if not vehicle.insurance_number:
+        missing_insurance["insurance_number"] = "Policy number is required"
+    if not vehicle.insurance_expiry:
+        missing_insurance["insurance_expiry"] = "Expiry date is required"
+    if missing_insurance:
+        raise BadRequestError(
+            title="Insurance Details Missing",
+            message="Add the insurance policy number and expiry date before activating this vehicle.",
+            field_errors=missing_insurance,
         )
     if vehicle.insurance_expiry <= datetime.now(timezone.utc):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle's insurance has expired. Update the policy details before activation."
+        raise BadRequestError(
+            title="Insurance Expired",
+            message="This vehicle's insurance has expired. Update the policy details before activation.",
+            field_errors={"insurance_expiry": "Policy has expired — update it first"},
         )
         
     vehicle.status = VehicleStatus.available
@@ -65,19 +85,19 @@ async def send_to_maintenance(
     vehicle = await get_authorized_vehicle_async(vehicle_id, current_user, db)
     
     if vehicle.status == VehicleStatus.retired:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is retired and cannot be sent to maintenance."
+        raise BadRequestError(
+            title="Vehicle Retired",
+            message="This vehicle is retired and cannot be sent to maintenance.",
         )
     if vehicle.status == VehicleStatus.rented:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is currently rented. Complete or cancel its booking before sending it to maintenance."
+        raise BadRequestError(
+            title="Vehicle Currently Rented",
+            message="This vehicle is currently rented. Complete or cancel its booking before sending it to maintenance.",
         )
     if vehicle.status == VehicleStatus.maintenance:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is already in maintenance."
+        raise BadRequestError(
+            title="Already in Maintenance",
+            message="This vehicle is already in maintenance.",
         )
         
     vehicle.status = VehicleStatus.maintenance
@@ -101,14 +121,26 @@ async def reactivate_vehicle(
     vehicle = await get_authorized_vehicle_async(vehicle_id, current_user, db)
     
     if vehicle.status == VehicleStatus.retired:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is retired and cannot be reactivated."
+        raise BadRequestError(
+            title="Vehicle Retired",
+            message="This vehicle is retired and cannot be reactivated.",
         )
     if vehicle.status == VehicleStatus.available:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is already available."
+        raise BadRequestError(
+            title="Already Available",
+            message="This vehicle is already available.",
+        )
+    # ✅ Phase B: rented vehicles can't flip to available mid-trip (double-rent race)
+    if vehicle.status == VehicleStatus.rented:
+        raise BadRequestError(
+            title="Vehicle Currently Rented",
+            message="This vehicle is on a trip. Complete or cancel its booking before changing its status.",
+        )
+    # ✅ Phase B: pending_activation must go through Activate (insurance gate)
+    if vehicle.status == VehicleStatus.pending_activation:
+        raise BadRequestError(
+            title="Not Yet Activated",
+            message="This vehicle hasn't completed its first activation. Use Activate after adding insurance details.",
         )
         
     vehicle.status = VehicleStatus.available
@@ -126,20 +158,19 @@ async def reactivate_vehicle(
 async def retire_vehicle(
     request: Request,
     vehicle_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_active_subscription),
+    db: AsyncSession = Depends(require_active_subscription),
 ):
     vehicle = await get_authorized_vehicle_async(vehicle_id, current_user, db)
     
     if vehicle.status == VehicleStatus.rented:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is currently rented. Complete or cancel its booking before retiring it."
+        raise BadRequestError(
+            title="Vehicle Currently Rented",
+            message="This vehicle is currently rented. Complete or cancel its booking before retiring it.",
         )
     if vehicle.status == VehicleStatus.retired:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is already retired."
+        raise BadRequestError(
+            title="Already Retired",
+            message="This vehicle is already retired.",
         )
         
     vehicle.status = VehicleStatus.retired
@@ -172,16 +203,17 @@ async def update_vehicle_mileage(
         VehicleStatus.available, 
         VehicleStatus.maintenance
     ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Update mileage only when it is due or when the vehicle is available or in maintenance."
+        raise BadRequestError(
+            title="Mileage Not Due",
+            message="Update mileage only when it is due or when the vehicle is available or in maintenance.",
         )
         
     # 2. Validate Logic: Odometer must move forward
     if payload.current_mileage < vehicle.current_mileage:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Enter mileage equal to or greater than the current mileage of {vehicle.current_mileage} km."
+        raise BadRequestError(
+            title="Invalid Mileage",
+            message=f"Enter mileage equal to or greater than the current mileage of {vehicle.current_mileage} km.",
+            field_errors={"current_mileage": f"Must be ≥ {vehicle.current_mileage} km"},
         )
         
     # 3. Apply Updates

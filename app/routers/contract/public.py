@@ -1,13 +1,35 @@
+# app/routers/contract/public.py
+"""
+✅ PUBLIC CONTRACT PAGE — view / pdf / sign (client-facing).
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ COPY RULE: client-facing — messages point clients at the agency.
+✅ AUDIT (Phase B):
+  - Signature base64 validated + size-capped (was: raw 500 / memory abuse).
+  - Signature upload failures → typed ServerError.
+  - Auto-start swallow now logs instead of silent pass.
+  - Sign response carries a success envelope.
+"""
 import base64
+import binascii
 import io
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, Request, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core import timeutils
+from app.core.errors import (
+    AppException,
+    BadRequestError,
+    GoneError,
+    NotFoundError,
+    ServerError,
+    ValidationFailedError,
+    navigate_action,
+)
 from app.core.limiter import limiter
 from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.models.bookings import Booking
@@ -23,27 +45,82 @@ from app.services.storage import upload_file
 
 router = APIRouter()
 
+# ✅ Client-facing errors lead home, never to the dashboard
+_PUBLIC_HOME = navigate_action("Go Home", "/")
 
-async def _load_booking_locked(db, booking_id: int) -> Booking:
-    stmt = select(Booking).where(Booking.id == booking_id).with_for_update()
-    booking = (await db.execute(stmt)).scalars().first()
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
-    return booking
+# ✅ Signature safety: ~1MB decoded is generous for a signature PNG
+MAX_SIGNATURE_BYTES = 1_000_000
 
 
-@router.get("/public/{token}", response_model=PublicContractView)
-@limiter.limit("30/minute")
-async def view_contract_public(request: Request, token: str, db=Depends(get_db)):
+async def _load_contract_by_token(db, token: str) -> Contract:
+    """✅ DRY public token guard: 404 unknown / 410 expired (was triplicated)."""
     await set_public_rls_context(db, token)
     contract = (await db.execute(
         select(Contract).where(Contract.share_token == token)
     )).scalars().first()
     if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found")
+        raise NotFoundError(
+            title="Link Not Recognized",
+            message="We couldn't find this contract. Check that the link is complete and try again.",
+            action=_PUBLIC_HOME,
+        )
     if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="This contract link has expired.")
+        raise GoneError(
+            title="Link Expired",
+            message="This contract link has expired. Ask the agency to send you a new one.",
+            action=_PUBLIC_HOME,
+        )
     await set_rls_context(db, tenant_id=contract.tenant_id)
+    return contract
+
+
+async def _load_booking_locked(db, booking_id: int) -> Booking:
+    stmt = select(Booking).where(Booking.id == booking_id).with_for_update()
+    booking = (await db.execute(stmt)).scalars().first()
+    if not booking:
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="We couldn't find this booking. Contact the agency for help.",
+            action=_PUBLIC_HOME,
+        )
+    return booking
+
+
+def _decode_signature(payload: ContractSignPayload) -> bytes:
+    """✅ Phase B: validate + cap client-supplied signature data (was raw 500)."""
+    data_url = payload.signature
+    if "," in data_url:
+        header, _, b64 = data_url.partition(",")
+        if not header.startswith("data:image/"):
+            raise ValidationFailedError(
+                title="Invalid Signature",
+                message="The signature must be an image. Please sign again.",
+                field_errors={"signature": "Must be an image (PNG/JPG)"},
+            )
+    else:
+        b64 = data_url
+    try:
+        signature_bytes = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValidationFailedError(
+            title="Invalid Signature",
+            message="The signature image couldn't be read. Please sign again.",
+            field_errors={"signature": "Couldn't be decoded — sign again"},
+        )
+    if not signature_bytes or len(signature_bytes) > MAX_SIGNATURE_BYTES:
+        raise ValidationFailedError(
+            title="Signature Too Large",
+            message="The signature image is too large. Please sign again with a simpler stroke.",
+            field_errors={"signature": "Keep it under 1 MB"},
+        )
+    return signature_bytes
+
+
+@router.get("/public/{token}", response_model=PublicContractView)
+@limiter.limit("30/minute")
+async def view_contract_public(request: Request, token: str, db=Depends(get_db)):
+    contract = await _load_contract_by_token(db, token)
+
     stmt = select(Contract).options(
         selectinload(Contract.booking).selectinload(Booking.client),
         selectinload(Contract.booking).selectinload(Booking.vehicle),
@@ -91,16 +168,20 @@ async def view_contract_public(request: Request, token: str, db=Depends(get_db))
 @router.get("/public/{token}/pdf")
 @limiter.limit("15/minute")
 async def download_contract_pdf_public(request: Request, token: str, db=Depends(get_db)):
-    await set_public_rls_context(db, token)
-    stmt = select(Contract).where(Contract.share_token == token)
-    contract = (await db.execute(stmt)).scalars().first()
-    if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found")
-    if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="This contract link has expired.")
-    await set_rls_context(db, tenant_id=contract.tenant_id)
+    contract = await _load_contract_by_token(db, token)
 
-    pdf_bytes = await generate_contract_pdf(contract, db)
+    # ✅ Phase B: PDF engine failures → typed, retryable error (was raw 500)
+    try:
+        pdf_bytes = await generate_contract_pdf(contract, db)
+    except (AppException,):
+        raise
+    except Exception as e:
+        print(f"⚠️ Public contract PDF failed for {contract.id}: {e}")
+        raise ServerError(
+            title="PDF Not Available Yet",
+            message="We couldn't generate the contract PDF just now. Please try again in a moment.",
+        )
+
     return Response(
         content=pdf_bytes, media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=contract-{contract.contract_number}.pdf"},
@@ -112,18 +193,19 @@ async def download_contract_pdf_public(request: Request, token: str, db=Depends(
 async def sign_contract_public(
     request: Request, token: str, payload: ContractSignPayload, db=Depends(get_db),
 ):
-    await set_public_rls_context(db, token)
-    stmt = select(Contract).where(Contract.share_token == token)
-    contract = (await db.execute(stmt)).scalars().first()
-    if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found")
-    if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="This contract link has expired.")
-    await set_rls_context(db, tenant_id=contract.tenant_id)
+    contract = await _load_contract_by_token(db, token)
+
     if contract.status == ContractStatus.void:
-        raise HTTPException(status_code=400, detail="This contract has been voided")
+        raise BadRequestError(
+            title="Contract Voided",
+            message="This contract was cancelled by the agency. Contact them for help.",
+            action=_PUBLIC_HOME,
+        )
     if contract.signed_by_client:
-        raise HTTPException(status_code=400, detail="Contract already signed")
+        raise BadRequestError(
+            title="Already Signed",
+            message="This contract has already been signed. You can view or download it on this page.",
+        )
 
     now = datetime.now(timezone.utc)
     booking = await _load_booking_locked(db, contract.booking_id)
@@ -132,15 +214,23 @@ async def sign_contract_public(
     # Clients can sign immediately to lock in the booking.
     # Auto-start is handled separately below (now/past) or by the scheduler (future).
 
-    # ✅ Signature upload (Cloudinary via storage service)
-    signature_b64 = payload.signature.split(",")[1] if "," in payload.signature else payload.signature
-    signature_bytes = base64.b64decode(signature_b64)
+    # ✅ Signature upload (Cloudinary via storage service) — validated + capped
+    signature_bytes = _decode_signature(payload)
     signature_file = UploadFile(
         filename=f"sig_{contract.id}_{int(now.timestamp())}.png",
         file=io.BytesIO(signature_bytes),
         headers={"content-type": "image/png"},
     )
-    signature_url = await upload_file(file=signature_file, tenant_id=contract.tenant_id, category="compliance")
+    try:
+        signature_url = await upload_file(file=signature_file, tenant_id=contract.tenant_id, category="compliance")
+    except (AppException,):
+        raise
+    except Exception as e:
+        print(f"⚠️ Signature upload failed for contract {contract.id}: {e}")
+        raise ServerError(
+            title="Signature Upload Failed",
+            message="We couldn't save your signature. Please try signing again in a moment.",
+        )
     contract.signature_image_path = signature_url
 
     contract.signed_by_client = True
@@ -157,8 +247,9 @@ async def sign_contract_public(
         if pickup_at <= now:
             try:
                 await BookingLifecycleService.start_trip_auto(db, booking)
-            except Exception:
-                pass  # Precondition not met → operator manual start or scheduler retry
+            except Exception as e:
+                # ✅ Phase B: log instead of silent pass — signing still succeeds
+                print(f"⚠️ Auto-start skipped for booking {booking.id}: {e}")
 
     await db.commit()
     await set_rls_context(db, tenant_id=contract.tenant_id)
@@ -170,7 +261,9 @@ async def sign_contract_public(
     await invalidate_contract_cache(booking.tenant_id)
 
     return {
-        "message": "Contract signed successfully",
+        "type": "success",
+        "title": "Contract Signed",
+        "message": "Thank you — your rental agreement is confirmed. The agency has been notified.",
         "contract_number": contract.contract_number,
         "signed_at": now.isoformat(),
     }

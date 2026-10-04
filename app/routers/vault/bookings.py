@@ -1,11 +1,19 @@
+# app/routers/vault/bookings.py
+"""
+Vault Bookings — list, restore, and hard-delete archived/terminal bookings.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select, or_
+
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.database import get_db
+from app.core.errors import NotFoundError
 from app.core.limiter import limiter
+from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.bookings import Booking, BookingStatus
 from app.models.users import User
@@ -67,7 +75,10 @@ async def restore_vault_booking(
     booking = result.scalars().first()
     
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found in vault")
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="Booking not found in vault.",
+        )
         
     # Restore logic: Flip the archive flag
     booking.is_archived = False
@@ -94,7 +105,7 @@ async def restore_vault_booking(
 
     return booking
 
-@router.delete("/{booking_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{booking_id}", status_code=204)
 @limiter.limit("10/minute")
 async def hard_delete_vault_booking(
     request: Request,
@@ -110,7 +121,10 @@ async def hard_delete_vault_booking(
     booking = result.scalars().first()
     
     if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found in vault")
+        raise NotFoundError(
+            title="Booking Not Found",
+            message="Booking not found in vault.",
+        )
         
     # Capture details before deletion
     booking_number = booking.booking_number

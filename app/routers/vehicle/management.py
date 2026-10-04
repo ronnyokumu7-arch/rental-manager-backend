@@ -1,9 +1,21 @@
+# app/routers/vehicle/management.py
+"""
+✅ VEHICLE CRUD — tenant/investor-scoped, cached lists, lifecycle tasks.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B):
+  - FIXED RUNTIME BUG: BookingStatus.ongoing doesn't exist (AttributeError → 500).
+    Active-booking guards now use LIVE statuses (pending|confirmed|active).
+  - create: duplicate plate → typed ConflictError (was raw 500).
+  - create: past insurance expiry now rejected (parity with update).
+"""
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError, ConflictError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -20,6 +32,41 @@ from app.services.vehicle_tasks import VehicleTaskService
 from ._helpers import get_authorized_vehicle_async
 
 router = APIRouter()
+
+# ✅ LIVE STATUSES that block archive/delete (pending counts — quotation in flight)
+ACTIVE_BLOCKING_STATUSES = [
+    BookingStatus.pending,
+    BookingStatus.confirmed,
+    BookingStatus.active,
+]
+
+
+# ---------------------------------------------------------------------------
+# ✅ SHARED GUARDS (Phase B)
+# ---------------------------------------------------------------------------
+def _assert_future_insurance(expiry) -> None:
+    """Insurance expiry must be in the future (create + update parity)."""
+    if expiry is not None and expiry <= datetime.now(timezone.utc):
+        raise BadRequestError(
+            title="Invalid Insurance Expiry",
+            message="Choose a future date for the insurance expiry.",
+            field_errors={"insurance_expiry": "Must be a future date"},
+        )
+
+
+async def _assert_no_live_bookings(db: AsyncSession, vehicle_id: int, action: str) -> None:
+    """✅ FIXED: was BookingStatus.ongoing (AttributeError → 500 on every call)."""
+    live_booking = (await db.execute(
+        select(Booking).where(
+            Booking.vehicle_id == vehicle_id,
+            Booking.status.in_(ACTIVE_BLOCKING_STATUSES),
+        )
+    )).scalars().first()
+    if live_booking:
+        raise BadRequestError(
+            title="Vehicle Has Active Bookings",
+            message=f"This vehicle has active bookings. Complete or cancel them before {action} it.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +86,9 @@ async def create_vehicle(
 ):
     data = vehicle.model_dump()
     data["status"] = VehicleStatus.pending_activation
+
+    # ✅ Phase B: reject expired insurance at creation (parity with update)
+    _assert_future_insurance(data.get("insurance_expiry"))
     
     # ✅ If an investor is adding this, tag them as the owner
     owner_id = current_user.id if current_user.role.value == "investor" else None
@@ -46,8 +96,15 @@ async def create_vehicle(
     # ✅ SECURE: scope.tenant_id is guaranteed to be valid by the dependency
     db_vehicle = Vehicle(**data, tenant_id=scope.tenant_id, owner_id=owner_id)
     db.add(db_vehicle)
-    await db.commit()
-    await db.refresh(db_vehicle)
+    try:
+        await db.commit()
+        await db.refresh(db_vehicle)
+    except IntegrityError:
+        await db.rollback()
+        raise ConflictError(
+            title="Vehicle Already Exists",
+            message="A vehicle with these details already exists. Check the fleet list before adding another.",
+        )
     
     # Trigger lifecycle tasks
     await VehicleTaskService.on_vehicle_created(db, db_vehicle, db_vehicle.tenant_id)
@@ -176,12 +233,7 @@ async def update_vehicle(
     
     # ✅ SIMPLIFIED: Only validate that insurance is not expired
     if "insurance_expiry" in update_data:
-        new_expiry = update_data["insurance_expiry"]
-        if new_expiry <= datetime.now(timezone.utc):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Choose a future date for the insurance expiry."
-            )
+        _assert_future_insurance(update_data["insurance_expiry"])
             
     for field, value in update_data.items():
         setattr(vehicle, field, value)
@@ -210,27 +262,18 @@ async def archive_vehicle(
     vehicle = await get_authorized_vehicle_async(vehicle_id, current_user, db)
     
     if vehicle.status == VehicleStatus.rented:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is currently rented. Complete or cancel its booking before archiving it."
+        raise BadRequestError(
+            title="Vehicle Currently Rented",
+            message="This vehicle is currently rented. Complete or cancel its booking before archiving it.",
         )
     if vehicle.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is already archived."
+        raise BadRequestError(
+            title="Already Archived",
+            message="This vehicle is already archived.",
         )
     
-    # ✅ Check for active bookings
-    active_bookings_stmt = select(Booking).where(
-        Booking.vehicle_id == vehicle.id,
-        Booking.status.in_([BookingStatus.confirmed, BookingStatus.ongoing])
-    )
-    active_bookings = (await db.execute(active_bookings_stmt)).scalars().first()
-    if active_bookings:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle has active bookings. Complete or cancel them before archiving it."
-        )
+    # ✅ Check for live bookings (FIXED: was BookingStatus.ongoing → AttributeError)
+    await _assert_no_live_bookings(db, vehicle.id, "archiving")
         
     vehicle.is_archived = True
     vehicle.archived_at = datetime.now(timezone.utc)
@@ -254,9 +297,9 @@ async def restore_vehicle(
     vehicle = await get_authorized_vehicle_async(vehicle_id, current_user, db)
     
     if not vehicle.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is not archived, so there is nothing to restore."
+        raise BadRequestError(
+            title="Nothing to Restore",
+            message="This vehicle is not archived, so there is nothing to restore.",
         )
         
     vehicle.is_archived = False
@@ -282,31 +325,22 @@ async def delete_vehicle(
     vehicle = await get_authorized_vehicle_async(vehicle_id, current_user, db)
     
     if vehicle.status == VehicleStatus.rented:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle is currently rented. Complete or cancel its booking before deleting it."
+        raise BadRequestError(
+            title="Vehicle Currently Rented",
+            message="This vehicle is currently rented. Complete or cancel its booking before deleting it.",
         )
     
-    # ✅ Check for active bookings
-    active_bookings_stmt = select(Booking).where(
-        Booking.vehicle_id == vehicle.id,
-        Booking.status.in_([BookingStatus.confirmed, BookingStatus.ongoing])
-    )
-    active_bookings = (await db.execute(active_bookings_stmt)).scalars().first()
-    if active_bookings:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle has active bookings. Complete or cancel them before deleting it."
-        )
+    # ✅ Check for live bookings (FIXED: was BookingStatus.ongoing → AttributeError)
+    await _assert_no_live_bookings(db, vehicle.id, "deleting")
         
     try:
         await db.delete(vehicle)
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This vehicle has past bookings and cannot be deleted. Archive it instead."
+        raise BadRequestError(
+            title="Vehicle Has History",
+            message="This vehicle has past bookings and cannot be deleted. Archive it instead.",
         )
     
     # ✅ Invalidate cache

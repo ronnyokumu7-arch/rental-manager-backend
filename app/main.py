@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
 from redis import asyncio as aioredis
+from pydantic import ValidationError  # ✅ NEW: For ValidationError handler
 
 # 🚨 Rate Limiting Imports
 from slowapi import _rate_limit_exceeded_handler
@@ -18,6 +19,7 @@ from app.core.exceptions import (
     global_exception_handler,
     http_exception_handler,
     validation_exception_handler,
+    pydantic_validation_handler,  # ✅ NEW: Handles ValidationError outside request validation
 )
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 from app.db.database import test_db_connection
@@ -134,8 +136,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ✅ Exception handlers — order matters: specific → general
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(ValidationError, pydantic_validation_handler)  # ✅ NEW
 app.add_exception_handler(Exception, global_exception_handler)
 
 @app.get("/")

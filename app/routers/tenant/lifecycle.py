@@ -12,16 +12,24 @@ CONTRACT RULES:
   - ✅ PAYG TRANSITION is self-service (tenant owner OR super-admin) and DEBT-GATED:
     any unpaid platform commission must be settled FIRST. NO automatic waivers —
     waiver remains a manual super-admin correction tool, never a side effect.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Self-action lockout guard shifted from 409 → 403 (AuthorizationError).
 """
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+)
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -49,21 +57,25 @@ async def _load_tenant(db: AsyncSession, tenant_id: int) -> Tenant:
     stmt = select(Tenant).options(selectinload(Tenant.profile)).where(Tenant.id == tenant_id)
     tenant = (await db.execute(stmt)).scalars().first()
     if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found.",
+        )
     return tenant
 
 
 def _guard_self(current_user: User, tenant_id: int, action: str) -> None:
     """✅ LOCKOUT GUARD: never suspend/vault/delete your own agency."""
     if current_user.tenant_id == tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"You cannot {action} your own agency account. Ask another super-admin to perform this action.",
+        # ✅ Phase B: Shifted from 409 (Conflict) to 403 (Forbidden) — this is a permission boundary.
+        raise AuthorizationError(
+            title="Self-Action Blocked",
+            message=f"You cannot {action} your own agency account. Ask another super-admin to perform this action.",
         )
 
 
 @router.post("/{tenant_id}/suspend", response_model=TenantOut)
-@limiter.limit("10/minute")  # 🚨 STRICT: Locks an entire agency out
+@limiter.limit("10/minute")  #  STRICT: Locks an entire agency out
 async def suspend_tenant(
     request: Request,
     tenant_id: int,
@@ -75,9 +87,9 @@ async def suspend_tenant(
     tenant = await _load_tenant(db, tenant_id)
 
     if tenant.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Vaulted tenants cannot be suspended. Restore from the Vault first if needed.",
+        raise ConflictError(
+            title="Invalid State",
+            message="Vaulted tenants cannot be suspended. Restore from the Vault first if needed.",
         )
     if not tenant.is_active:
         return tenant  # idempotent
@@ -97,7 +109,7 @@ async def suspend_tenant(
 
 
 @router.post("/{tenant_id}/activate", response_model=TenantOut)
-@limiter.limit("10/minute")  # 🚨 STRICT: Restores agency access
+@limiter.limit("10/minute")  #  STRICT: Restores agency access
 async def activate_tenant(
     request: Request,
     tenant_id: int,
@@ -108,9 +120,9 @@ async def activate_tenant(
     tenant = await _load_tenant(db, tenant_id)
 
     if tenant.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Vaulted tenants cannot be activated. Use Restore from the Vault instead.",
+        raise ConflictError(
+            title="Invalid State",
+            message="Vaulted tenants cannot be activated. Use Restore from the Vault instead.",
         )
     if tenant.is_active and tenant.suspended_at is None:
         return tenant  # idempotent
@@ -178,9 +190,9 @@ async def restore_tenant(
     tenant = await _load_tenant(db, tenant_id)
 
     if not tenant.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This tenant is not in the Vault.",
+        raise ConflictError(
+            title="Not Vaulted",
+            message="This tenant is not in the Vault.",
         )
 
     tenant.is_archived = False
@@ -223,21 +235,21 @@ async def transition_to_payg(
       - Keeps the subscriptions ledger consistent (latest row flips to PAYG).
     """
     if current_user.role != UserRole.super_admin and current_user.tenant_id != tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only change your own agency's billing mode.",
+        raise AuthorizationError(
+            title="Access Denied",
+            message="You can only change your own agency's billing mode.",
         )
     tenant = await _load_tenant(db, tenant_id)
 
     if tenant.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Vaulted tenants cannot change billing mode. Restore from the Vault first.",
+        raise ConflictError(
+            title="Invalid State",
+            message="Vaulted tenants cannot change billing mode. Restore from the Vault first.",
         )
     if not tenant.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Suspended tenants cannot change billing mode. Activate first.",
+        raise ConflictError(
+            title="Suspended",
+            message="Suspended tenants cannot change billing mode. Activate first.",
         )
 
     if tenant.billing_cycle == "pay_as_you_go":
@@ -253,9 +265,9 @@ async def transition_to_payg(
         )
     ).scalar() or 0
     if Decimal(owed) > 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
+        raise ConflictError(
+            title="Outstanding Debt",
+            message=(
                 f"Outstanding platform commission of KES {Decimal(owed):,} must be "
                 "settled before changing plan. Settle it via Commission → Pay, or "
                 "contact support."
@@ -306,7 +318,7 @@ async def transition_to_payg(
     return tenant
 
 
-@router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{tenant_id}", status_code=204)
 @limiter.limit("5/minute")  # 🚨 EXTREMELY STRICT: Destructive action
 async def delete_tenant(
     request: Request,
@@ -321,7 +333,10 @@ async def delete_tenant(
     tenant = result.scalars().first()
 
     if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found.",
+        )
 
     # ✅ Capture tenant details BEFORE deletion (object becomes detached after db.delete)
     tenant_name = tenant.name

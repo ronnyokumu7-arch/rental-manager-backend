@@ -1,14 +1,19 @@
 # app/routers/vault/vehicles.py
+"""
+Vault Vehicles — list, restore, and hard-delete archived/retired vehicles.
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select, or_
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_db
+from app.core.errors import NotFoundError
 from app.core.limiter import limiter
+from app.db.database import get_db
 from app.dependencies.auth import get_current_user
-from app.models.vehicles import Vehicle, VehicleStatus
 from app.models.users import User
+from app.models.vehicles import Vehicle, VehicleStatus
 from app.schemas.pagination import PaginatedResponse, paginate_items
 from app.schemas.vehicle import VehicleOut
 from app.services.cache import invalidate_vehicle_cache
@@ -66,7 +71,10 @@ async def restore_vault_vehicle(
     vehicle = result.scalars().first()
     
     if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found in vault")
+        raise NotFoundError(
+            title="Vehicle Not Found",
+            message="Vehicle not found in vault.",
+        )
         
     # Restore logic: Flip the archive flag
     vehicle.is_archived = False
@@ -92,7 +100,7 @@ async def restore_vault_vehicle(
 
     return vehicle
 
-@router.delete("/{vehicle_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{vehicle_id}", status_code=204)
 @limiter.limit("10/minute")
 async def hard_delete_vault_vehicle(
     request: Request,
@@ -108,7 +116,10 @@ async def hard_delete_vault_vehicle(
     vehicle = result.scalars().first()
     
     if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found in vault")
+        raise NotFoundError(
+            title="Vehicle Not Found",
+            message="Vehicle not found in vault.",
+        )
         
     # Capture details before permanent deletion (object becomes detached after delete)
     vehicle_plate = vehicle.plate_number

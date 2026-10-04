@@ -1,6 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+# app/routers/user/lifecycle.py
+"""
+User Lifecycle — suspend / reactivate.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AuthorizationError, BadRequestError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -37,14 +44,17 @@ async def suspend_user(
     
     # 1. Prevent self-suspension (Business Logic Rule)
     if current_user.id == user.id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot suspend yourself")
+        raise BadRequestError(
+            title="Self-Suspension Not Allowed",
+            message="You cannot suspend yourself.",
+        )
         
     # 2. Agency Owner Protection (Defense in Depth)
     # Note: _enforce_staff_permission also checks this, but failing fast here is cleaner.
     if current_user.role == UserRole.tenant_admin and await _is_agency_owner(user, db):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="You cannot suspend the Agency Owner. Only a Super Admin can take this action."
+        raise AuthorizationError(
+            title="Agency Owner Protected",
+            message="You cannot suspend the Agency Owner. Only a Super Admin can take this action.",
         )
         
     # 3. Enforce tenant isolation and role permissions (Final Safety Net)
@@ -52,7 +62,10 @@ async def suspend_user(
     
     # 4. State check
     if user.is_suspended:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User is already suspended")
+        raise BadRequestError(
+            title="Already Suspended",
+            message="This user is already suspended.",
+        )
         
     # 5. Apply changes
     user.is_suspended = True
@@ -79,7 +92,7 @@ async def suspend_user(
 # 2. REACTIVATE USER (POST /{user_id}/reactivate)
 # =============================================================================
 @router.post("/{user_id}/reactivate", response_model=UserOut)
-@limiter.limit("10/minute")  # 🚨 STRICT: Restores user access
+@limiter.limit("10/minute")  #  STRICT: Restores user access
 async def reactivate_user(
     request: Request,
     user_id: int,
@@ -92,9 +105,9 @@ async def reactivate_user(
     # 1. Agency Owner Protection (Defense in Depth)
     # If a Super Admin suspended the owner, only a Super Admin should reactivate them.
     if current_user.role == UserRole.tenant_admin and await _is_agency_owner(user, db):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="You cannot reactivate the Agency Owner. Only a Super Admin can take this action."
+        raise AuthorizationError(
+            title="Agency Owner Protected",
+            message="You cannot reactivate the Agency Owner. Only a Super Admin can take this action.",
         )
         
     # 2. Enforce tenant isolation and role permissions (Final Safety Net)
@@ -102,7 +115,10 @@ async def reactivate_user(
     
     # 3. State check
     if not user.is_suspended:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User is not suspended")
+        raise BadRequestError(
+            title="Not Suspended",
+            message="This user is not currently suspended.",
+        )
         
     # 4. Apply changes
     user.is_suspended = False
@@ -123,4 +139,3 @@ async def reactivate_user(
     await db.commit()  # Commit the activity log flush
 
     return user
-

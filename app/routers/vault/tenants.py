@@ -1,12 +1,17 @@
 # app/routers/vault/tenants.py
+"""
+Vault Tenants — list, restore, and hard-delete archived/cancelled tenants (Super Admin only).
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select, or_
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.database import get_db
+from app.core.errors import NotFoundError
 from app.core.limiter import limiter
+from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
 from app.models.tenants import Tenant, SubscriptionStatus
@@ -69,7 +74,10 @@ async def restore_vault_tenant(
     tenant = result.scalars().first()
     
     if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found in vault")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found in vault.",
+        )
         
     # Restore logic: Reactivate the agency
     tenant.is_archived = False
@@ -98,7 +106,7 @@ async def restore_vault_tenant(
 
     return tenant
 
-@router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{tenant_id}", status_code=204)
 @limiter.limit("10/minute")
 async def hard_delete_vault_tenant(
     request: Request,
@@ -111,7 +119,10 @@ async def hard_delete_vault_tenant(
     tenant = result.scalars().first()
     
     if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found in vault")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found in vault.",
+        )
         
     # Capture details before permanent deletion (object becomes detached after delete)
     tenant_name = tenant.name

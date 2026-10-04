@@ -1,7 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+# app/routers/tenant/payment_gateways.py
+"""
+Tenant Payment Gateway Configuration — CRUD and test connections.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Encryption/decryption failures are now caught and return
+   a clean ServerError instead of crashing with a raw 500 stack trace.
+"""
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import (
+    AuthorizationError,
+    BadRequestError,
+    ConflictError,
+    NotFoundError,
+    ServerError,
+)
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.core.security import encrypt_secret, decrypt_secret
@@ -44,7 +59,14 @@ def _encrypt_gateway_data(gateway_type: str, data: dict) -> dict:
     
     for field in sensitive_fields:
         if field in encrypted_data and encrypted_data[field]:
-            encrypted_data[field] = encrypt_secret(str(encrypted_data[field]))
+            try:
+                encrypted_data[field] = encrypt_secret(str(encrypted_data[field]))
+            except Exception as e:
+                print(f"⚠️ Encryption failed for {gateway_type}.{field}: {e}")
+                raise ServerError(
+                    title="Encryption Failed",
+                    message="We couldn't securely save these credentials. Please try again.",
+                )
     
     return encrypted_data
 
@@ -96,9 +118,9 @@ async def _verify_tenant_access(tenant_id: int, current_user: User):
     
     # Regular users can only access their own tenant
     if current_user.tenant_id != tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to access this tenant's payment gateways",
+        raise AuthorizationError(
+            title="Access Denied",
+            message="You do not have permission to access this tenant's payment gateways.",
         )
 
 
@@ -117,7 +139,10 @@ async def list_gateways(
     tenant = (await db.execute(tenant_stmt)).scalars().first()
     
     if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found.",
+        )
 
     gateways = []
     for gw_type, model_class in GATEWAY_MODELS.items():
@@ -144,7 +169,7 @@ async def list_gateways(
     return {"gateways": gateways}
 
 
-@router.post("/{tenant_id}/payment-gateways/{gateway_type}", status_code=status.HTTP_201_CREATED)
+@router.post("/{tenant_id}/payment-gateways/{gateway_type}", status_code=201)
 @limiter.limit("10/minute")
 async def create_gateway(
     request: Request,
@@ -158,16 +183,19 @@ async def create_gateway(
     await _verify_tenant_access(tenant_id, current_user)
     
     if gateway_type not in GATEWAY_MODELS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid gateway type. Must be one of: {', '.join(GATEWAY_MODELS.keys())}",
+        raise BadRequestError(
+            title="Invalid Gateway Type",
+            message=f"Invalid gateway type. Must be one of: {', '.join(GATEWAY_MODELS.keys())}",
         )
 
     tenant_stmt = select(Tenant).where(Tenant.id == tenant_id)
     tenant = (await db.execute(tenant_stmt)).scalars().first()
     
     if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found.",
+        )
 
     ModelClass = GATEWAY_MODELS[gateway_type]
 
@@ -176,9 +204,9 @@ async def create_gateway(
         stmt = select(ModelClass).where(ModelClass.tenant_id == tenant_id)
         existing = (await db.execute(stmt)).scalars().first()
         if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"{gateway_type} config already exists. Use PATCH to update.",
+            raise ConflictError(
+                title="Gateway Already Exists",
+                message=f"{gateway_type} config already exists. Use PATCH to update.",
             )
 
     # Encrypt sensitive fields before saving
@@ -225,7 +253,10 @@ async def update_gateway(
     await _verify_tenant_access(tenant_id, current_user)
     
     if gateway_type not in GATEWAY_MODELS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid gateway type")
+        raise BadRequestError(
+            title="Invalid Gateway Type",
+            message="Invalid gateway type.",
+        )
 
     ModelClass = GATEWAY_MODELS[gateway_type]
     stmt = select(ModelClass).where(
@@ -235,7 +266,10 @@ async def update_gateway(
     config = (await db.execute(stmt)).scalars().first()
 
     if not config:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Gateway config not found")
+        raise NotFoundError(
+            title="Gateway Config Not Found",
+            message="Gateway config not found.",
+        )
 
     # Encrypt sensitive fields before updating
     encrypted_payload = _encrypt_gateway_data(gateway_type, payload)
@@ -277,9 +311,9 @@ async def delete_gateway(
     await _verify_tenant_access(tenant_id, current_user)
 
     if gateway_type not in GATEWAY_MODELS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid gateway type",
+        raise BadRequestError(
+            title="Invalid Gateway Type",
+            message="Invalid gateway type.",
         )
 
     ModelClass = GATEWAY_MODELS[gateway_type]
@@ -290,9 +324,9 @@ async def delete_gateway(
     config = (await db.execute(stmt)).scalars().first()
 
     if not config:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Gateway config not found",
+        raise NotFoundError(
+            title="Gateway Config Not Found",
+            message="Gateway config not found.",
         )
 
     await db.delete(config)
@@ -328,7 +362,10 @@ async def test_gateway_connection(
     await _verify_tenant_access(tenant_id, current_user)
     
     if gateway_type not in GATEWAY_MODELS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid gateway type")
+        raise BadRequestError(
+            title="Invalid Gateway Type",
+            message="Invalid gateway type.",
+        )
 
     # Validate required fields are present
     required_fields = {
@@ -341,9 +378,10 @@ async def test_gateway_connection(
 
     missing = [f for f in required_fields.get(gateway_type, []) if not payload or f not in payload]
     if missing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Missing required fields for {gateway_type}: {', '.join(missing)}",
+        raise BadRequestError(
+            title="Missing Required Fields",
+            message=f"Missing required fields for {gateway_type}: {', '.join(missing)}",
+            field_errors={f: "Required" for f in missing},
         )
 
     # TODO: Implement actual API ping for each gateway type

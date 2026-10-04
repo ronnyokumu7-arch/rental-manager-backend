@@ -1,10 +1,16 @@
 # app/routers/role_templates.py
+"""
+Role Templates CRUD — permission matrix and job-title defaults.
 
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import NotFoundError
 from app.db.database import get_db  # ✅ Updated to async DB path
 from app.core.limiter import limiter   # 🚨 Rate limiter
 from app.dependencies.rbac import require_role
@@ -63,7 +69,10 @@ async def update_template(
     template = result.scalars().first()
     
     if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+        raise NotFoundError(
+            title="Template Not Found",
+            message="Template not found.",
+        )
         
     template.permissions = payload.permissions
     await db.commit()

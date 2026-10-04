@@ -1,16 +1,24 @@
+# app/routers/user/onboarding.py
+"""
+User Onboarding — invite preview, document upload, and invite acceptance.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT: 410 Gone is now used for expired/used invites, giving the frontend
+   a clear signal to show the "Link Expired" state instead of a generic 400.
+"""
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from app.models.tenants import Tenant
-from app.models.users import UserRole
 
+from app.core.errors import BadRequestError, ConflictError, GoneError, NotFoundError
 from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.core.limiter import limiter
 from app.core.security import get_password_hash, normalize_email
-from app.models.users import User
+from app.models.tenants import Tenant
+from app.models.users import User, UserRole
 from app.schemas.user import UserOut, AcceptInvitePayload, UserInvitePreviewOut
 from app.services.cache import invalidate_user_cache
 from app.services.activity_log import ActivityLogService
@@ -19,7 +27,7 @@ from app.services.storage import upload_file
 router = APIRouter()
 
 
-@router.post("/invite/{token}/upload", status_code=status.HTTP_201_CREATED)
+@router.post("/invite/{token}/upload", status_code=201)
 @limiter.limit("60/minute")
 async def upload_invite_document(
     request: Request,
@@ -33,20 +41,37 @@ async def upload_invite_document(
     user = (await db.execute(
         select(User).where(User.invite_token == token)
     )).scalars().first()
+    
     if not user:
-        raise HTTPException(status_code=404, detail="Invite not found")
+        raise NotFoundError(
+            title="Invite Not Found",
+            message="We couldn't find this invite. Check that the link is complete and try again.",
+        )
     if user.is_onboarded:
-        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invite has already been used.")
+        raise GoneError(
+            title="Invite Already Used",
+            message="This invite has already been used to set up an account.",
+        )
     if user.invite_expires_at and user.invite_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This invite has expired.")
+        raise GoneError(
+            title="Invite Expired",
+            message="This invite has expired. Please ask your administrator for a new one.",
+        )
     if user.tenant_id is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invite has no tenant context")
+        raise BadRequestError(
+            title="Invalid Invite",
+            message="This invite has no tenant context.",
+        )
 
     await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
     field_categories = {"avatar": "avatar", "id_front": "compliance", "dl_front": "compliance"}
     category = field_categories.get(field)
     if category is None:
-        raise HTTPException(status_code=400, detail="Invalid upload field")
+        raise BadRequestError(
+            title="Invalid Upload Field",
+            message="Must be one of: avatar, id_front, dl_front.",
+            field_errors={"field": "Must be one of: avatar, id_front, dl_front"},
+        )
 
     file_url = await upload_file(file=file, tenant_id=user.tenant_id, category=category)
     return {"url": file_url, "field": field}
@@ -65,9 +90,9 @@ def _validate_file_url_belongs_to_tenant(file_url: str | None, tenant_id: int) -
     elif file_url.startswith("http://") or file_url.startswith("https://"):
         pass
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file URL format"
+        raise BadRequestError(
+            title="Invalid File URL",
+            message="Invalid file URL format.",
         )
 
 
@@ -88,16 +113,25 @@ async def accept_invite(
     user = (await db.execute(stmt)).scalars().first()
     
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid invite token")
+        raise NotFoundError(
+            title="Invite Not Found",
+            message="Invalid invite token.",
+        )
     await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
 
     # 2. Check expiration
     if user.invite_expires_at and user.invite_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invite token has expired")
+        raise BadRequestError(
+            title="Invite Expired",
+            message="Invite token has expired.",
+        )
 
     # 3. Check if already onboarded
     if user.is_onboarded:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User is already active")
+        raise BadRequestError(
+            title="Already Active",
+            message="User is already active.",
+        )
 
     # ✅ CRITICAL: Validate all file URLs belong to the user's tenant
     _validate_file_url_belongs_to_tenant(payload.avatar_url, user.tenant_id or 0)
@@ -107,9 +141,17 @@ async def accept_invite(
     # 4. Conditional Validation for Drivers
     if user.job_title and user.job_title.lower() == "driver":
         if not payload.dl_number:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Driver's License Number is required for Drivers.")
+            raise BadRequestError(
+                title="Missing License Number",
+                message="Driver's License Number is required for Drivers.",
+                field_errors={"dl_number": "Required for Drivers"},
+            )
         if not payload.dl_image_url:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Driver's License Image is required for Drivers.")
+            raise BadRequestError(
+                title="Missing License Image",
+                message="Driver's License Image is required for Drivers.",
+                field_errors={"dl_image_url": "Required for Drivers"},
+            )
 
     # 5. Map Identity & Compliance Fields
     user.full_name = payload.full_name
@@ -134,7 +176,10 @@ async def accept_invite(
         existing_user_stmt = select(User).where(User.email == normalized_email)
         existing_user = (await db.execute(existing_user_stmt)).scalars().first()
         if existing_user:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This email is already in use by another account")
+            raise ConflictError(
+                title="Email Already In Use",
+                message="This email is already in use by another account.",
+            )
         user.email = normalized_email
 
     # 6. Update user state (Password & Onboarding Status)
@@ -174,8 +219,12 @@ async def preview_user_invite(
     user = (await db.execute(
         select(User).where(User.invite_token == token)
     )).scalars().first()
+    
     if not user:
-        raise HTTPException(status_code=404, detail="Invite not found")
+        raise NotFoundError(
+            title="Invite Not Found",
+            message="We couldn't find this invite.",
+        )
     await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
     
     stmt = select(User).options(
@@ -184,18 +233,21 @@ async def preview_user_invite(
     user = (await db.execute(stmt)).scalars().unique().first()
 
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found.")
+        raise NotFoundError(
+            title="Invite Not Found",
+            message="We couldn't find this invite.",
+        )
     
     if user.is_onboarded:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="This account has already been set up.",
+        raise GoneError(
+            title="Account Already Set Up",
+            message="This account has already been set up.",
         )
         
     if user.invite_expires_at and user.invite_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE, 
-            detail="This invite has expired.",
+        raise GoneError(
+            title="Invite Expired",
+            message="This invite has expired.",
         )
 
     tenant = user.tenant

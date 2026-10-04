@@ -1,11 +1,16 @@
 # app/routers/vault/users.py
+"""
+Vault Users — list, restore, and hard-delete inactive/suspended users.
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select, or_
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_db
+from app.core.errors import BadRequestError, NotFoundError
 from app.core.limiter import limiter
+from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.users import User
 from app.schemas.pagination import PaginatedResponse, paginate_items
@@ -64,7 +69,10 @@ async def restore_vault_user(
     user = result.scalars().first()
     
     if not user:
-        raise HTTPException(status_code=404, detail="User not found in vault")
+        raise NotFoundError(
+            title="User Not Found",
+            message="User not found in vault.",
+        )
         
     # Restore logic: Reactivate and unsuspend
     user.is_active = True
@@ -88,7 +96,7 @@ async def restore_vault_user(
 
     return user
 
-@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{user_id}", status_code=204)
 @limiter.limit("10/minute")
 async def hard_delete_vault_user(
     request: Request,
@@ -98,7 +106,10 @@ async def hard_delete_vault_user(
 ):
     # Prevent admins from accidentally deleting themselves
     if user_id == current_user.id:
-        raise HTTPException(status_code=400, detail="You cannot delete your own account from the vault")
+        raise BadRequestError(
+            title="Self-Deletion Blocked",
+            message="You cannot delete your own account from the vault.",
+        )
 
     stmt = select(User).where(
         User.id == user_id,
@@ -108,7 +119,10 @@ async def hard_delete_vault_user(
     user = result.scalars().first()
     
     if not user:
-        raise HTTPException(status_code=404, detail="User not found in vault")
+        raise NotFoundError(
+            title="User Not Found",
+            message="User not found in vault.",
+        )
         
     # Capture details before permanent deletion (object becomes detached after delete)
     user_email = user.email

@@ -1,11 +1,20 @@
-from datetime import datetime, timedelta
+# app/routers/activity_logs.py
+"""
+Activity Logs — strict tenant isolation, audit views, and platform-wide feeds.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT: Feed semantics preserved (default = tenant-wide including system events; 
+   user_id = personal/audit view with cross-tenant checks for super admins).
+"""
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select, func
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import AuthorizationError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -62,9 +71,9 @@ async def get_activity_logs(
             )
             target_result = await db.execute(target_stmt)
             if not target_result.scalars().first():
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access denied: user not found in your tenant",
+                raise AuthorizationError(
+                    title="Access Denied",
+                    message="Access denied: user not found in your tenant.",
                 )
             filters.append(ActivityLog.tenant_id == current_user.tenant_id)
         filters.append(ActivityLog.user_id == user_id)

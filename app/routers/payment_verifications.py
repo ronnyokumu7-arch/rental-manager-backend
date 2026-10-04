@@ -1,13 +1,20 @@
 # app/routers/payment_verifications.py
+"""
+Payment Verifications CRUD — tenant submits proof, superadmin reviews.
 
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): duplicate reference checks now return structured ConflictError
+   and normalize the code to uppercase to prevent case-variant duplicates.
+"""
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import AuthorizationError, ConflictError, NotFoundError
 from app.db.database import get_db  # ✅ Updated to async DB path
 from app.core.limiter import limiter   # 🚨 Rate limiter
 from app.dependencies.auth import get_current_user
@@ -42,21 +49,22 @@ async def submit_payment_verification(
     Tenant submits payment proof/reference code (M-Pesa, Bank Transfer, etc.) for admin verification.
     """
     if not current_user.tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User context is missing a tenant ID.",
+        raise AuthorizationError(
+            title="Tenant Context Required",
+            message="User context is missing a tenant ID. Please ensure you are logged into a tenant account.",
         )
 
-    # Check for duplicate reference code
+    # ✅ Phase B: Normalize reference code (strip + uppercase) to prevent case-variant duplicates
+    ref_code = payload.reference_code.strip().upper()
     dup_stmt = select(PaymentVerification).where(
-        PaymentVerification.reference_code == payload.reference_code.strip()
+        PaymentVerification.reference_code == ref_code
     )
     existing = (await db.execute(dup_stmt)).scalars().first()
     
     if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A payment verification request with this reference code already exists.",
+        raise ConflictError(
+            title="Duplicate Reference Code",
+            message="A payment verification request with this reference code already exists. Please check your M-Pesa code or contact support.",
         )
 
     verification = PaymentVerification(
@@ -64,7 +72,7 @@ async def submit_payment_verification(
         target_plan=payload.target_plan,
         target_billing_cycle=payload.target_billing_cycle,
         payment_method=payload.payment_method,
-        reference_code=payload.reference_code.strip(),
+        reference_code=ref_code,
         notes=payload.notes,
         status=VerificationStatus.pending,
     )
@@ -164,9 +172,9 @@ async def review_payment_verification(
     verification = (await db.execute(ver_stmt)).scalars().first()
     
     if not verification:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Payment verification request not found.",
+        raise NotFoundError(
+            title="Verification Not Found",
+            message="This payment verification request could not be found.",
         )
 
     now = datetime.now(timezone.utc)

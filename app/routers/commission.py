@@ -1,13 +1,21 @@
 # app/routers/commission.py
+"""
+Commission Management — tenant dashboard, payment submissions, and super-admin verification queue.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): "No tenant context" errors shifted from 400 → 403 (AuthorizationError)
+   since this is a scope/authorization failure, not a malformed request.
+"""
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AuthorizationError, ConflictError, NotFoundError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -45,15 +53,15 @@ def _resolve_tenant(current_user: User, tenant_id: Optional[int]) -> int:
     """Tenants see only themselves; super admins may inspect any tenant."""
     if tenant_id is not None:
         if current_user.role != UserRole.super_admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only super admins can inspect other tenants' commissions.",
+            raise AuthorizationError(
+                title="Access Denied",
+                message="Only super admins can inspect other tenants' commissions.",
             )
         return tenant_id
     if current_user.tenant_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No tenant context for this account.",
+        raise AuthorizationError(
+            title="Tenant Context Required",
+            message="No tenant context for this account.",
         )
     return current_user.tenant_id
 
@@ -190,9 +198,9 @@ async def commission_payment_info(
 ):
     """✅ Everything the /commission/pay page needs: what's owed + your Paybill triple."""
     if current_user.tenant_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No tenant context for this account.",
+        raise AuthorizationError(
+            title="Tenant Context Required",
+            message="No tenant context for this account.",
         )
     target = current_user.tenant_id
 
@@ -237,7 +245,7 @@ async def commission_payment_info(
     )
 
 
-@router.post("/payments", response_model=CommissionPaymentOut, status_code=status.HTTP_201_CREATED)
+@router.post("/payments", response_model=CommissionPaymentOut, status_code=201)
 @limiter.limit("10/minute")
 async def submit_commission_payment(
     request: Request,
@@ -247,9 +255,9 @@ async def submit_commission_payment(
 ):
     """✅ Tenant self-reports a commission payment (M-Pesa code) → awaits your verification."""
     if current_user.tenant_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No tenant context for this account.",
+        raise AuthorizationError(
+            title="Tenant Context Required",
+            message="No tenant context for this account.",
         )
 
     # ✅ One pending submission at a time (no spam / duplicate verification work)
@@ -262,9 +270,9 @@ async def submit_commission_payment(
         )
     ).scalars().first()
     if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="You already have a payment awaiting verification.",
+        raise ConflictError(
+            title="Payment Pending",
+            message="You already have a payment awaiting verification.",
         )
 
     payment = CommissionPayment(
@@ -290,9 +298,9 @@ async def list_commission_payments(
 ):
     """✅ Tenant's commission payment history."""
     if current_user.tenant_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No tenant context for this account.",
+        raise AuthorizationError(
+            title="Tenant Context Required",
+            message="No tenant context for this account.",
         )
 
     stmt = (
@@ -311,9 +319,9 @@ async def list_commission_payments(
 
 def _require_super_admin(current_user: User) -> None:
     if current_user.role != UserRole.super_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Super admin access required.",
+        raise AuthorizationError(
+            title="Access Denied",
+            message="Super admin access required.",
         )
 
 
@@ -355,10 +363,14 @@ async def verify_commission_payment(
 
     payment = await db.get(CommissionPayment, payment_id)
     if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found.")
+        raise NotFoundError(
+            title="Payment Not Found",
+            message="We couldn't find this payment.",
+        )
     if payment.status != CommissionPaymentStatus.pending:
-        raise HTTPException(
-            status_code=409, detail=f"Payment is already {payment.status.value}."
+        raise ConflictError(
+            title="Invalid Payment State",
+            message=f"Payment is already {payment.status.value}.",
         )
 
     now = datetime.now(timezone.utc)
@@ -413,10 +425,14 @@ async def reject_commission_payment(
 
     payment = await db.get(CommissionPayment, payment_id)
     if not payment:
-        raise HTTPException(status_code=404, detail="Payment not found.")
+        raise NotFoundError(
+            title="Payment Not Found",
+            message="We couldn't find this payment.",
+        )
     if payment.status != CommissionPaymentStatus.pending:
-        raise HTTPException(
-            status_code=409, detail=f"Payment is already {payment.status.value}."
+        raise ConflictError(
+            title="Invalid Payment State",
+            message=f"Payment is already {payment.status.value}.",
         )
 
     now = datetime.now(timezone.utc)

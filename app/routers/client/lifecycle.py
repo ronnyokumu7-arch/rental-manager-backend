@@ -1,6 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+# app/routers/client/lifecycle.py
+"""
+✅ CLIENT LIFECYCLE — activate / suspend / reactivate.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): activation KYC gate now returns field_errors so the form
+   can highlight exactly which document is missing.
+"""
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.subscription import require_active_subscription
@@ -28,15 +37,22 @@ async def activate_client(
     client = await get_authorized_client_async(client_id, current_user, db)
     
     if client.status == ClientStatus.active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This client is already active."
+        raise BadRequestError(
+            title="Already Active",
+            message="This client is already active.",
         )
     
-    if not client.id_image_front or not client.dl_image_front:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Add photos of the client's ID and driver's licence before activating them."
+    # ✅ KYC GATE: field-level errors so the form highlights what's missing
+    missing_docs: dict[str, str] = {}
+    if not client.id_image_front:
+        missing_docs["id_image_front"] = "A photo of the client's ID is required"
+    if not client.dl_image_front:
+        missing_docs["dl_image_front"] = "A photo of the driver's licence is required"
+    if missing_docs:
+        raise BadRequestError(
+            title="Missing Required Documents",
+            message="Add photos of the client's ID and driver's licence before activating them.",
+            field_errors=missing_docs,
         )
         
     client.status = ClientStatus.active
@@ -61,9 +77,9 @@ async def suspend_client(
     client = await get_authorized_client_async(client_id, current_user, db)
     
     if client.status == ClientStatus.suspended:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This client is already suspended."
+        raise BadRequestError(
+            title="Already Suspended",
+            message="This client is already suspended.",
         )
         
     client.status = ClientStatus.suspended
@@ -87,9 +103,9 @@ async def reactivate_client(
     client = await get_authorized_client_async(client_id, current_user, db)
     
     if client.status != ClientStatus.suspended:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This client isn't suspended, so they can't be reactivated."
+        raise BadRequestError(
+            title="Not Suspended",
+            message="This client isn't suspended, so they can't be reactivated.",
         )
         
     client.status = ClientStatus.active

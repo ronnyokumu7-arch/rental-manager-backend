@@ -6,16 +6,24 @@ Manual total overrides via PATCH are tracked as manually_adjusted with an audit 
 
 ✅ ACTIVITY FEED: loggers run on eager-loaded snapshots and are committed
 (flush-only loggers + post-commit calls require an explicit commit).
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 """
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy import select, func, and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import (
+    BadRequestError,
+    ConflictError,
+    NotFoundError,
+    ValidationFailedError,
+)
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -107,7 +115,10 @@ async def update_booking(
         )
         overlap_result = await db.execute(overlap_stmt)
         if overlap_result.scalars().first():
-            raise HTTPException(status_code=409, detail="This vehicle is already booked for those dates. Choose another vehicle or change the dates.")
+            raise ConflictError(
+                title="Vehicle Already Booked",
+                message="This vehicle is already booked for those dates. Choose another vehicle or change the dates.",
+            )
 
     # ✅ MILESTONE 2 & 3: Re-price when schedule, rate, add-ons, OR service_details change
     reprice_needed = (
@@ -128,7 +139,10 @@ async def update_booking(
         if current_service_type == AIRPORT_TRANSFER:
             # ✅ Airport Transfer Pricing
             if not vehicle or not vehicle.supports_airport_transfer or not vehicle.airport_transfer_base_rate:
-                raise HTTPException(status_code=400, detail="This vehicle isn't set up for airport transfers. Choose another vehicle or ask an administrator to add an airport transfer rate.")
+                raise BadRequestError(
+                    title="Airport Transfer Not Enabled",
+                    message="This vehicle isn't set up for airport transfers. Choose another vehicle or ask an administrator to add an airport transfer rate.",
+                )
             
             # Extract add-ons (fallback to existing booking transfer record if not in payload)
             toll_fees = update_data.get("toll_fees", 0) or 0
@@ -141,7 +155,7 @@ async def update_booking(
                     parking_fees=Decimal(parking_fees),
                 )
             except ValueError as e:
-                raise HTTPException(status_code=422, detail=str(e))
+                raise ValidationFailedError(title="Pricing Failed", message=str(e))
 
             # New terms → engine truth
             update_data["daily_rate"] = vehicle.airport_transfer_base_rate
@@ -154,7 +168,10 @@ async def update_booking(
         elif current_service_type == WEDDING:
             # ✅ Wedding Pricing
             if not vehicle or not vehicle.supports_wedding_service or not vehicle.wedding_base_rate:
-                raise HTTPException(status_code=400, detail="This vehicle isn't set up for wedding bookings. Choose another vehicle or ask an administrator to add a wedding rate.")
+                raise BadRequestError(
+                    title="Wedding Service Not Enabled",
+                    message="This vehicle isn't set up for wedding bookings. Choose another vehicle or ask an administrator to add a wedding rate.",
+                )
             
             # Extract service-specific details from JSON payload (fallback to existing)
             details = update_data.get("service_details") or booking.service_details or {}
@@ -184,7 +201,7 @@ async def update_booking(
                     fuel_fee=Decimal(fuel_fee),
                 )
             except ValueError as e:
-                raise HTTPException(status_code=422, detail=str(e))
+                raise ValidationFailedError(title="Pricing Failed", message=str(e))
 
             # New terms → engine truth
             update_data["daily_rate"] = vehicle.wedding_base_rate
@@ -197,16 +214,25 @@ async def update_booking(
         elif current_service_type == PRO_DRIVER:
             # ✅ Pro Driver Pricing
             if not vehicle:
-                raise HTTPException(status_code=400, detail="We couldn't find this vehicle. Refresh the list and try again.")
+                raise NotFoundError(
+                    title="Vehicle Not Found",
+                    message="We couldn't find this vehicle. Refresh the list and try again.",
+                )
             if not target_driver_id:
-                raise HTTPException(status_code=400, detail="Choose a staff driver for this chauffeur booking before continuing.")
+                raise BadRequestError(
+                    title="Driver Required",
+                    message="Choose a staff driver for this chauffeur booking before continuing.",
+                )
 
             # Fetch driver for fees
             driver = (await db.execute(
                 select(Driver).where(Driver.id == target_driver_id)
             )).scalars().first()
             if not driver:
-                raise HTTPException(status_code=404, detail="We couldn't find this driver. Refresh the list and try again.")
+                raise NotFoundError(
+                    title="Driver Not Found",
+                    message="We couldn't find this driver. Refresh the list and try again.",
+                )
 
             # Extract service-specific details from JSON payload
             details = update_data.get("service_details") or booking.service_details or {}
@@ -221,7 +247,10 @@ async def update_booking(
             base_rate = vehicle_daily_rate + driver_daily_fee
 
             if base_rate <= 0:
-                raise HTTPException(status_code=400, detail="The chauffeur booking has no rate. Ask an administrator to add a vehicle rate and driver fee.")
+                raise BadRequestError(
+                    title="Rate Not Configured",
+                    message="The chauffeur booking has no rate. Ask an administrator to add a vehicle rate and driver fee.",
+                )
 
             overtime_rate = Decimal(driver.overtime_hourly_fee) if driver.overtime_hourly_fee else Decimal("0.00")
 
@@ -235,7 +264,7 @@ async def update_booking(
                     parking_fees=Decimal(parking_fees),
                 )
             except ValueError as e:
-                raise HTTPException(status_code=422, detail=str(e))
+                raise ValidationFailedError(title="Pricing Failed", message=str(e))
 
             # New terms → engine truth
             update_data["daily_rate"] = base_rate
@@ -253,7 +282,10 @@ async def update_booking(
                 or (vehicle.daily_rate if vehicle else None)
             )
             if not daily_rate or Decimal(daily_rate) <= 0:
-                raise HTTPException(status_code=400, detail="This booking has no daily rate. Ask an administrator to add one before updating it.")
+                raise BadRequestError(
+                    title="Daily Rate Not Configured",
+                    message="This booking has no daily rate. Ask an administrator to add one before updating it.",
+                )
 
             # Driver fee via explicit query (never lazy-load in async context)
             driver_daily_fee = None
@@ -272,7 +304,7 @@ async def update_booking(
                     driver_daily_fee=Decimal(driver_daily_fee) if driver_daily_fee else None,
                 )
             except ValueError as e:
-                raise HTTPException(status_code=422, detail=str(e))
+                raise ValidationFailedError(title="Pricing Failed", message=str(e))
 
             # New terms → engine truth
             update_data["daily_rate"] = daily_rate
@@ -334,9 +366,15 @@ async def archive_booking(
     booking = await get_authorized_booking_async(booking_id, current_user, db)
 
     if booking.status == BookingStatus.active:
-        raise HTTPException(status_code=400, detail="This booking is active and cannot be archived. Complete or cancel it first.")
+        raise BadRequestError(
+            title="Active Booking Can't Be Archived",
+            message="This booking is active and cannot be archived. Complete or cancel it first.",
+        )
     if booking.is_archived:
-        raise HTTPException(status_code=400, detail="This booking is already archived.")
+        raise BadRequestError(
+            title="Already Archived",
+            message="This booking is already archived.",
+        )
 
     booking.is_archived = True
     booking.archived_at = datetime.now(timezone.utc)
@@ -374,7 +412,10 @@ async def restore_booking(
     booking = await get_authorized_booking_async(booking_id, current_user, db)
 
     if not booking.is_archived:
-        raise HTTPException(status_code=400, detail="This booking is not archived, so there is nothing to restore.")
+        raise BadRequestError(
+            title="Nothing to Restore",
+            message="This booking is not archived, so there is nothing to restore.",
+        )
 
     booking.is_archived = False
     booking.archived_at = None
@@ -412,16 +453,19 @@ async def delete_booking(
     booking = await get_authorized_booking_async(booking_id, current_user, db)
 
     if booking.status == BookingStatus.active:
-        raise HTTPException(status_code=400, detail="This booking is active and cannot be deleted. Complete or cancel it first.")
+        raise BadRequestError(
+            title="Active Booking Can't Be Deleted",
+            message="This booking is active and cannot be deleted. Complete or cancel it first.",
+        )
 
     try:
         await db.delete(booking)
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail="This booking has invoices or contracts and cannot be deleted. Archive it instead."
+        raise BadRequestError(
+            title="Booking Has Linked Records",
+            message="This booking has invoices or contracts and cannot be deleted. Archive it instead.",
         )
 
     await invalidate_booking_cache(current_user.tenant_id)

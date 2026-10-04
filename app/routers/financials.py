@@ -1,10 +1,15 @@
 # app/routers/financials.py
+"""
+Financial Overview Dashboard — aggregated revenue, invoice status, and contract health.
 
+✅ ERROR SYSTEM: No explicit raises (pure read-only endpoint).
+✅ AUDIT: Aggregate NULLs handled gracefully via `or 0` / `or Decimal("0.00")`.
+"""
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, extract, select
 from sqlalchemy.ext.asyncio import AsyncSession
 

@@ -1,16 +1,30 @@
 # app/routers/tenant/core.py
+"""
+Tenant Core — super-admin provisioning, listing, and updates.
 
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Heavy atomic provisioning failures no longer leak raw 
+   exception strings to the client; they return a generic ServerError.
+   Duplicate emails now correctly return 409 Conflict instead of 400.
+"""
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
 
+from app.core.errors import (
+    AuthorizationError,
+    BadRequestError,
+    ConflictError,
+    NotFoundError,
+    ServerError,
+)
 from app.db.database import get_db  # ✅ Updated to async DB path
-from app.core.limiter import limiter   # 🚨 Rate limiter
+from app.core.limiter import limiter   #  Rate limiter
 from app.dependencies.auth import get_current_user
 from app.dependencies.rbac import require_role
 from app.models.tenants import Tenant, SubscriptionStatus as TenantSubscriptionStatus
@@ -34,7 +48,7 @@ def _clean_string(value: str | None) -> str | None:
     if isinstance(value, str):
         cleaned = value.strip()
         return cleaned if cleaned else None
-    return None
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -61,8 +75,8 @@ _ATTENTION = and_(
 )
 
 
-@router.post("/", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/minute")  # 🚨 EXTREMELY STRICT: Heavy atomic provisioning
+@router.post("/", response_model=TenantOut, status_code=201)
+@limiter.limit("5/minute")  #  EXTREMELY STRICT: Heavy atomic provisioning
 async def create_tenant(
     request: Request,
     payload: TenantCreate,
@@ -81,17 +95,17 @@ async def create_tenant(
     existing_tenant_stmt = select(Tenant).where(Tenant.email == payload.email)
     existing_tenant = (await db.execute(existing_tenant_stmt)).scalars().first()
     if existing_tenant:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A tenant with this primary email already exists."
+        raise ConflictError(
+            title="Duplicate Tenant Email",
+            message="A tenant with this primary email already exists.",
         )
 
     existing_user_stmt = select(User).where(User.email == payload.admin_email)
     existing_user = (await db.execute(existing_user_stmt)).scalars().first()
     if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A user with this admin email already exists. Please use a different email."
+        raise ConflictError(
+            title="Duplicate Admin Email",
+            message="A user with this admin email already exists. Please use a different email.",
         )
 
     try:
@@ -209,7 +223,7 @@ async def create_tenant(
         try:
             await invalidate_tenant_cache()
         except Exception as cache_err:
-            print(f"️ Cache invalidation warning (tenant created): {cache_err}")
+            print(f"⚠️ Cache invalidation warning (tenant created): {cache_err}")
 
         try:
             await TenantActivityLogger.on_created(db, current_user.id, tenant)
@@ -233,16 +247,17 @@ async def create_tenant(
 
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A database constraint was violated. This email or tax ID might already be registered."
+        raise ConflictError(
+            title="Constraint Violation",
+            message="A database constraint was violated. This email or tax ID might already be registered.",
         )
     except Exception as e:
         await db.rollback()
         print(f"🚨 create_tenant failed BEFORE commit: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to provision tenant environment: {str(e)}"
+        # ✅ Phase B: Never leak raw exception strings to the client
+        raise ServerError(
+            title="Provisioning Failed",
+            message="Failed to provision tenant environment. Please check server logs or try again.",
         )
 
 
@@ -330,9 +345,9 @@ async def get_tenant(
 
     # Security Check: Super admins can see any tenant. Regular users can only see their own.
     if current_user.role != UserRole.super_admin and current_user.tenant_id != tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have permission to view this tenant."
+        raise AuthorizationError(
+            title="Access Denied",
+            message="You do not have permission to view this tenant.",
         )
 
     stmt = select(Tenant).options(selectinload(Tenant.profile)).where(Tenant.id == tenant_id)
@@ -340,7 +355,10 @@ async def get_tenant(
     tenant = result.scalars().first()
 
     if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found.",
+        )
 
     return tenant
 
@@ -359,7 +377,10 @@ async def update_tenant(
     tenant = result.scalars().first()
 
     if not tenant:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="Tenant not found.",
+        )
 
     update_data = payload.model_dump(exclude_unset=True)
 
@@ -368,12 +389,9 @@ async def update_tenant(
     # to flip them through the generic update is rejected loudly.
     forbidden = {"is_active", "is_archived"} & set(update_data.keys())
     if forbidden:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Lifecycle fields {sorted(forbidden)} cannot be changed here. "
-                "Use POST /tenants/{id}/suspend | /activate | /archive | /restore instead."
-            ),
+        raise BadRequestError(
+            title="Lifecycle Field Protected",
+            message=f"Lifecycle fields {sorted(forbidden)} cannot be changed here. Use the dedicated lifecycle endpoints instead.",
         )
 
     for field, value in update_data.items():
@@ -387,9 +405,9 @@ async def update_tenant(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Update failed due to a unique constraint violation."
+        raise ConflictError(
+            title="Constraint Violation",
+            message="Update failed due to a unique constraint violation.",
         )
 
     # ✅ Eager re-fetch (no lazy loads after commit)
@@ -407,6 +425,6 @@ async def update_tenant(
         await db.commit()
     except Exception as log_err:
         await db.rollback()
-        print(f"⚠️ Activity log warning (tenant updated): {log_err}")
+        print(f"️ Activity log warning (tenant updated): {log_err}")
 
     return tenant

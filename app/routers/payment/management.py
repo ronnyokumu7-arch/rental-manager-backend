@@ -1,10 +1,23 @@
+# app/routers/payment/management.py
+"""
+✅ PAYMENT MANAGEMENT — list / get / CSV export (tenant-scoped, cached).
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B):
+  - Export date params parsed + validated (was: string vs datetime column → 500).
+  - CSV built with the csv module (proper quoting; commas no longer break columns).
+"""
+import csv
+import io
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -22,6 +35,18 @@ from app.services.cache import (
 from ._helpers import get_authorized_payment_async
 
 router = APIRouter()
+
+
+def _parse_export_date(value: str, field: str) -> datetime:
+    """✅ Phase B: strict YYYY-MM-DD parsing (was: raw string vs datetime column)."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        raise ValidationFailedError(
+            title="Invalid Date",
+            message="Export dates must use the YYYY-MM-DD format.",
+            field_errors={field: "Use YYYY-MM-DD"},
+        )
 
 
 @router.get("/", response_model=PaginatedResponse[PaymentOut])
@@ -79,6 +104,60 @@ async def list_payments(
     return paginate_items(payments, total=len(payments), page=page, page_size=page_size)
 
 
+@router.get("/export/csv")
+@limiter.limit("10/minute")
+async def export_payments_csv(
+    request: Request,
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
+):
+    """
+    Export payments as CSV. Tenant-scoped.
+    Note: /export/csv route must be defined BEFORE /{payment_id} to avoid path conflicts.
+    """
+    stmt = select(Payment, Invoice.invoice_number).join(
+        Invoice, Payment.invoice_id == Invoice.id
+    ).where(Payment.tenant_id == current_user.tenant_id)
+
+    # ✅ Phase B: validated datetime bounds (inclusive end day)
+    if start_date:
+        stmt = stmt.where(Payment.created_at >= _parse_export_date(start_date, "start_date"))
+    if end_date:
+        end_exclusive = _parse_export_date(end_date, "end_date") + timedelta(days=1)
+        stmt = stmt.where(Payment.created_at < end_exclusive)
+
+    stmt = stmt.order_by(Payment.created_at.desc())
+    result = await db.execute(stmt)
+    results = result.all()
+
+    headers = ["ID", "Invoice Number", "Amount", "Currency", "Method", "Reference", "Status", "Recorded By", "Date"]
+
+    # ✅ Phase B: csv module = correct quoting (commas/newlines in references)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(headers)
+    for p, inv_num in results:
+        writer.writerow([
+            str(p.id),
+            inv_num or "",
+            str(p.amount),
+            p.currency_code,
+            p.method.value,
+            p.reference or "",
+            p.status.value,
+            str(p.recorded_by or ""),
+            p.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        ])
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=payments_export.csv"},
+    )
+
+
 @router.get("/{payment_id}", response_model=PaymentOut)
 @limiter.limit("60/minute")
 async def get_payment(
@@ -104,60 +183,9 @@ async def get_payment(
     payment = result.scalars().unique().first()
 
     if not payment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Payment not found"
+        raise NotFoundError(
+            title="Payment Not Found",
+            message="We couldn't find this payment, or you may not have access to it.",
         )
     
     return payment
-
-
-@router.get("/export/csv")
-@limiter.limit("10/minute")
-async def export_payments_csv(
-    request: Request,
-    start_date: Optional[str] = Query(None),
-    end_date: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_active_subscription),
-):
-    """
-    Export payments as CSV. Tenant-scoped.
-    Note: /export/csv route must be defined BEFORE /{payment_id} to avoid path conflicts.
-    """
-    stmt = select(Payment, Invoice.invoice_number).join(
-        Invoice, Payment.invoice_id == Invoice.id
-    ).where(Payment.tenant_id == current_user.tenant_id)
-
-    if start_date:
-        stmt = stmt.where(Payment.created_at >= start_date)
-    if end_date:
-        stmt = stmt.where(Payment.created_at <= end_date)
-
-    stmt = stmt.order_by(Payment.created_at.desc())
-    result = await db.execute(stmt)
-    results = result.all()
-
-    headers = ["ID", "Invoice Number", "Amount", "Currency", "Method", "Reference", "Status", "Recorded By", "Date"]
-    rows = [
-        [
-            str(p.id),
-            inv_num or "",
-            str(p.amount),
-            p.currency_code,
-            p.method.value,
-            p.reference or "",
-            p.status.value,
-            str(p.recorded_by or ""),
-            p.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
-        ]
-        for p, inv_num in results
-    ]
-
-    csv_content = "\n".join([",".join(headers)] + [",".join(row) for row in rows])
-
-    return Response(
-        content=csv_content,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=payments_export.csv"},
-    )

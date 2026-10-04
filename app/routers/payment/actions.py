@@ -1,9 +1,18 @@
+# app/routers/payment/actions.py
+"""
+✅ PAYMENT ACTIONS — void with invoice balance recalculation.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): payments on VOID invoices are frozen as records
+   (matches the cancel flow's "payments stay as records" rule).
+"""
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError, NotFoundError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.subscription import require_active_subscription
@@ -35,14 +44,14 @@ async def void_payment(
     payment = await get_authorized_payment_async(payment_id, current_user, db)
 
     if payment.status == PaymentStatus.void:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Payment is already void"
+        raise BadRequestError(
+            title="Already Void",
+            message="This payment is already void.",
         )
     if payment.status != PaymentStatus.completed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only completed payments can be voided"
+        raise BadRequestError(
+            title="Only Completed Payments Can Be Voided",
+            message="Pending or failed payments can't be voided.",
         )
 
     # ✅ Defense in depth: verify invoice belongs to tenant
@@ -54,9 +63,16 @@ async def void_payment(
     invoice = invoice_result.scalars().first()
     
     if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Linked invoice not found"
+        raise NotFoundError(
+            title="Linked Invoice Missing",
+            message="The invoice linked to this payment couldn't be found. Contact support for help.",
+        )
+
+    # ✅ Phase B: void invoices freeze their payment records (cancel-flow rule)
+    if invoice.status == InvoiceStatus.void:
+        raise BadRequestError(
+            title="Invoice Is Void",
+            message="This payment belongs to a void invoice. Void-invoice payments stay as records and can't be voided.",
         )
 
     # Recalculate invoice balance

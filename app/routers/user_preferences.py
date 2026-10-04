@@ -1,8 +1,15 @@
 # app/routers/user_preferences.py
+"""
+User UI Preferences — theme and density.
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Invalid preference values now return field_errors 
+   so the UI can highlight the specific bad dropdown.
+"""
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError
 from app.db.database import get_db  # ✅ Updated to async DB path
 from app.core.limiter import limiter   # 🚨 Rate limiter
 from app.dependencies.auth import get_current_user
@@ -37,12 +44,20 @@ async def update_preferences(
     """Update current user's UI preferences"""
     if theme is not None:
         if theme not in ["light", "dark", "system"]:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid theme preference")
+            raise BadRequestError(
+                title="Invalid Theme",
+                message="Theme must be 'light', 'dark', or 'system'.",
+                field_errors={"theme": "Must be 'light', 'dark', or 'system'"},
+            )
         current_user.theme_preference = theme
     
     if density is not None:
         if density not in ["comfortable", "compact"]:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid density preference")
+            raise BadRequestError(
+                title="Invalid Density",
+                message="Density must be 'comfortable' or 'compact'.",
+                field_errors={"density": "Must be 'comfortable' or 'compact'"},
+            )
         current_user.density_preference = density
     
     await db.commit()

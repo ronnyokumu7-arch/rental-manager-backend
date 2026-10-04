@@ -1,18 +1,24 @@
+# app/routers/pricing.py
 """
 Pricing quote endpoints — live breakdown for booking forms.
 
 ✅ PHASE 1: pure self-drive pricing via pricing_selfdrive.quote_selfdrive.
    No DB writes, no config lookups, no legacy engine.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Invalid date ranges from the pricing engine are caught
+   and returned as a clean 422 instead of a raw 500.
 """
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError, NotFoundError, ValidationFailedError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.commission_lock import require_not_commission_locked
@@ -75,12 +81,19 @@ async def quote_self_drive(
     )
     vehicle = (await db.execute(vehicle_stmt)).scalars().first()
     if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found")
+        raise NotFoundError(
+            title="Vehicle Not Found",
+            message="We couldn't find this vehicle, or you may not have access to it.",
+        )
     
     # Use override or vehicle default
     daily_rate = payload.daily_rate_override or vehicle.daily_rate
     if not daily_rate or daily_rate <= 0:
-        raise HTTPException(status_code=400, detail="Vehicle has no daily rate configured")
+        raise BadRequestError(
+            title="Missing Daily Rate",
+            message="This vehicle has no daily rate configured. Please set a rate before quoting.",
+            field_errors={"daily_rate_override": "A valid daily rate is required"},
+        )
     
     # Load driver if assigned
     driver_daily_fee = None
@@ -91,16 +104,26 @@ async def quote_self_drive(
         )
         driver = (await db.execute(driver_stmt)).scalars().first()
         if not driver:
-            raise HTTPException(status_code=404, detail="Driver not found")
+            raise NotFoundError(
+                title="Driver Not Found",
+                message="We couldn't find this driver, or you may not have access to them.",
+            )
         driver_daily_fee = driver.daily_fee
     
-    # Calculate quote
-    quote = quote_selfdrive(
-        pickup_at=payload.pickup_at,
-        return_at=payload.return_at,
-        daily_rate=Decimal(daily_rate),
-        driver_daily_fee=Decimal(driver_daily_fee) if driver_daily_fee else None,
-    )
+    # ✅ Phase B: Catch invalid schedules (e.g., return before pickup) from the engine
+    try:
+        quote = quote_selfdrive(
+            pickup_at=payload.pickup_at,
+            return_at=payload.return_at,
+            daily_rate=Decimal(daily_rate),
+            driver_daily_fee=Decimal(driver_daily_fee) if driver_daily_fee else None,
+        )
+    except ValueError:
+        raise ValidationFailedError(
+            title="Invalid Schedule",
+            message="The return time must be after the pickup time.",
+            field_errors={"return_at": "Must be after the pickup time"},
+        )
     
     return SelfDriveQuoteResponse(
         vehicle_id=payload.vehicle_id,

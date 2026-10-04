@@ -1,11 +1,20 @@
+# app/routers/invoice/payments.py
+"""
+✅ OFFLINE PAYMENT RECORDING — operator-logged payments (M-Pesa/cash/bank).
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT: balance/amount guards return field_errors so the payment form
+   highlights the exact problem (zero / over-balance).
+"""
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload  # ✅ NEW: Added import
 
+from app.core.errors import BadRequestError, NotFoundError, ValidationFailedError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -32,9 +41,10 @@ async def record_offline_payment(
 ):
     # ✅ Validate payment amount is positive (defense in depth)
     if payload.amount <= Decimal("0"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Payment amount must be greater than zero"
+        raise ValidationFailedError(
+            title="Invalid Amount",
+            message="Payment amount must be greater than zero.",
+            field_errors={"amount": "Must be greater than zero"},
         )
 
     # ✅ Async query to fetch the invoice with tenant isolation
@@ -45,28 +55,29 @@ async def record_offline_payment(
     invoice = (await db.execute(stmt)).scalars().first()
 
     if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice not found"
+        raise NotFoundError(
+            title="Invoice Not Found",
+            message="We couldn't find this invoice, or you may not have access to it.",
         )
     
     if invoice.status == InvoiceStatus.void:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot record payment against a void invoice"
+        raise BadRequestError(
+            title="Void Invoice",
+            message="Cannot record a payment against a void invoice.",
         )
     
     if invoice.status == InvoiceStatus.paid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invoice is already fully paid"
+        raise BadRequestError(
+            title="Already Fully Paid",
+            message="This invoice is already fully paid.",
         )
 
     remaining = (invoice.amount_due or Decimal("0")) - (invoice.amount_paid or Decimal("0"))
     if payload.amount > remaining:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Amount exceeds remaining balance of {remaining} {invoice.currency_code}"
+        raise ValidationFailedError(
+            title="Amount Exceeds Balance",
+            message=f"The remaining balance is {remaining} {invoice.currency_code}. Record that amount or less.",
+            field_errors={"amount": f"Maximum {remaining} {invoice.currency_code}"},
         )
 
     now = datetime.now(timezone.utc)

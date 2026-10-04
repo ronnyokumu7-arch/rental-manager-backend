@@ -1,11 +1,20 @@
+# app/routers/contract/management.py
+"""
+✅ CONTRACT MANAGEMENT — list / get / pdf (fast path from stored file).
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): PDF read/regeneration failures → typed ServerError
+   (was: raw 500 on IO error or browser-pool outage).
+"""
 import os  # ✅ ADDED: needed for the stored-PDF fast path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
+from app.core.errors import AppException, NotFoundError, ServerError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -74,7 +83,10 @@ async def get_contract(
 
     # ✅ FIXED: guard against race-condition deletion → clean 404 instead of 500
     if not contract:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found")
+        raise NotFoundError(
+            title="Contract Not Found",
+            message="We couldn't find this contract, or you may not have access to it.",
+        )
     return contract
 
 
@@ -92,11 +104,25 @@ async def download_contract_pdf(
     # Serve it directly — no Chromium/browser pool, no 15s hang.
     pdf_bytes = None
     if contract.pdf_path and os.path.exists(contract.pdf_path):
-        with open(contract.pdf_path, "rb") as f:
-            pdf_bytes = f.read()
-    else:
-        # Only regenerate if the stored file is missing (e.g., after a Render redeploy)
-        pdf_bytes = await generate_contract_pdf(contract, db)
+        try:
+            with open(contract.pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+        except OSError as e:
+            print(f"⚠️ Stored contract PDF unreadable ({contract.pdf_path}): {e}")
+            pdf_bytes = None
+
+    if pdf_bytes is None:
+        # Only regenerate if the stored file is missing/unreadable (e.g., after a Render redeploy)
+        try:
+            pdf_bytes = await generate_contract_pdf(contract, db)
+        except (AppException,):
+            raise
+        except Exception as e:
+            print(f"⚠️ Contract PDF regeneration failed for {contract.id}: {e}")
+            raise ServerError(
+                title="PDF Not Available Yet",
+                message="We couldn't generate the contract PDF just now. Please try again in a moment.",
+            )
 
     return Response(
         content=pdf_bytes,

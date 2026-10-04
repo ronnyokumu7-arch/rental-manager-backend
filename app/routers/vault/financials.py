@@ -1,12 +1,17 @@
 # app/routers/vault/financials.py
+"""
+Vault Financials — list, restore, and hard-delete voided invoices and contracts.
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.database import get_db
+from app.core.errors import NotFoundError
 from app.core.limiter import limiter
+from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.bookings import Booking
 from app.models.invoices import Invoice, InvoiceStatus
@@ -70,7 +75,10 @@ async def restore_vault_invoice(
     invoice = result.scalars().first()
     
     if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found in vault")
+        raise NotFoundError(
+            title="Invoice Not Found",
+            message="Invoice not found in vault.",
+        )
         
     # Restore logic: Flip status back to draft
     invoice.status = InvoiceStatus.draft
@@ -91,7 +99,7 @@ async def restore_vault_invoice(
 
     return invoice
 
-@router.delete("/invoices/{invoice_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/invoices/{invoice_id}", status_code=204)
 @limiter.limit("10/minute")
 async def hard_delete_vault_invoice(
     request: Request,
@@ -107,7 +115,10 @@ async def hard_delete_vault_invoice(
     invoice = result.scalars().first()
     
     if not invoice:
-        raise HTTPException(status_code=404, detail="Invoice not found in vault")
+        raise NotFoundError(
+            title="Invoice Not Found",
+            message="Invoice not found in vault.",
+        )
         
     # Capture details before permanent deletion
     invoice_number = invoice.invoice_number
@@ -176,7 +187,10 @@ async def restore_vault_contract(
     contract = result.scalars().first()
     
     if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found in vault")
+        raise NotFoundError(
+            title="Contract Not Found",
+            message="Contract not found in vault.",
+        )
         
     # Restore logic: Flip status back to draft
     contract.status = ContractStatus.draft
@@ -197,7 +211,7 @@ async def restore_vault_contract(
 
     return contract
 
-@router.delete("/contracts/{contract_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/contracts/{contract_id}", status_code=204)
 @limiter.limit("10/minute")
 async def hard_delete_vault_contract(
     request: Request,
@@ -213,7 +227,10 @@ async def hard_delete_vault_contract(
     contract = result.scalars().first()
     
     if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found in vault")
+        raise NotFoundError(
+            title="Contract Not Found",
+            message="Contract not found in vault.",
+        )
         
     # Capture details before permanent deletion
     contract_number = contract.contract_number

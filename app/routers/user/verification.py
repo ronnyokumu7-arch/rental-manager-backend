@@ -1,12 +1,21 @@
+# app/routers/user/verification.py
+"""
+User Verification — automated token generation, public verification, and manual admin override.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Email service failures now return a typed ServerError (500)
+   with clear copy, rather than a generic HTTPException.
+"""
 import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AuthorizationError, BadRequestError, NotFoundError, ServerError
 from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.core.config import get_settings
 from app.core.limiter import limiter
@@ -37,7 +46,7 @@ class VerifyTokenPayload(BaseModel):
 # ---------------------------------------------------------------------------
 # 1. SEND VERIFICATION (Automated Flow)
 # ---------------------------------------------------------------------------
-@router.post("/{user_id}/send-verification", status_code=status.HTTP_200_OK)
+@router.post("/{user_id}/send-verification", status_code=200)
 @limiter.limit("10/minute")  # 🚨 STRICT: Prevents spamming email/SMS providers
 async def send_verification(
     request: Request,
@@ -56,20 +65,32 @@ async def send_verification(
     # ✅ SECURITY FIX: Prevent token collision. 
     # The model reuses 'invite_token' for both onboarding and verification.
     if not user.is_onboarded:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="User must complete onboarding before verification links can be sent."
+        raise BadRequestError(
+            title="Onboarding Required",
+            message="User must complete onboarding before verification links can be sent.",
         )
 
     if payload.channel == "email" and user.email_verified:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is already verified.")
+        raise BadRequestError(
+            title="Already Verified",
+            message="Email is already verified.",
+        )
     if payload.channel == "phone" and user.phone_verified:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone is already verified.")
+        raise BadRequestError(
+            title="Already Verified",
+            message="Phone is already verified.",
+        )
 
     if payload.channel == "email" and not user.email:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User has no email address on file.")
+        raise BadRequestError(
+            title="Missing Email",
+            message="User has no email address on file.",
+        )
     if payload.channel == "phone" and not user.phone_number:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User has no phone number on file.")
+        raise BadRequestError(
+            title="Missing Phone",
+            message="User has no phone number on file.",
+        )
 
     # --- Generate Secure Verification Token ---
     verification_token = secrets.token_urlsafe(32)
@@ -83,16 +104,20 @@ async def send_verification(
     if payload.channel == "email":
         # ✅ CRITICAL FIX: Attempt to send email BEFORE committing to DB.
         # If the email service fails, we rollback and don't leave a dangling, unusable token in the DB.
-        success = send_verification_email(
-            to=user.email,
-            full_name=user.full_name,
-            verification_link=verification_link
-        )
-        if not success:
+        try:
+            success = send_verification_email(
+                to=user.email,
+                full_name=user.full_name,
+                verification_link=verification_link
+            )
+            if not success:
+                raise Exception("Email provider returned failure")
+        except Exception as e:
+            # Rollback the token assignment before raising
             await db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-                detail="Failed to send email. Please check Resend API key and server logs."
+            raise ServerError(
+                title="Email Delivery Failed",
+                message="Failed to send verification email. Please check the email provider configuration and try again.",
             )
     else:
         # For phone, we just return the link for the admin to share. No external service call.
@@ -142,35 +167,47 @@ async def verify_token(
     user = (await db.execute(stmt)).scalars().first()
     
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid or expired verification link.")
+        raise NotFoundError(
+            title="Invalid Link",
+            message="Invalid or expired verification link.",
+        )
     await set_rls_context(db, tenant_id=user.tenant_id, public_user_id=user.id)
 
     # 2. Check expiration
     if user.invite_expires_at and user.invite_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification link has expired. Please request a new one from your administrator.")
+        raise BadRequestError(
+            title="Link Expired",
+            message="Verification link has expired. Please request a new one from your administrator.",
+        )
 
     # ✅ SECURITY FIX: Ensure this isn't an onboarding invite token being accidentally consumed
     if not user.is_onboarded:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Please complete your account onboarding first."
+        raise BadRequestError(
+            title="Onboarding Required",
+            message="Please complete your account onboarding first.",
         )
         
     # ✅ BUSINESS LOGIC: Do not allow verification for inactive/suspended accounts
     if not user.is_active or user.is_suspended:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This account is inactive or suspended. Please contact your administrator."
+        raise AuthorizationError(
+            title="Account Inactive",
+            message="This account is inactive or suspended. Please contact your administrator.",
         )
 
     # 3. Apply verification based on channel
     if payload.channel == "email":
         if user.email_verified:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is already verified.")
+            raise BadRequestError(
+                title="Already Verified",
+                message="Email is already verified.",
+            )
         user.email_verified = True
     elif payload.channel == "phone":
         if user.phone_verified:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone is already verified.")
+            raise BadRequestError(
+                title="Already Verified",
+                message="Phone is already verified.",
+            )
         user.phone_verified = True
 
     # 4. Invalidate the token so it can't be reused

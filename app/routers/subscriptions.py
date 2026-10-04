@@ -1,11 +1,24 @@
+# app/routers/subscriptions.py
+"""
+Subscription Management — tenant-facing reads, super-admin provisioning, and trial management.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT: Trial extension logic uses max(ends_at, now) to prevent negative extensions.
+"""
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import (
+    AuthorizationError,
+    BadRequestError,
+    NotFoundError,
+    UnprocessableEntityError,
+)
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -39,16 +52,16 @@ async def _get_authorized_subscription(subscription_id: int, user: User, db: Asy
     sub = result.scalars().first()
     
     if not sub:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Subscription not found",
+        raise NotFoundError(
+            title="Subscription Not Found",
+            message="We couldn't find this subscription.",
         )
     
     # Super admins see all, regular users only their own
     if user.role != UserRole.super_admin and sub.tenant_id != user.tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only access your own subscriptions",
+        raise AuthorizationError(
+            title="Access Denied",
+            message="You can only access your own subscriptions.",
         )
     return sub
 
@@ -173,8 +186,8 @@ async def list_subscriptions(
     return paginate_items(subscriptions, total=len(subscriptions), page=page, page_size=page_size)
 
 
-@router.post("/", response_model=SubscriptionOut, status_code=status.HTTP_201_CREATED)
-@limiter.limit("10/minute")  # 🚨 STRICT: Affects tenant access
+@router.post("/", response_model=SubscriptionOut, status_code=201)
+@limiter.limit("10/minute")  #  STRICT: Affects tenant access
 async def create_subscription(
     request: Request,
     payload: SubscriptionCreate,
@@ -186,9 +199,9 @@ async def create_subscription(
     tenant = (await db.execute(tenant_stmt)).scalars().first()
     
     if not tenant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found",
+        raise NotFoundError(
+            title="Tenant Not Found",
+            message="The specified tenant does not exist.",
         )
 
     now = datetime.now(timezone.utc)
@@ -274,9 +287,9 @@ async def suspend_subscription(
     """Suspend a subscription (Super Admin only)."""
     sub = await _get_authorized_subscription(subscription_id, current_user, db)
     if sub.status == SubscriptionStatus.suspended:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Subscription is already suspended",
+        raise BadRequestError(
+            title="Already Suspended",
+            message="This subscription is already suspended.",
         )
     sub.status = SubscriptionStatus.suspended
     
@@ -305,14 +318,14 @@ async def reactivate_subscription(
     """Reactivate a suspended subscription (Super Admin only)."""
     sub = await _get_authorized_subscription(subscription_id, current_user, db)
     if sub.status == SubscriptionStatus.active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Subscription is already active",
+        raise BadRequestError(
+            title="Already Active",
+            message="This subscription is already active.",
         )
     if sub.status == SubscriptionStatus.cancelled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cancelled subscriptions cannot be reactivated. Create a new subscription instead.",
+        raise BadRequestError(
+            title="Cannot Reactivate Cancelled Subscription",
+            message="Cancelled subscriptions cannot be reactivated. Create a new subscription instead.",
         )
 
     now = datetime.now(timezone.utc)
@@ -341,7 +354,7 @@ async def reactivate_subscription(
 
 
 @router.post("/{subscription_id}/cancel", response_model=SubscriptionOut)
-@limiter.limit("10/minute")  # 🚨 STRICT: Affects tenant access
+@limiter.limit("10/minute")  #  STRICT: Affects tenant access
 async def cancel_subscription(
     request: Request,
     subscription_id: int,
@@ -351,9 +364,9 @@ async def cancel_subscription(
     """Cancel a subscription (Super Admin only)."""
     sub = await _get_authorized_subscription(subscription_id, current_user, db)
     if sub.status == SubscriptionStatus.cancelled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Subscription is already cancelled",
+        raise BadRequestError(
+            title="Already Cancelled",
+            message="This subscription is already cancelled.",
         )
     sub.status = SubscriptionStatus.cancelled
     
@@ -387,9 +400,9 @@ async def extend_trial(
     """Extend a single active trial by N days (Super Admin only)."""
     sub = await _get_authorized_subscription(subscription_id, current_user, db)
     if sub.status not in TRIAL_STATUSES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Only active trials can be extended (current status: {sub.status.value}).",
+        raise BadRequestError(
+            title="Invalid Trial Status",
+            message=f"Only active trials can be extended (current status: {sub.status.value}).",
         )
 
     await _apply_trial_extension(sub, payload.days, db)
@@ -446,16 +459,16 @@ async def superadmin_manual_provision(
         clean_plan = "pro"
 
     if clean_plan not in ["starter", "pro", "enterprise", "pay_as_you_go"]:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid plan. Must be 'starter', 'pro', 'enterprise', or 'pay_as_you_go'."
+        raise UnprocessableEntityError(
+            title="Invalid Plan",
+            message="Invalid plan. Must be 'starter', 'pro', 'enterprise', or 'pay_as_you_go'.",
         )
 
     clean_cycle = payload.billing_cycle.lower().strip()
     if clean_cycle not in ["monthly", "annual", "pay_as_you_go"]:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid billing cycle. Must be 'monthly', 'annual', or 'pay_as_you_go'."
+        raise UnprocessableEntityError(
+            title="Invalid Billing Cycle",
+            message="Invalid billing cycle. Must be 'monthly', 'annual', or 'pay_as_you_go'.",
         )
 
     now = datetime.now(timezone.utc)

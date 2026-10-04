@@ -1,8 +1,17 @@
-from fastapi import HTTPException, status
+# app/routers/vehicle/_helpers.py
+"""
+✅ Shared tenant/investor-isolation guards for vehicle endpoints.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ SECURITY: the 404 copy intentionally conflates "not found" and "no access"
+   to prevent vehicle-ID enumeration — preserved as-is.
+✅ SCOPING: investors see ONLY their own vehicles (owner_id); super admins see all.
+"""
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.core.errors import AuthorizationError, NotFoundError
 from app.models.users import User, UserRole
 from app.models.vehicles import Vehicle
 
@@ -29,9 +38,9 @@ def get_authorized_vehicle(vehicle_id: int, user: User, db: Session) -> Vehicle:
     else:
         # Tenant users can only access their own tenant's vehicles
         if user.tenant_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account isn't linked to an agency. Contact your administrator for access."
+            raise AuthorizationError(
+                title="No Agency Linked",
+                message="Your account isn't linked to an agency. Contact your administrator for access.",
             )
         stmt = select(Vehicle).where(
             Vehicle.id == vehicle_id,
@@ -42,9 +51,9 @@ def get_authorized_vehicle(vehicle_id: int, user: User, db: Session) -> Vehicle:
     vehicle = result.scalars().first()
     
     if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="We couldn't find this vehicle, or you may not have access to it."
+        raise NotFoundError(
+            title="Vehicle Not Found",
+            message="We couldn't find this vehicle, or you may not have access to it.",
         )
     return vehicle
 
@@ -71,9 +80,9 @@ async def get_authorized_vehicle_async(vehicle_id: int, user: User, db: AsyncSes
     else:
         # Tenant users can only access their own tenant's vehicles
         if user.tenant_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account isn't linked to an agency. Contact your administrator for access."
+            raise AuthorizationError(
+                title="No Agency Linked",
+                message="Your account isn't linked to an agency. Contact your administrator for access.",
             )
         stmt = select(Vehicle).where(
             Vehicle.id == vehicle_id,
@@ -84,8 +93,8 @@ async def get_authorized_vehicle_async(vehicle_id: int, user: User, db: AsyncSes
     vehicle = result.scalars().first()
     
     if not vehicle:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="We couldn't find this vehicle, or you may not have access to it."
+        raise NotFoundError(
+            title="Vehicle Not Found",
+            message="We couldn't find this vehicle, or you may not have access to it.",
         )
     return vehicle

@@ -9,10 +9,13 @@
 Pricing rule (untouched): vehicle rate × billable days via the pure engines.
 All datetimes flow through app/core/timeutils.py (aware-only, naive→EAT,
 defaults pickup=now / return=+1d, 2-min past grace, "now" allowed).
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 """
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import NotFoundError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.commission_lock import require_not_commission_locked
@@ -38,7 +41,10 @@ async def validate_driver_assignment(
 ) -> Driver:
     driver = await booking_factory.load_driver_assignment(db, tenant_id, driver_id)
     if driver is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Driver not found.")
+        raise NotFoundError(
+            title="Driver Not Found",
+            message="We couldn't find this driver. Refresh the list and try again.",
+        )
     return driver
 
 

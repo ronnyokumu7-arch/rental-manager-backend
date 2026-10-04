@@ -8,13 +8,17 @@ Staff Drivers CRUD — tenant-scoped (Milestone 2).
   * List responses use DriverListOut (masked PII, no document keys).
   * Archive is guarded: a driver with active assignments cannot be archived.
   * No hard delete — operational records are preserved (archive only).
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 """
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AuthorizationError, BadRequestError, ConflictError, NotFoundError
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
@@ -37,9 +41,9 @@ ACTIVE_STATUSES = [
 def _require_tenant_id(current_user: User) -> int:
     """Strict tenant context — platform admins cannot touch driver PII."""
     if current_user.tenant_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tenant context required.",
+        raise AuthorizationError(
+            title="Tenant Context Required",
+            message="Platform administrators cannot manage tenant drivers. Please log in as a tenant user.",
         )
     return current_user.tenant_id
 
@@ -53,9 +57,9 @@ async def _get_driver_or_404(
     )
     driver = (await db.execute(stmt)).scalars().first()
     if not driver:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Driver not found.",
+        raise NotFoundError(
+            title="Driver Not Found",
+            message="We couldn't find this driver, or you may not have access to them.",
         )
     return driver
 
@@ -169,20 +173,18 @@ async def archive_driver(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    from datetime import datetime, timezone
-
     tenant_id = _require_tenant_id(current_user)
     driver = await _get_driver_or_404(db, driver_id, tenant_id)
 
     if driver.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Driver is already archived.",
+        raise BadRequestError(
+            title="Already Archived",
+            message="This driver is already archived.",
         )
     if await _has_active_assignments(db, driver_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Driver has active assignments. Complete or reassign them first.",
+        raise ConflictError(
+            title="Active Assignments",
+            message="This driver has active assignments. Complete or reassign them before archiving.",
         )
 
     driver.is_archived = True
@@ -204,9 +206,9 @@ async def restore_driver(
     driver = await _get_driver_or_404(db, driver_id, tenant_id)
 
     if not driver.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Driver is not archived.",
+        raise BadRequestError(
+            title="Not Archived",
+            message="This driver is not archived, so there is nothing to restore.",
         )
 
     driver.is_archived = False

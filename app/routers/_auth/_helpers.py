@@ -1,14 +1,22 @@
 # app/routers/auth/_helpers.py
+"""
+✅ Auth shared helpers — refresh token generation + reset token validation.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ SECURITY: generic copy for missing/used tokens (anti-enumeration);
+   specific copy for expiry (leaks nothing). Every reset failure now carries
+   a "Request New Link" action that walks the user back to /forgot-password.
+"""
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
 from app.core.config import get_settings
+from app.core.errors import BadRequestError, navigate_action
 from app.models.password_reset import PasswordResetToken
 from app.models.refresh_tokens import RefreshToken
 from app.models.users import User
@@ -18,6 +26,9 @@ settings = get_settings()
 # ✅ SINGLE SOURCE OF TRUTH: reset token TTL now comes from config
 # (was hardcoded 15 min; default is now 60 min, env-overridable)
 RESET_TOKEN_EXPIRE_MINUTES = settings.password_reset_token_expire_minutes
+
+# ✅ Every reset failure leads the user back to recovery
+_NEW_LINK_ACTION = navigate_action("Request a New Link", "/forgot-password")
 
 
 async def generate_refresh_token(
@@ -92,9 +103,10 @@ async def get_valid_reset_token_or_400(token: str, db: AsyncSession) -> Password
 
     if not db_token:
         # Token doesn't exist or was already used — keep generic (anti-enumeration)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset link. Please request a new one.",
+        raise BadRequestError(
+            title="Reset Link Invalid",
+            message="Invalid or expired reset link. Please request a new one.",
+            action=_NEW_LINK_ACTION,
         )
 
     now = datetime.now(timezone.utc)
@@ -102,16 +114,17 @@ async def get_valid_reset_token_or_400(token: str, db: AsyncSession) -> Password
 
     if now > expires_at:
         # Expired — safe to be specific (reveals nothing about the user)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This reset link has expired. Please request a new one.",
+        raise BadRequestError(
+            title="Reset Link Expired",
+            message="This reset link has expired. Please request a new one.",
+            action=_NEW_LINK_ACTION,
         )
     return db_token
 
 
 async def get_active_user_or_400(user_id: int, db: AsyncSession) -> User:
     """
-    Helper to verify user exists, is active, and is not suspended.
+    Helper to verify user exists, is active, and not suspended.
     
     ✅ SECURITY: Returns generic error messages to prevent user enumeration.
     """
@@ -121,8 +134,9 @@ async def get_active_user_or_400(user_id: int, db: AsyncSession) -> User:
 
     # ✅ Block inactive AND suspended users (consistent with session.py)
     if not user or not user.is_active or user.is_suspended:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset link. Please request a new one.",
+        raise BadRequestError(
+            title="Reset Link Invalid",
+            message="Invalid or expired reset link. Please request a new one.",
+            action=_NEW_LINK_ACTION,
         )
     return user

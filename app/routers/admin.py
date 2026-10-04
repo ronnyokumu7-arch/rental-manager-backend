@@ -1,9 +1,16 @@
 # app/routers/admin.py
+"""
+Super Admin Utilities — pending subscriptions, manual job triggers, cache flushing.
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): DB errors in pending subscriptions no longer leak stack traces
+   to the client; they are logged server-side and return a generic ServerError.
+"""
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError, ServerError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.core.redis_client import get_redis
@@ -35,10 +42,14 @@ async def get_pending_subscriptions(
     try:
         stmt = select(Subscription).where(Subscription.status == "pending")
         result = await db.execute(stmt)
-        pending = result.scalars().all()
-        return pending
+        return result.scalars().all()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch subscriptions: {str(e)}")
+        # ✅ Phase B: Log the real error, never leak it to the client
+        print(f"⚠️ Failed to fetch pending subscriptions: {e}")
+        raise ServerError(
+            title="Failed to Fetch Subscriptions",
+            message="An internal error occurred while fetching pending subscriptions. Please try again.",
+        )
 
 # --- Job Trigger Endpoints ---
 
@@ -110,7 +121,7 @@ async def _delete_pattern(redis, pattern: str) -> int:
     return deleted
 
 
-@router.post("/cache/flush", status_code=status.HTTP_200_OK)
+@router.post("/cache/flush", status_code=200)
 @limiter.limit("5/minute")
 async def flush_all_cache(
     request: Request,
@@ -131,7 +142,7 @@ async def flush_all_cache(
     return {"message": f"Flushed {deleted_count} cache keys", "deleted": deleted_count}
 
 
-@router.post("/cache/flush/{resource}", status_code=status.HTTP_200_OK)
+@router.post("/cache/flush/{resource}", status_code=200)
 @limiter.limit("10/minute")
 async def flush_resource_cache(
     request: Request,
@@ -145,9 +156,9 @@ async def flush_resource_cache(
     """
     allowed = {p[: -len(":*")] for p in CACHE_PATTERNS}
     if resource not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid resource. Must be one of: {', '.join(sorted(allowed))}",
+        raise BadRequestError(
+            title="Invalid Resource",
+            message=f"Invalid resource. Must be one of: {', '.join(sorted(allowed))}",
         )
 
     redis = await get_redis()

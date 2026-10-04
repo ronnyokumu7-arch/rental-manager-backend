@@ -1,38 +1,57 @@
+# app/routers/investor_contracts.py
+"""
+Investor Contracts — generation, signing (auth + public), and PDF serving.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B):
+  - Base64 signature decoding is validated to prevent raw 500s on bad input.
+  - File I/O is wrapped in try/except to prevent raw 500s on disk/permission errors.
+"""
+import base64
+import binascii
+import calendar
 import os
 import uuid
-import base64
 from datetime import datetime, timezone, timedelta
-from typing import Optional
-import calendar
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
+from app.core.errors import (
+    AuthorizationError,
+    BadRequestError,
+    GoneError,
+    NotFoundError,
+    ServerError,
+    ValidationFailedError,
+)
 from app.core.limiter import limiter
 from app.db.database import get_db
 from app.dependencies.auth import get_current_user
-from app.models.investor_contracts import InvestorContract, InvestorContractStatus
-from app.models.vehicles import Vehicle
 from app.models.bookings import Booking
+from app.models.investor_contracts import InvestorContract, InvestorContractStatus
 from app.models.users import User, UserRole
+from app.models.vehicles import Vehicle
 from app.schemas.investor_contract import (
-    InvestorContractOut, 
-    InvestorContractCreate, 
-    InvestorContractSignPayload
+    InvestorContractCreate,
+    InvestorContractOut,
+    InvestorContractSignPayload,
 )
 from app.services.cache import (
     get_cached_investor_contract_list,
+    invalidate_investor_contract_cache,
     set_cached_investor_contract_list,
-    invalidate_investor_contract_cache
 )
 
 router = APIRouter(prefix="/investor-contracts", tags=["Investor Contracts"])
 settings = get_settings()
+
 
 # Helper to add months safely (handling month-end dates)
 def add_months(sourcedate: datetime, months: int) -> datetime:
@@ -44,7 +63,39 @@ def add_months(sourcedate: datetime, months: int) -> datetime:
     return sourcedate.replace(year=year, month=month, day=day)
 
 
-@router.post("/", response_model=InvestorContractOut, status_code=status.HTTP_201_CREATED)
+def _decode_signature(signature_data: str) -> bytes:
+    """✅ Phase B: safely decode base64 signature, preventing raw 500s."""
+    if signature_data.startswith("data:"):
+        signature_data = signature_data.split(",", 1)[1]
+    try:
+        return base64.b64decode(signature_data, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValidationFailedError(
+            title="Invalid Signature",
+            message="The signature data is corrupted or invalid.",
+            field_errors={"signature": "Invalid base64 data"},
+        )
+
+
+def _save_signature(contract_id: int, signer_role: str, signature_bytes: bytes) -> str:
+    """✅ Phase B: safely save signature to disk, preventing raw 500s on I/O errors."""
+    try:
+        upload_dir = Path("uploads/signatures")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"sig_{contract_id}_{signer_role}_{uuid.uuid4().hex}.png"
+        file_path = upload_dir / filename
+        with open(file_path, "wb") as f:
+            f.write(signature_bytes)
+        return str(file_path)
+    except OSError as e:
+        print(f"⚠️ Signature save failed for contract {contract_id}: {e}")
+        raise ServerError(
+            title="Signature Save Failed",
+            message="We couldn't save your signature. Please try again or contact support.",
+        )
+
+
+@router.post("/", response_model=InvestorContractOut, status_code=201)
 @limiter.limit("30/minute")
 async def generate_investor_contract(
     request: Request,
@@ -62,11 +113,20 @@ async def generate_investor_contract(
     vehicle = result.scalars().first()
     
     if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found or access denied")
+        raise NotFoundError(
+            title="Vehicle Not Found",
+            message="Vehicle not found or access denied.",
+        )
     if vehicle.owner_id is None:
-        raise HTTPException(status_code=400, detail="Vehicle is not an investor vehicle")
+        raise BadRequestError(
+            title="Invalid Vehicle",
+            message="Vehicle is not an investor vehicle.",
+        )
     if not vehicle.investor_lease_rate:
-        raise HTTPException(status_code=400, detail="Vehicle must have a lease rate set before generating a contract")
+        raise BadRequestError(
+            title="Missing Lease Rate",
+            message="Vehicle must have a lease rate set before generating a contract.",
+        )
 
     # 2. Determine Contract Type & Dates
     start_date = None
@@ -83,7 +143,10 @@ async def generate_investor_contract(
         booking = booking_res.scalars().first()
         
         if not booking:
-            raise HTTPException(status_code=404, detail="Booking not found for this vehicle")
+            raise NotFoundError(
+                title="Booking Not Found",
+                message="Booking not found for this vehicle.",
+            )
             
         start_date = booking.start_date
         end_date = booking.end_date
@@ -206,42 +269,41 @@ async def sign_investor_contract(
     contract = result.scalars().first()
     
     if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found")
+        raise NotFoundError(
+            title="Contract Not Found",
+            message="Contract not found.",
+        )
     if contract.status == InvestorContractStatus.signed:
-        raise HTTPException(status_code=400, detail="Contract is already fully signed")
+        raise BadRequestError(
+            title="Already Signed",
+            message="Contract is already fully signed.",
+        )
 
     now = datetime.now(timezone.utc)
     
-    # Save signature to disk
-    signature_data = payload.signature
-    if signature_data.startswith("data:"):
-        signature_data = signature_data.split(",", 1)[1]
-    
-    decoded_bytes = base64.b64decode(signature_data)
-    ext = "png"
-    
-    upload_dir = Path("uploads/signatures")
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    
-    filename = f"sig_{contract_id}_{payload.signer_role}_{uuid.uuid4().hex}.{ext}"
-    file_path = upload_dir / filename
-    
-    with open(file_path, "wb") as f:
-        f.write(decoded_bytes)
+    # ✅ Phase B: Safe decode + safe save
+    signature_bytes = _decode_signature(payload.signature)
+    file_path = _save_signature(contract_id, payload.signer_role, signature_bytes)
 
     if payload.signer_role == 'agency':
         if current_user.role != UserRole.tenant_admin:
-            raise HTTPException(status_code=403, detail="Only Tenant Admins can sign for the agency")
+            raise AuthorizationError(
+                title="Permission Denied",
+                message="Only Tenant Admins can sign for the agency.",
+            )
         contract.signed_by_agency = True
         contract.agency_signed_at = now
-        contract.agency_signature_path = str(file_path)
+        contract.agency_signature_path = file_path
         
     elif payload.signer_role == 'investor':
         contract.signed_by_investor = True
         contract.investor_signed_at = now
-        contract.investor_signature_path = str(file_path)
+        contract.investor_signature_path = file_path
     else:
-        raise HTTPException(status_code=400, detail="Invalid signer role")
+        raise BadRequestError(
+            title="Invalid Signer Role",
+            message="Invalid signer role.",
+        )
 
     if contract.signed_by_agency and contract.signed_by_investor:
         contract.status = InvestorContractStatus.signed
@@ -277,17 +339,26 @@ async def public_view_investor_contract(
     contract = result.scalars().first()
     
     if not contract:
-        raise HTTPException(status_code=404, detail="Invalid contract link")
+        raise NotFoundError(
+            title="Invalid Link",
+            message="Invalid contract link.",
+        )
         
     if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="Contract link has expired")
+        raise GoneError(
+            title="Link Expired",
+            message="Contract link has expired.",
+        )
         
     stmt = select(Vehicle).where(Vehicle.id == contract.vehicle_id)
     result = await db.execute(stmt)
     vehicle = result.scalars().first()
     
     if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found")
+        raise NotFoundError(
+            title="Vehicle Not Found",
+            message="Vehicle not found.",
+        )
 
     investor_name = "Unknown Investor"
     if vehicle.owner_id:
@@ -334,33 +405,40 @@ async def public_sign_investor_contract(
 ):
     """Public endpoint for investors to sign via email link."""
     if payload.signer_role != 'investor':
-        raise HTTPException(status_code=400, detail="Only investors can sign via public link")
+        raise BadRequestError(
+            title="Invalid Signer Role",
+            message="Only investors can sign via public link.",
+        )
 
     stmt = select(InvestorContract).where(InvestorContract.share_token == token)
     result = await db.execute(stmt)
     contract = result.scalars().first()
     
     if not contract:
-        raise HTTPException(status_code=404, detail="Invalid contract link")
+        raise NotFoundError(
+            title="Invalid Link",
+            message="Invalid contract link.",
+        )
     if contract.share_token_expires_at and contract.share_token_expires_at < datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="Contract link has expired")
+        raise GoneError(
+            title="Link Expired",
+            message="Contract link has expired.",
+        )
     if contract.status == InvestorContractStatus.signed:
-        raise HTTPException(status_code=400, detail="Contract is already fully signed")
+        raise BadRequestError(
+            title="Already Signed",
+            message="Contract is already fully signed.",
+        )
 
     now = datetime.now(timezone.utc)
-    signature_data = payload.signature.split(",", 1)[1] if payload.signature.startswith("data:") else payload.signature
     
-    decoded_bytes = base64.b64decode(signature_data)
-    upload_dir = Path("uploads/signatures")
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    
-    file_path = upload_dir / f"sig_{contract.id}_investor_{uuid.uuid4().hex}.png"
-    with open(file_path, "wb") as f:
-        f.write(decoded_bytes)
+    # ✅ Phase B: Safe decode + safe save
+    signature_bytes = _decode_signature(payload.signature)
+    file_path = _save_signature(contract.id, 'investor', signature_bytes)
 
     contract.signed_by_investor = True
     contract.investor_signed_at = now
-    contract.investor_signature_path = str(file_path)
+    contract.investor_signature_path = file_path
 
     if contract.signed_by_agency and contract.signed_by_investor:
         contract.status = InvestorContractStatus.signed
@@ -393,7 +471,10 @@ async def get_investor_contract_pdf(
     contract = result.scalars().first()
     
     if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found")
+        raise NotFoundError(
+            title="Contract Not Found",
+            message="Contract not found.",
+        )
     
     # ✅ TRIGGER GENERATION: If PDF path is missing or file doesn't exist on disk, generate it now.
     if not contract.pdf_path or not Path(contract.pdf_path).exists():
@@ -403,7 +484,10 @@ async def get_investor_contract_pdf(
         contract = result.scalars().first()
 
     if not contract.pdf_path or not Path(contract.pdf_path).exists():
-        raise HTTPException(status_code=404, detail="PDF file missing on server and generation failed")
+        raise NotFoundError(
+            title="PDF Not Found",
+            message="PDF file missing on server and generation failed.",
+        )
         
     return FileResponse(
         path=contract.pdf_path,

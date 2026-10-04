@@ -1,7 +1,17 @@
+# app/routers/user/recovery.py
+"""
+User Recovery — masked contact info and admin-triggered reset nudges.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Notification failures (email/SMS) are now caught and logged
+   instead of crashing the endpoint with a 500, since this is just a "nudge".
+"""
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AuthorizationError, BadRequestError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -52,7 +62,10 @@ async def get_user_recovery_options(
     # ✅ Tenant isolation check: Tenant admins can only view users in their own tenant.
     # Super admins bypass this check (current_user.role != UserRole.tenant_admin).
     if current_user.role == UserRole.tenant_admin and user.tenant_id != current_user.tenant_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        raise AuthorizationError(
+            title="Access Denied",
+            message="Tenant admins can only view recovery options for users within their own tenant.",
+        )
 
     return {
         "email_masked": _mask_email(user.email),
@@ -67,7 +80,7 @@ async def get_user_recovery_options(
 # =============================================================================
 # 2. SEND RESET LINK NUDGE (POST /{user_id}/send-reset-link)
 # =============================================================================
-@router.post("/{user_id}/send-reset-link", status_code=status.HTTP_200_OK)
+@router.post("/{user_id}/send-reset-link", status_code=200)
 @limiter.limit("5/minute")  # 🚨 STRICT: Prevents spamming recovery notifications
 async def send_user_reset_link(
     request: Request,
@@ -88,29 +101,41 @@ async def send_user_reset_link(
 
     # ✅ Tenant isolation check
     if current_user.role == UserRole.tenant_admin and user.tenant_id != current_user.tenant_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        raise AuthorizationError(
+            title="Access Denied",
+            message="Tenant admins can only send recovery nudges to users within their own tenant.",
+        )
 
     # ✅ BUSINESS LOGIC: Do not send recovery nudges to inactive/suspended accounts
     if not user.is_active or user.is_suspended:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Cannot send recovery instructions to an inactive or suspended account."
+        raise BadRequestError(
+            title="Account Inactive",
+            message="Cannot send recovery instructions to an inactive or suspended account.",
         )
 
-    # ✅ Trigger notifications safely
+    # ✅ Phase B: Trigger notifications safely. Failures are logged but don't crash the endpoint,
+    # since this is just a "nudge" and the admin can retry or use the other channel.
+    notification_errors = []
+    
     if payload.send_to_email and user.email:
-        send_admin_recovery_notification(
-            to=user.email,
-            full_name=user.full_name,
-            subject="Password Reset Requested",
-            custom_message=payload.custom_message or "A password reset has been requested for your account. Please check your email for instructions.",
-        )
+        try:
+            send_admin_recovery_notification(
+                to=user.email,
+                full_name=user.full_name,
+                subject="Password Reset Requested",
+                custom_message=payload.custom_message or "A password reset has been requested for your account. Please check your email for instructions.",
+            )
+        except Exception as e:
+            notification_errors.append(f"Email failed: {e}")
 
     if payload.send_to_phone and user.phone_number:
-        send_sms_otp(
-            phone=user.phone_number,
-            message="Password reset requested for your Rental Garage account. Please check your email for instructions.",
-        )
+        try:
+            send_sms_otp(
+                phone=user.phone_number,
+                message="Password reset requested for your Rental Garage account. Please check your email for instructions.",
+            )
+        except Exception as e:
+            notification_errors.append(f"SMS failed: {e}")
 
     # ✅ Log the admin action for audit purposes
     await ActivityLogService.log(
@@ -118,7 +143,8 @@ async def send_user_reset_link(
         action="trigger_user_reset_link", target_type="user", target_id=user.id,
         details={
             "user_email": user.email, 
-            "channels": {"email": payload.send_to_email, "phone": payload.send_to_phone}
+            "channels": {"email": payload.send_to_email, "phone": payload.send_to_phone},
+            "notification_errors": notification_errors if notification_errors else None,
         }
     )
     await db.commit()  # Commit the activity log flush

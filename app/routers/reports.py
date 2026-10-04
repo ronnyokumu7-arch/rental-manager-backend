@@ -1,12 +1,20 @@
 # app/routers/reports.py
+"""
+Reporting Endpoints — revenue, bookings, utilisation, and platform health.
 
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B): Heavy PDF/Excel generation is now wrapped in try/except
+   to catch crashes (e.g., OOM, missing fonts) and return a clean ServerError
+   instead of a raw 500 stack trace.
+"""
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status, Request
+from fastapi import APIRouter, Depends, Query, Response, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError, ServerError
 from app.db.database import get_db  # ✅ Updated to async DB path
 from app.core.limiter import limiter   # 🚨 Rate limiter
 from app.dependencies.auth import get_current_user
@@ -47,6 +55,7 @@ async def _get_tenant_name(tenant_id: Optional[int], db: AsyncSession) -> str:
     tenant = result.scalars().first()
     return tenant.name if tenant else "Unknown"
 
+
 def _get_report_tenant_id(user: User) -> Optional[int]:
     """Centralized helper to resolve tenant context."""
     return None if user.role == UserRole.super_admin else user.tenant_id
@@ -77,20 +86,27 @@ async def revenue_report(
 
     tenant_name = await _get_tenant_name(tenant_id, db)
 
-    if format == "pdf":
-        pdf = build_revenue_pdf(data, tenant_name)
-        return Response(
-            content=pdf,
-            media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=revenue-report.pdf"},
-        )
+    try:
+        if format == "pdf":
+            pdf = build_revenue_pdf(data, tenant_name)
+            return Response(
+                content=pdf,
+                media_type="application/pdf",
+                headers={"Content-Disposition": "attachment; filename=revenue-report.pdf"},
+            )
 
-    excel = build_excel_report("revenue", data, tenant_name)
-    return Response(
-        content=excel,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=revenue-report.xlsx"},
-    )
+        excel = build_excel_report("revenue", data, tenant_name)
+        return Response(
+            content=excel,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=revenue-report.xlsx"},
+        )
+    except Exception as e:
+        print(f"⚠️ Revenue report generation failed: {e}")
+        raise ServerError(
+            title="Report Generation Failed",
+            message="We couldn't generate this report right now. Please try again or contact support.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -115,16 +131,23 @@ async def booking_summary_report(
 
     if format == "excel":
         tenant_name = await _get_tenant_name(tenant_id, db)
-        excel = build_excel_report("booking_summary", data, tenant_name)
-        return Response(
-            content=excel,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=booking-summary.xlsx"},
-        )
+        try:
+            excel = build_excel_report("booking_summary", data, tenant_name)
+            return Response(
+                content=excel,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": "attachment; filename=booking-summary.xlsx"},
+            )
+        except Exception as e:
+            print(f"⚠️ Booking summary report generation failed: {e}")
+            raise ServerError(
+                title="Report Generation Failed",
+                message="We couldn't generate this report right now. Please try again or contact support.",
+            )
 
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="PDF format is not available for booking summary reports. Please use excel or json.",
+    raise BadRequestError(
+        title="Format Unavailable",
+        message="PDF format is not available for booking summary reports. Please use excel or json.",
     )
 
 
@@ -143,9 +166,9 @@ async def vehicle_utilisation_report(
     current_user: User = admin_only,
 ):
     if current_user.role == UserRole.super_admin:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please use the platform revenue report for cross-tenant data",
+        raise BadRequestError(
+            title="Cross-Tenant Data",
+            message="Please use the platform revenue report for cross-tenant data.",
         )
         
     tenant_id = current_user.tenant_id
@@ -154,20 +177,28 @@ async def vehicle_utilisation_report(
 
     if format == "json":
         return data
-    if format == "pdf":
-        pdf = build_vehicle_utilisation_pdf(data, tenant_name)
-        return Response(
-            content=pdf,
-            media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=vehicle-utilisation.pdf"},
-        )
+        
+    try:
+        if format == "pdf":
+            pdf = build_vehicle_utilisation_pdf(data, tenant_name)
+            return Response(
+                content=pdf,
+                media_type="application/pdf",
+                headers={"Content-Disposition": "attachment; filename=vehicle-utilisation.pdf"},
+            )
 
-    excel = build_excel_report("vehicle_utilisation", data, tenant_name)
-    return Response(
-        content=excel,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=vehicle-utilisation.xlsx"},
-    )
+        excel = build_excel_report("vehicle_utilisation", data, tenant_name)
+        return Response(
+            content=excel,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=vehicle-utilisation.xlsx"},
+        )
+    except Exception as e:
+        print(f"⚠️ Vehicle utilisation report generation failed: {e}")
+        raise ServerError(
+            title="Report Generation Failed",
+            message="We couldn't generate this report right now. Please try again or contact support.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +216,9 @@ async def client_activity_report(
     current_user: User = admin_only,
 ):
     if current_user.role == UserRole.super_admin:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Client activity is tenant-specific. Log in as a tenant admin.",
+        raise BadRequestError(
+            title="Tenant-Specific Report",
+            message="Client activity is tenant-specific. Please log in as a tenant admin.",
         )
     
     tenant_id = current_user.tenant_id
@@ -197,12 +228,19 @@ async def client_activity_report(
     if format == "json":
         return data
 
-    excel = build_excel_report("client_activity", data, tenant_name)
-    return Response(
-        content=excel,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=client-activity.xlsx"},
-    )
+    try:
+        excel = build_excel_report("client_activity", data, tenant_name)
+        return Response(
+            content=excel,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=client-activity.xlsx"},
+        )
+    except Exception as e:
+        print(f"⚠️ Client activity report generation failed: {e}")
+        raise ServerError(
+            title="Report Generation Failed",
+            message="We couldn't generate this report right now. Please try again or contact support.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +256,9 @@ async def overdue_report(
     current_user: User = admin_only,
 ):
     if current_user.role == UserRole.super_admin:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Overdue report is tenant-specific. Log in as a tenant admin.",
+        raise BadRequestError(
+            title="Tenant-Specific Report",
+            message="Overdue report is tenant-specific. Please log in as a tenant admin.",
         )
         
     tenant_id = current_user.tenant_id
@@ -229,20 +267,28 @@ async def overdue_report(
 
     if format == "json":
         return data
-    if format == "pdf":
-        pdf = build_overdue_pdf(data, tenant_name)
-        return Response(
-            content=pdf,
-            media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=overdue-bookings.pdf"},
-        )
+        
+    try:
+        if format == "pdf":
+            pdf = build_overdue_pdf(data, tenant_name)
+            return Response(
+                content=pdf,
+                media_type="application/pdf",
+                headers={"Content-Disposition": "attachment; filename=overdue-bookings.pdf"},
+            )
 
-    excel = build_excel_report("overdue", data, tenant_name)
-    return Response(
-        content=excel,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=overdue-bookings.xlsx"},
-    )
+        excel = build_excel_report("overdue", data, tenant_name)
+        return Response(
+            content=excel,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=overdue-bookings.xlsx"},
+        )
+    except Exception as e:
+        print(f"⚠️ Overdue report generation failed: {e}")
+        raise ServerError(
+            title="Report Generation Failed",
+            message="We couldn't generate this report right now. Please try again or contact support.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -262,12 +308,19 @@ async def platform_revenue_report(
     if format == "json":
         return data
 
-    excel = build_excel_report("platform_revenue", data, "All Tenants")
-    return Response(
-        content=excel,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=platform-revenue.xlsx"},
-    )
+    try:
+        excel = build_excel_report("platform_revenue", data, "All Tenants")
+        return Response(
+            content=excel,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=platform-revenue.xlsx"},
+        )
+    except Exception as e:
+        print(f"⚠️ Platform revenue report generation failed: {e}")
+        raise ServerError(
+            title="Report Generation Failed",
+            message="We couldn't generate this report right now. Please try again or contact support.",
+        )
 
 
 @router.get("/subscription-health")

@@ -1,11 +1,16 @@
 # app/routers/vault/tasks.py
+"""
+Vault Tasks — list, restore, and hard-delete archived/completed tasks.
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select, or_
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+"""
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_db
+from app.core.errors import NotFoundError
 from app.core.limiter import limiter
+from app.db.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.task import Task, TaskStatus
 from app.models.users import User
@@ -65,7 +70,10 @@ async def restore_vault_task(
     task = result.scalars().first()
     
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found in vault")
+        raise NotFoundError(
+            title="Task Not Found",
+            message="Task not found in vault.",
+        )
         
     # Restore logic: Flip the archive flag
     task.is_archived = False
@@ -91,7 +99,7 @@ async def restore_vault_task(
 
     return task
 
-@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{task_id}", status_code=204)
 @limiter.limit("10/minute")
 async def hard_delete_vault_task(
     request: Request,
@@ -107,7 +115,10 @@ async def hard_delete_vault_task(
     task = result.scalars().first()
     
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found in vault")
+        raise NotFoundError(
+            title="Task Not Found",
+            message="Task not found in vault.",
+        )
         
     # Capture details before permanent deletion
     task_title = task.title

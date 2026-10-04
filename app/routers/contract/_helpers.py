@@ -1,9 +1,16 @@
-# app/routers/_helpers.py
-from fastapi import HTTPException, status
+# app/routers/contract/_helpers.py
+"""
+✅ Shared tenant-isolation guards + eager-load options for contract endpoints.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ SECURITY: the 404 copy intentionally conflates "not found" and "no access"
+   to prevent contract-ID enumeration — preserved as-is.
+"""
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, selectinload
 
+from app.core.errors import AuthorizationError, NotFoundError
 from app.models.bookings import Booking
 from app.models.contracts import Contract
 from app.models.users import User, UserRole
@@ -23,7 +30,10 @@ def get_authorized_contract(contract_id: int, user: User, db: Session) -> Contra
         stmt = select(Contract).options(*CONTRACT_EAGER_LOAD).where(Contract.id == contract_id)
     else:
         if user.tenant_id is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User has no tenant association")
+            raise AuthorizationError(
+                title="No Agency Linked",
+                message="Your account isn't linked to an agency. Contact your administrator for access.",
+            )
         stmt = select(Contract).options(*CONTRACT_EAGER_LOAD).where(
             Contract.id == contract_id,
             Contract.tenant_id == user.tenant_id
@@ -32,7 +42,10 @@ def get_authorized_contract(contract_id: int, user: User, db: Session) -> Contra
     result = db.execute(stmt)
     contract = result.scalars().unique().first()
     if not contract:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found or access denied")
+        raise NotFoundError(
+            title="Contract Not Found",
+            message="We couldn't find this contract, or you may not have access to it.",
+        )
     return contract
 
 
@@ -42,7 +55,10 @@ async def get_authorized_contract_async(contract_id: int, user: User, db: AsyncS
         stmt = select(Contract).options(*CONTRACT_EAGER_LOAD).where(Contract.id == contract_id)
     else:
         if user.tenant_id is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User has no tenant association")
+            raise AuthorizationError(
+                title="No Agency Linked",
+                message="Your account isn't linked to an agency. Contact your administrator for access.",
+            )
         stmt = select(Contract).options(*CONTRACT_EAGER_LOAD).where(
             Contract.id == contract_id,
             Contract.tenant_id == user.tenant_id
@@ -51,5 +67,8 @@ async def get_authorized_contract_async(contract_id: int, user: User, db: AsyncS
     result = await db.execute(stmt)
     contract = result.scalars().unique().first()
     if not contract:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contract not found or access denied")
+        raise NotFoundError(
+            title="Contract Not Found",
+            message="We couldn't find this contract, or you may not have access to it.",
+        )
     return contract

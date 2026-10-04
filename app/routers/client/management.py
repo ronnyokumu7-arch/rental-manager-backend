@@ -1,10 +1,21 @@
+# app/routers/client/management.py
+"""
+✅ CLIENT CRUD — identity engine + risk flags + tenant-scoped caching.
+
+✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
+✅ AUDIT (Phase B):
+  - FIXED RUNTIME BUG: BookingStatus.ongoing doesn't exist (AttributeError → 500).
+    Active-booking guards now use LIVE statuses (pending|confirmed|active).
+  - Identity conflict lists → structured ConflictError with details.conflicts.
+"""
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import BadRequestError, ConflictError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -22,6 +33,38 @@ from app.services.client_tasks import ClientTaskService
 from ._helpers import get_authorized_client_async
 
 router = APIRouter()
+
+# ✅ LIVE STATUSES that block archive/delete (pending counts — quotation in flight)
+ACTIVE_BLOCKING_STATUSES = [
+    BookingStatus.pending,
+    BookingStatus.confirmed,
+    BookingStatus.active,
+]
+
+
+def _conflict_error(conflicts) -> ConflictError:
+    """Identity-engine conflicts → structured 409 (first message surfaces, all preserved)."""
+    messages = [c.message for c in conflicts]
+    return ConflictError(
+        title="Duplicate Client Details",
+        message=messages[0] if messages else "A client with these details already exists.",
+        details={"conflicts": messages},
+    )
+
+
+async def _assert_no_live_bookings(db: AsyncSession, client_id: int, action: str) -> None:
+    """✅ FIXED: was BookingStatus.ongoing (AttributeError → 500 on every call)."""
+    live_booking = (await db.execute(
+        select(Booking).where(
+            Booking.client_id == client_id,
+            Booking.status.in_(ACTIVE_BLOCKING_STATUSES),
+        )
+    )).scalars().first()
+    if live_booking:
+        raise BadRequestError(
+            title="Client Has Active Bookings",
+            message=f"This client has active bookings. Complete or cancel them before {action} this client.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +91,7 @@ async def create_client(
         dl_number=client.dl_number,
     )
     if conflicts:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=[c.message for c in conflicts],
-        )
+        raise _conflict_error(conflicts)
 
     # ✅ RISK FLAGS: soft suspicion (F1 self-reference, F2 recycled emergency #)
     is_flagged, flag_notes = await compute_risk_flags(
@@ -74,9 +114,9 @@ async def create_client(
         await db.refresh(db_client)
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A client with these details already exists. Check the existing record before adding another client.",
+        raise ConflictError(
+            title="Client Already Exists",
+            message="A client with these details already exists. Check the existing record before adding another client.",
         )
 
     await ClientTaskService.on_client_created(db, db_client, db_client.tenant_id)
@@ -207,10 +247,7 @@ async def update_client(
             exclude_client_id=client.id,
         )
         if conflicts:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=[c.message for c in conflicts],
-            )
+            raise _conflict_error(conflicts)
 
     # Apply updates
     for field, value in update_data.items():
@@ -233,9 +270,9 @@ async def update_client(
         await db.refresh(client)
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A client with these details already exists. Check the existing record before updating this client.",
+        raise ConflictError(
+            title="Client Already Exists",
+            message="A client with these details already exists. Check the existing record before updating this client.",
         )
 
     # ✅ Invalidate cache
@@ -259,22 +296,13 @@ async def archive_client(
     client = await get_authorized_client_async(client_id, current_user, db)
 
     if client.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This client is already archived."
+        raise BadRequestError(
+            title="Already Archived",
+            message="This client is already archived.",
         )
 
-    # ✅ Check for active bookings
-    active_bookings_stmt = select(Booking).where(
-        Booking.client_id == client.id,
-        Booking.status.in_([BookingStatus.confirmed, BookingStatus.ongoing])
-    )
-    active_bookings = (await db.execute(active_bookings_stmt)).scalars().first()
-    if active_bookings:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This client has active bookings. Complete or cancel them before archiving this client."
-        )
+    # ✅ Check for live bookings (FIXED: was BookingStatus.ongoing → AttributeError)
+    await _assert_no_live_bookings(db, client.id, "archiving")
 
     client.is_archived = True
     client.archived_at = datetime.now(timezone.utc)
@@ -298,9 +326,9 @@ async def restore_client(
     client = await get_authorized_client_async(client_id, current_user, db)
 
     if not client.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This client is not archived, so there is nothing to restore."
+        raise BadRequestError(
+            title="Nothing to Restore",
+            message="This client is not archived, so there is nothing to restore.",
         )
 
     client.is_archived = False
@@ -325,31 +353,22 @@ async def delete_client(
     client = await get_authorized_client_async(client_id, current_user, db)
 
     if not client.is_archived:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Archive this client before deleting them."
+        raise BadRequestError(
+            title="Archive First",
+            message="Archive this client before deleting them.",
         )
 
-    # ✅ Check for active bookings
-    active_bookings_stmt = select(Booking).where(
-        Booking.client_id == client.id,
-        Booking.status.in_([BookingStatus.confirmed, BookingStatus.ongoing])
-    )
-    active_bookings = (await db.execute(active_bookings_stmt)).scalars().first()
-    if active_bookings:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This client has active bookings. Complete or cancel them before deleting this client."
-        )
+    # ✅ Check for live bookings (FIXED: was BookingStatus.ongoing → AttributeError)
+    await _assert_no_live_bookings(db, client.id, "deleting")
 
     try:
         await db.delete(client)
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This client has past bookings and cannot be deleted. Keep the record archived instead."
+        raise BadRequestError(
+            title="Client Has History",
+            message="This client has past bookings and cannot be deleted. Keep the record archived instead.",
         )
 
     # ✅ Invalidate cache
