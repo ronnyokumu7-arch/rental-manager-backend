@@ -127,7 +127,7 @@ async def send_reset_link(
             
         minutes_since = (datetime.now(timezone.utc) - last_reset).total_seconds() / 60
         if minutes_since < 15:
-            raise TooManyRequestsError(
+            raise RateLimitedError(
                 title="Rate Limit Exceeded",
                 message=f"Please wait {int(15 - minutes_since)} minutes before requesting another reset link.",
             )
@@ -196,7 +196,7 @@ async def change_admin_email(
             
         if datetime.now(timezone.utc) < cooldown_until:
             remaining = int((cooldown_until - datetime.now(timezone.utc)).total_seconds() / 60)
-            raise TooManyRequestsError(
+            raise RateLimitedError(
                 title="Cooldown Active",
                 message=f"Email change cooldown active. Wait {remaining} minutes.",
             )
