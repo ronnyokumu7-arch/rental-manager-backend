@@ -134,3 +134,7 @@ class GoneError(AppException):
     default_message = "This link has expired or was already used."
     default_action = retry_action()
 
+
+class UnprocessableEntityError(AppException):
+    """HTTP 422 Unprocessable Entity - Validation failed."""
+    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY

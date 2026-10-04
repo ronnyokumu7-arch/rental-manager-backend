@@ -17,7 +17,7 @@ from app.core.errors import (
     AuthorizationError,
     BadRequestError,
     NotFoundError,
-    ValidationFailedError,
+    UnprocessableEntityError,
 )
 from app.db.database import get_db
 from app.core.limiter import limiter
