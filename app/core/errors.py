@@ -133,3 +133,4 @@ class GoneError(AppException):
     default_title = "Link No Longer Valid"
     default_message = "This link has expired or was already used."
     default_action = retry_action()
+
