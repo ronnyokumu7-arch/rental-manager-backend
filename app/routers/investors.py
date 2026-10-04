@@ -16,6 +16,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, desc
+from sqlalchemy.ext.asyncio import AsyncSession  # ✅ ADD THIS LINE
 
 from app.core.errors import (
     AuthorizationError,
