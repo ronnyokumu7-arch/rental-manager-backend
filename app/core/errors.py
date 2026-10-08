@@ -92,6 +92,14 @@ class AuthorizationError(AppException):
     default_message = "You don't have permission to perform this action."
 
 
+class PaymentRequiredError(AppException):
+    """HTTP 402 — an account-level payment action is required."""
+    status_code = status.HTTP_402_PAYMENT_REQUIRED
+    default_title = "Payment Required"
+    default_message = "A payment is required before you can continue."
+    default_action = navigate_action("Make Payment", "/commission/pay")
+
+
 class NotFoundError(AppException):
     status_code = status.HTTP_404_NOT_FOUND
     default_title = "Not Found"
@@ -118,6 +126,12 @@ class RateLimitedError(AppException):
     default_title = "Too Many Requests"
     default_message = "You're doing that too quickly. Please wait a moment and try again."
     default_action = retry_action()
+
+
+class PayloadTooLargeError(AppException):
+    status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+    default_title = "File Too Large"
+    default_message = "This file is too large to upload."
 
 
 class ServerError(AppException):

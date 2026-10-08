@@ -2,7 +2,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, Body, status
+from fastapi import APIRouter, Depends, Request, Response, Body, status
 from passlib.exc import UnknownHashError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,7 @@ from app.db.database import get_db, set_rls_context
 from app.models.refresh_tokens import RefreshToken
 from app.models.users import User, UserRole
 from app.schemas.auth import LoginRequest, TokenOut
+from app.core.errors import AuthenticationError, AuthorizationError
 from ._helpers import generate_refresh_token
 
 router = APIRouter()
@@ -78,10 +79,7 @@ async def login(
     user = result.scalar_one_or_none()
     
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
+        raise AuthenticationError(message="Invalid email or password.")
 
     password_matches = False
     try:
@@ -90,22 +88,13 @@ async def login(
         password_matches = credentials.password == user.password_hash
 
     if not password_matches:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
+        raise AuthenticationError(message="Invalid email or password.")
 
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive",
-        )
+        raise AuthorizationError(title="Account Inactive", message="Your account is inactive. Contact your administrator for help.")
 
     if user.is_suspended:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account has been suspended. Please contact your administrator.",
-        )
+        raise AuthorizationError(title="Account Suspended", message="Your account is suspended. Contact your administrator for help.")
 
     await set_rls_context(
         db,
@@ -177,10 +166,7 @@ async def refresh_token(
     candidates = _refresh_candidates(request, refresh_token)
 
     if not candidates:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No refresh token found. Please log in again.",
-        )
+        raise AuthenticationError(message="No active session was found. Please log in again.")
 
     now = datetime.now(timezone.utc)
     chosen: Optional[RefreshToken] = None
@@ -207,10 +193,7 @@ async def refresh_token(
 
     if chosen is None:
         response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token",
-        )
+        raise AuthenticationError(message="Your session has expired. Please log in again.")
 
     await set_rls_context(
         db,
@@ -228,10 +211,7 @@ async def refresh_token(
         chosen.revoked_at = now
         await db.commit()
         response.delete_cookie(REFRESH_COOKIE_NAME, path="/")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account is inactive or suspended",
-        )
+        raise AuthenticationError(message="Your account is inactive or suspended. Please contact your administrator.")
 
     await set_rls_context(
         db,

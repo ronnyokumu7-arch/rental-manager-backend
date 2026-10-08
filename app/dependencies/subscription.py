@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from app.services.cache import (
     get_cached_subscription_warning,
     set_cached_subscription_warning,
 )
+from app.core.errors import AuthorizationError
 
 
 async def get_tenant_subscription_status(
@@ -53,10 +54,7 @@ async def require_active_subscription(
         return current_user
 
     if not current_user.tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant associated with this account",
-        )
+        raise AuthorizationError(message="Your account is not associated with a rental business.")
 
     # ✅ ALWAYS FRESH: Explicitly fetch tenant (no caching for security enforcement)
     stmt = select(Tenant).where(Tenant.id == current_user.tenant_id)
@@ -64,39 +62,30 @@ async def require_active_subscription(
     tenant = result.scalars().first()
     
     if tenant is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant associated with this account",
-        )
+        raise AuthorizationError(message="Your account is not associated with a rental business.")
 
     now = datetime.now(timezone.utc)
 
     if tenant.subscription_status == SubscriptionStatus.suspended:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "SUBSCRIPTION_SUSPENDED",
-                "message": "Your subscription is suspended. You can view your data but cannot make changes. Please contact support or settle your invoice to reactivate.",
-            },
+        raise AuthorizationError(
+            title="Subscription Suspended",
+            message="Your subscription is suspended. You can view your data but cannot make changes. Contact support or settle your invoice to reactivate.",
+            details={"code": "SUBSCRIPTION_SUSPENDED"},
         )
 
     if tenant.subscription_status == SubscriptionStatus.cancelled:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "SUBSCRIPTION_CANCELLED",
-                "message": "Your subscription has been cancelled. Please contact support.",
-            },
+        raise AuthorizationError(
+            title="Subscription Cancelled",
+            message="Your subscription has been cancelled. Contact support to reactivate it.",
+            details={"code": "SUBSCRIPTION_CANCELLED"},
         )
 
     if tenant.subscription_status == SubscriptionStatus.past_due:
         if tenant.grace_period_ends_at and now > tenant.grace_period_ends_at:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "SUBSCRIPTION_EXPIRED",
-                    "message": "Your grace period has ended. Please settle your invoice to continue.",
-                },
+            raise AuthorizationError(
+                title="Subscription Payment Required",
+                message="Your grace period has ended. Settle your invoice to continue.",
+                details={"code": "SUBSCRIPTION_EXPIRED"},
             )
 
     return current_user

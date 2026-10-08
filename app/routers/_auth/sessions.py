@@ -28,7 +28,7 @@ import hashlib
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body, status
+from fastapi import APIRouter, Depends, Query, Request, Body, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +38,7 @@ from app.dependencies.auth import get_current_user
 from app.models.refresh_tokens import RefreshToken
 from app.models.users import User, UserRole
 from app.schemas.auth import SessionOut
+from app.core.errors import AuthenticationError, AuthorizationError, BadRequestError, NotFoundError
 from app.schemas.pagination import PaginatedResponse, paginate_items
 from app.services.activity_log import ActivityLogService
 
@@ -192,18 +193,12 @@ async def revoke_session(
     session = result.scalars().first()
     
     if not session:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Session not found",
-        )
+        raise NotFoundError(title="Session Not Found", message="We couldn't find that session. Refresh and try again.")
     
     # ✅ HARDENED: block self-revocation via this endpoint
     current_hash = await _resolve_current_token_hash(request, refresh_token, db)
     if current_hash is not None and session.token_hash == current_hash:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Use /auth/logout to end the current session.",
-        )
+        raise BadRequestError(message="Use logout to end the current session.")
     
     if session.revoked:
         # Idempotent — already revoked
@@ -255,10 +250,7 @@ async def revoke_all_sessions_except_current(
     # ✅ Identify the ACTIVE session to preserve (body → cookie)
     current_hash = await _resolve_current_token_hash(request, refresh_token, db)
     if not current_hash:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No active session found. Please log in again.",
-        )
+        raise AuthenticationError(message="No active session was found. Please log in again.")
     
     now = datetime.now(timezone.utc)
     
@@ -317,10 +309,7 @@ async def list_user_sessions_admin(
     - Used for support/debugging
     """
     if current_user.role != UserRole.super_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Super admin access required",
-        )
+        raise AuthorizationError(message="Only a super administrator can view another user's sessions.")
     
     # Verify target user exists
     user_stmt = select(User).where(User.id == user_id)
@@ -328,10 +317,7 @@ async def list_user_sessions_admin(
     target_user = user_result.scalars().first()
     
     if not target_user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
+        raise NotFoundError(title="User Not Found", message="We couldn't find that user. Refresh and try again.")
     
     sessions = await _get_user_sessions(
         db=db,

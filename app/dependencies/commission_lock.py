@@ -14,7 +14,7 @@ Rules:
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ from app.models.commission import CommissionEvent, CommissionStatus
 from app.models.platform_settings import PlatformSettings
 from app.models.tenants import Tenant
 from app.models.users import User, UserRole
+from app.core.errors import PaymentRequiredError
 
 PLATFORM_TZ = ZoneInfo("Africa/Nairobi")
 DEFAULT_GRACE_DAYS = 3
@@ -78,12 +79,9 @@ async def require_not_commission_locked(
     ).days
 
     if grace_days - age_days <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=(
-                "Account soft-locked: settle your outstanding commission to resume "
-                "operations. Visit Commission → Pay."
-            ),
+        raise PaymentRequiredError(
+            title="Commission Payment Required",
+            message="Your account is temporarily locked. Settle the outstanding commission to resume operations.",
         )
 
     return current_user

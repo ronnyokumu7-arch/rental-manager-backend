@@ -8,9 +8,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import UploadFile
 
 from app.core.config import get_settings
+from app.core.errors import AppException, AuthorizationError, BadRequestError, PayloadTooLargeError, ServerError
 
 
 # ✅ SECURITY: Broad extension allowlist (smartphone + scanner friendly)
@@ -78,23 +79,14 @@ def _validate_file(file: UploadFile, category: str) -> str:
     Shared by all backends.
     """
     if not file.filename:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid filename."
-        )
+        raise BadRequestError(message="Choose a file with a valid name.")
 
     ext = file.filename.rsplit(".", 1)[-1].lower().strip()
     if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File type '{ext}' is not allowed. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
-        )
+        raise BadRequestError(message=f"This file type isn't supported. Choose: {', '.join(sorted(ALLOWED_EXTENSIONS))}.")
 
     if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid file content type: {file.content_type}"
-        )
+        raise BadRequestError(message="This file's content doesn't match a supported document or image type.")
 
     return ext
 
@@ -105,10 +97,7 @@ def _get_tenant_folder(tenant_id: int, category: str) -> str:
     The router CANNOT pass an arbitrary folder string.
     """
     if category not in VALID_CATEGORIES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}"
-        )
+        raise BadRequestError(message="This file cannot be stored in the selected category.")
     return f"tenant_{tenant_id}/{category}"
 
 
@@ -164,23 +153,17 @@ class LocalDiskBackend(StorageBackend):
         try:
             if len(file_bytes) > max_size:
                 max_mb = max_size // (1024 * 1024)
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"File too large. Maximum size for {category} is {max_mb}MB."
-                )
+                raise PayloadTooLargeError(message=f"This file is too large. The maximum size for {category} is {max_mb} MB.")
             
             with open(file_path, "wb") as out_file:
                 out_file.write(file_bytes)
                 
-        except HTTPException:
+        except AppException:
             raise
         except Exception as e:
             if file_path.exists():
                 file_path.unlink(missing_ok=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to save file: {str(e)}"
-            )
+            raise ServerError(message="We couldn't save this file. Please try again.")
 
     def delete(self, relative_path, tenant_id):
         upload_dir = _get_upload_dir()
@@ -245,10 +228,7 @@ class CloudinaryBackend(StorageBackend):
         max_size = MAX_FILE_SIZES.get(category, MAX_FILE_SIZES["default"])
         if len(file_bytes) > max_size:
             max_mb = max_size // (1024 * 1024)
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File too large. Maximum size for {category} is {max_mb}MB."
-            )
+            raise PayloadTooLargeError(message=f"This file is too large. The maximum size for {category} is {max_mb} MB.")
 
         # 2. Cloudinary public_id strips the extension (resource_type="auto"
         #    handles type detection), so we drop it here.
@@ -269,10 +249,7 @@ class CloudinaryBackend(StorageBackend):
         try:
             await asyncio.to_thread(_sync_upload)
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Cloudinary upload failed: {str(e)}"
-            )
+            raise ServerError(message="We couldn't save this file. Please try again.")
 
     def delete(self, relative_path, tenant_id):
         # relative_path = "tenant_{id}/{category}/{filename}"
@@ -427,10 +404,7 @@ def delete_file(url: str, tenant_id: int) -> None:
 
     # ✅ CRITICAL: Verify the path belongs to the requesting tenant
     if not relative_path.startswith(f"tenant_{tenant_id}/"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot delete files belonging to another tenant"
-        )
+        raise AuthorizationError(message="You do not have permission to delete this file.")
 
     if ".." in relative_path or relative_path.startswith("/"):
         return

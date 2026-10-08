@@ -7,10 +7,11 @@ created with a NULL tenant id.
 """
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException, Query, status
+from fastapi import Depends, Query
 
 from app.dependencies.auth import get_current_user
 from app.models.users import User, UserRole
+from app.core.errors import AuthorizationError, BadRequestError
 
 
 @dataclass(frozen=True)
@@ -28,18 +29,12 @@ def resolve_tenant_scope(user: User, requested_tenant_id: int | None = None) -> 
         return TenantScope(tenant_id=requested_tenant_id, is_system_scope=requested_tenant_id is None)
 
     if user.tenant_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User has no tenant association",
-        )
+        raise AuthorizationError(message="Your account is not associated with a rental business.")
         
     # CRITICAL: Prevent tenant hopping. 
     # If a user tries to pass a different tenant_id in the query params, block them.
     if requested_tenant_id is not None and requested_tenant_id != user.tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You cannot access another tenant",
-        )
+        raise AuthorizationError(message="You do not have access to this rental business.")
         
     # Return their own tenant scope. This is safe for Investors, Staff, and Admins.
     return TenantScope(tenant_id=user.tenant_id, is_system_scope=False)
@@ -58,8 +53,5 @@ async def require_mutation_tenant_scope(
 ) -> TenantScope:
     scope = resolve_tenant_scope(current_user, tenant_id)
     if scope.tenant_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Writes require a valid tenant context",
-        )
+        raise BadRequestError(message="Choose a rental business before making changes.")
     return scope

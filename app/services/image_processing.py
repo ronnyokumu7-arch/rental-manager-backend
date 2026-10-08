@@ -16,7 +16,8 @@ from __future__ import annotations
 import io
 from typing import Tuple
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import UploadFile
+from app.core.errors import BadRequestError
 
 # Optional imports — only loaded if image processing is actually invoked
 try:
@@ -52,7 +53,7 @@ async def process_upload(file: UploadFile, category: str = "compliance") -> Tupl
         HTTPException 400 if the file cannot be decoded (corrupt, zero-byte, etc.)
     """
     if not file.filename:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid filename.")
+        raise BadRequestError(message="Choose a file with a valid name.")
 
     ext = file.filename.rsplit(".", 1)[-1].lower().strip() if "." in file.filename else ""
 
@@ -60,7 +61,7 @@ async def process_upload(file: UploadFile, category: str = "compliance") -> Tupl
     file_bytes = await file.read()
 
     if not file_bytes:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file.")
+        raise BadRequestError(message="The selected file is empty. Choose another file.")
 
     # ── PDFs: pass through untouched ──────────────────────────────────
     if ext in PDF_EXTENSIONS or (file.content_type or "").startswith("application/pdf"):
@@ -75,10 +76,7 @@ async def process_upload(file: UploadFile, category: str = "compliance") -> Tupl
         img = Image.open(io.BytesIO(file_bytes))
         img.load()  # force full decode so corrupt files fail here, not at storage
     except (UnidentifiedImageError, OSError, ValueError) as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot decode image: {type(e).__name__}. Try a different file.",
-        )
+        raise BadRequestError(message="We couldn't read that image. Choose a different file.")
 
     # 1. EXIF orientation (rotated phone photos become upright)
     try:
