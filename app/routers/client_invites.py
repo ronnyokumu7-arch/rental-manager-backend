@@ -301,14 +301,16 @@ async def submit_invite(
 ):
     """
     ✅ Public intake submission.
-    - Name split: first_name/last_name → full_name computed server-side.
-    - Cross-entity identity conflicts → 409.
-    - Self-drive: DL image required.
-    - Own-driver: creates linked Driver record in same transaction.
-    - status hardcoded to pending; invite flipped accepted atomically.
     """
     await set_public_rls_context(db, token)
-    stmt = select(ClientInvite).where(ClientInvite.token == token).with_for_update()
+    
+    # ✅ FIX: Eagerly load tenant to prevent MissingGreenlet lazy-load errors
+    stmt = (
+        select(ClientInvite)
+        .options(selectinload(ClientInvite.tenant))
+        .where(ClientInvite.token == token)
+        .with_for_update()
+    )
     invite = (await db.execute(stmt)).scalars().first()
 
     _invite_live_or_raise(invite)
@@ -406,13 +408,11 @@ async def upload_invite_document(
 ):
     """
     ✅ PUBLIC: Upload a document with forensic stamping + registry guard.
-    - Docs (id_front, id_back, dl_front): images + PDF allowed.
-    - Avatar: images only.
-    - Duplicate bytes across people → hard ConflictError.
-    - Slot upsert: replaces old file, history preserved in registry.
     """
     await set_public_rls_context(db, token)
-    stmt = select(ClientInvite).where(ClientInvite.token == token)
+    
+    # ✅ FIX: Eagerly load tenant to prevent MissingGreenlet lazy-load errors
+    stmt = select(ClientInvite).options(selectinload(ClientInvite.tenant)).where(ClientInvite.token == token)
     invite = (await db.execute(stmt)).scalars().first()
 
     _invite_live_or_raise(invite)
@@ -440,8 +440,6 @@ async def upload_invite_document(
     }
 
     # ✅ Secure ingest: hash → watermark → upload → register
-    # Use a placeholder owner_id (invite.id) until client is created;
-    # registry will be re-linked to client.id on submit.
     file_url = await _upload_public_document(
         file,
         tenant_id=invite.tenant_id,
