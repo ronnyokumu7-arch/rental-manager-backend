@@ -9,6 +9,11 @@ Staff Drivers CRUD — tenant-scoped (Milestone 2).
   * Archive is guarded: a driver with active assignments cannot be archived.
   * No hard delete — operational records are preserved (archive only).
 
+✅ UPGRADE:
+  * Identity engine integration: driver-vs-driver + cross-entity (client) checks.
+  * Uses updated schemas with normalizers (phone/id/dl) and dl_issued_date.
+  * Vetting status exposed in list/detail views.
+
 ✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 """
 from datetime import datetime, timezone
@@ -29,6 +34,7 @@ from app.schemas.driver import (
     DriverCreate, DriverListOut, DriverOut, DriverUpdate,
 )
 from app.schemas.pagination import PaginatedResponse, paginate_items
+from app.services.client_identity import collect_driver_identity_conflicts
 
 # ✅ PREFIX lives HERE (main.py only adds /api/v1) — matches every other router
 router = APIRouter(prefix="/drivers", tags=["drivers"])
@@ -71,6 +77,16 @@ async def _has_active_assignments(db: AsyncSession, driver_id: int) -> bool:
         Booking.status.in_(ACTIVE_STATUSES),
     )
     return (await db.execute(stmt)).scalars().first() is not None
+
+
+def _conflict_error(conflicts) -> ConflictError:
+    """Identity-engine conflicts → structured 409."""
+    messages = [c.message for c in conflicts]
+    return ConflictError(
+        title="Duplicate Driver Details",
+        message=messages[0] if messages else "A person with these details already exists.",
+        details={"conflicts": messages},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +150,16 @@ async def create_driver(
 ):
     tenant_id = _require_tenant_id(current_user)
 
+    # ✅ IDENTITY ENGINE: driver-vs-driver + cross-entity (client) checks
+    conflicts = await collect_driver_identity_conflicts(
+        db, tenant_id,
+        phone=payload.phone,
+        id_number=payload.id_number,
+        dl_number=payload.dl_number,
+    )
+    if conflicts:
+        raise _conflict_error(conflicts)
+
     driver = Driver(tenant_id=tenant_id, **payload.model_dump())
     db.add(driver)
     await db.commit()
@@ -153,7 +179,26 @@ async def update_driver(
     tenant_id = _require_tenant_id(current_user)
     driver = await _get_driver_or_404(db, driver_id, tenant_id)
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    update_data = payload.model_dump(exclude_unset=True)
+
+    # ✅ IDENTITY ENGINE: only run if identity fields are being touched
+    identity_keys = {"phone", "id_number", "dl_number"}
+    if identity_keys & update_data.keys():
+        final_phone = update_data.get("phone", driver.phone)
+        final_id = update_data.get("id_number", driver.id_number)
+        final_dl = update_data.get("dl_number", driver.dl_number)
+
+        conflicts = await collect_driver_identity_conflicts(
+            db, tenant_id,
+            phone=final_phone,
+            id_number=final_id,
+            dl_number=final_dl,
+            exclude_driver_id=driver.id,
+        )
+        if conflicts:
+            raise _conflict_error(conflicts)
+
+    for field, value in update_data.items():
         setattr(driver, field, value)
 
     await db.commit()
@@ -208,7 +253,7 @@ async def restore_driver(
     if not driver.is_archived:
         raise BadRequestError(
             title="Not Archived",
-            message="This driver is not archived, so there is nothing to restore.",
+            message="This driver is not archived, so there's nothing to restore.",
         )
 
     driver.is_archived = False

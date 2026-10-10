@@ -14,12 +14,31 @@ class IdType(str, enum.Enum):
     national_id = "national_id"
     passport = "passport"
 
+class ClientVerificationStatus(str, enum.Enum):
+    """
+    ✅ VETTING TRACK (separate from lifecycle status — orthogonal states).
+    String-backed column (no ALTER TYPE pain); this enum is the code-level contract.
+    unverified → sent → under_review → verified
+                                    ↘ rejected (retryable)
+    """
+    unverified = "unverified"
+    sent = "sent"
+    under_review = "under_review"
+    verified = "verified"
+    rejected = "rejected"
+
+
 class Client(Base, AuditMixin):
     __tablename__ = "clients"
     
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     
+    # ✅ NAME SPLIT (additive): structured names; full_name stays the display source
+    # of truth (concatenated server-side at create/update). Legacy rows keep NULLs.
+    first_name = Column(String(120), nullable=True)
+    last_name = Column(String(120), nullable=True)
+
     # Core Identity (with bounded lengths for DB safety)
     full_name = Column(String(255), nullable=False)
     email = Column(String(255), nullable=True)
@@ -38,6 +57,17 @@ class Client(Base, AuditMixin):
 
     dl_number = Column(String(50), nullable=True)
     dl_expiry = Column(Date, nullable=True)
+    # ✅ NEW: DL issue date → experience = (today - issued). Stored as date,
+    # derived on read (never store computed years — they go stale).
+    dl_issued_date = Column(Date, nullable=True)
+
+    # ✅ DRIVING ARRANGEMENT: who is behind the wheel for this client's bookings.
+    driving_arrangement = Column(
+        String(20),
+        nullable=False,
+        default="self_drive",
+        server_default="self_drive",
+    )
     
     status = Column(
         Enum(ClientStatus),
@@ -45,7 +75,22 @@ class Client(Base, AuditMixin):
         default=ClientStatus.pending,
         server_default=ClientStatus.pending.value,
     )
-    
+
+    # ✅ VETTING TRACK (String-backed, check-constrained — ships new values freely)
+    verification_status = Column(
+        String(20),
+        nullable=False,
+        default=ClientVerificationStatus.unverified.value,
+        server_default=ClientVerificationStatus.unverified.value,
+    )
+    verification_token = Column(String(64), nullable=True, unique=True)
+    verification_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # ✅ Camera-only capture binding person ↔ physical ID (the fraud gate)
+    selfie_with_id_image = Column(String(500), nullable=True)
+    vetted_at = Column(DateTime(timezone=True), nullable=True)
+    vetted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    rejection_notes = Column(Text, nullable=True)
+
     # Addresses
     residential_address = Column(Text, nullable=True)
     work_address = Column(Text, nullable=True)
@@ -91,4 +136,19 @@ class Client(Base, AuditMixin):
         
         # 4. Status filtering (compliance checks + pending review queue)
         Index("ix_clients_tenant_status", "tenant_id", "status"),
+
+        # ✅ 5. Vetting review queue (per-tenant under_review/pending lists)
+        Index("ix_clients_tenant_verification", "tenant_id", "verification_status"),
+
+        # ✅ 6. Vetting track values guarded at DB level
+        CheckConstraint(
+            "verification_status IN ('unverified', 'sent', 'under_review', 'verified', 'rejected')",
+            name="ck_clients_verification_status_valid",
+        ),
+
+        # ✅ 7. Driving arrangement guard
+        CheckConstraint(
+            "driving_arrangement IN ('self_drive', 'own_driver', 'chauffeur')",
+            name="ck_clients_driving_arrangement_valid",
+        ),
     )

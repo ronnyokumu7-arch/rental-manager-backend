@@ -80,12 +80,16 @@ class PublicInvitePreviewOut(BaseModel):
 class ClientIntakeCreate(ClientBase):
     """
     ✅ PUBLIC ONBOARDING SUBMISSION.
-    Inherits all ClientBase fields + normalizers (phone strip, id/dl uppercase),
-    but TIGHTENS the identity slot: the client MUST pick one document
-    and provide its number to complete onboarding.
+    Inherits the upgraded ClientBase: name split, required ID slot,
+    driving arrangement + optional driver block, all normalizers.
 
-    Security: status / is_flagged are NOT in this schema — the server
-    hardcodes status=pending and computes risk flags itself.
+    ✅ TIGHTENED DOCUMENT SLOTS: the invitee is holding their own ID, so
+    ID front + back are REQUIRED at intake. DL front is enforced server-side
+    for self_drive arrangements (ValidationFailedError with field_errors).
+
+    Security: status / is_flagged / vetting fields are NOT in this schema —
+    the server hardcodes status=pending, verification_status=unverified and
+    computes risk flags itself.
     """
     id_type: IdType = Field(
         ..., description="Choose exactly one: national_id | passport"
@@ -95,6 +99,6 @@ class ClientIntakeCreate(ClientBase):
     # ✅ DOCUMENT URLS (uploaded first via POST /clients/invite/{token}/upload,
     # then passed here so they're stored on the client record)
     avatar_image: Optional[str] = Field(default=None, max_length=500)
-    id_image_front: Optional[str] = Field(default=None, max_length=500)
-    id_image_back: Optional[str] = Field(default=None, max_length=500)
+    id_image_front: str = Field(..., max_length=500)
+    id_image_back: str = Field(..., max_length=500)
     dl_image_front: Optional[str] = Field(default=None, max_length=500)

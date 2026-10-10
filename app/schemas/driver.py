@@ -2,19 +2,19 @@
 """
 Pydantic schemas for staff drivers (Milestone 2).
 
-✅ SECURITY (PII):
-  * DriverListOut NEVER exposes raw id_number / dl_number or document keys —
-    list views receive masked values only.
-  * DriverOut (detail) carries full PII + document keys; the router gates it
-    behind the authenticated tenant scope (role-gating lands with RBAC).
+✅ UPGRADE:
+  - Normalizers added (phone/id/dl) to match client schemas and protect new DB uniques.
+  - dl_issued_date added for experience tracking.
+  - Vetting fields added to DriverOut (read-only).
+  - client_id exposed in DriverOut (links to personal driver arrangement).
 """
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from app.models.drivers import DriverEmploymentType, DriverPayMode, DriverStatus
+from app.models.drivers import DriverEmploymentType, DriverPayMode, DriverStatus, DriverVerificationStatus
 
 
 def _mask(value: Optional[str]) -> Optional[str]:
@@ -31,21 +31,52 @@ class DriverBase(BaseModel):
     id_number: str = Field(min_length=4, max_length=50)
     dl_number: str = Field(min_length=4, max_length=50)
     dl_expiry: Optional[date] = None
+    dl_issued_date: Optional[date] = Field(default=None, description="Must be a past date")
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_name(cls, v: str) -> str:
+        return " ".join(v.split())
+
+    @field_validator("phone")
+    @classmethod
+    def normalize_phone(cls, v: str) -> str:
+        return v.strip()
+
+    @field_validator("id_number", "dl_number")
+    @classmethod
+    def normalize_doc(cls, v: str) -> str:
+        return v.strip().upper()
+
+    @field_validator("dl_expiry")
+    @classmethod
+    def validate_dl_expiry(cls, v: Optional[date]) -> Optional[date]:
+        if v is None:
+            return None
+        if v <= date.today():
+            raise ValueError("Driver's license expiry must be a future date")
+        return v
+
+    @field_validator("dl_issued_date")
+    @classmethod
+    def validate_dl_issued(cls, v: Optional[date]) -> Optional[date]:
+        if v is None:
+            return None
+        if v >= date.today():
+            raise ValueError("Driver's license issue date must be in the past")
+        return v
 
 
 class DriverCreate(DriverBase):
-    # ✅ Staff-first: in_house live; contracted parked but accepted for future
     employment_type: DriverEmploymentType = DriverEmploymentType.in_house
     status: DriverStatus = DriverStatus.available
     pay_mode: DriverPayMode = DriverPayMode.commission
 
-    # Per-driver rate overrides (NULL → tenant service config)
     daily_fee: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     overtime_hourly_fee: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     night_accommodation_fee: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     delivery_commission: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
 
-    # Document storage keys (files/vault pipeline — never binaries)
     profile_photo_key: Optional[str] = Field(default=None, max_length=255)
     id_front_key: Optional[str] = Field(default=None, max_length=255)
     id_back_key: Optional[str] = Field(default=None, max_length=255)
@@ -60,6 +91,7 @@ class DriverUpdate(BaseModel):
     id_number: Optional[str] = Field(default=None, min_length=4, max_length=50)
     dl_number: Optional[str] = Field(default=None, min_length=4, max_length=50)
     dl_expiry: Optional[date] = None
+    dl_issued_date: Optional[date] = Field(default=None, description="Must be a past date")
     employment_type: Optional[DriverEmploymentType] = None
     status: Optional[DriverStatus] = None
     pay_mode: Optional[DriverPayMode] = None
@@ -72,21 +104,62 @@ class DriverUpdate(BaseModel):
     id_back_key: Optional[str] = Field(default=None, max_length=255)
     dl_photo_key: Optional[str] = Field(default=None, max_length=255)
 
+    @field_validator("full_name")
+    @classmethod
+    def normalize_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None: return None
+        return " ".join(v.split())
+
+    @field_validator("phone")
+    @classmethod
+    def normalize_phone(cls, v: Optional[str]) -> Optional[str]:
+        if v is None: return None
+        return v.strip()
+
+    @field_validator("id_number", "dl_number")
+    @classmethod
+    def normalize_doc(cls, v: Optional[str]) -> Optional[str]:
+        if v is None: return None
+        return v.strip().upper()
+
+    @field_validator("dl_expiry")
+    @classmethod
+    def validate_dl_expiry(cls, v: Optional[date]) -> Optional[date]:
+        if v is None: return None
+        if v <= date.today(): raise ValueError("Driver's license expiry must be a future date")
+        return v
+
+    @field_validator("dl_issued_date")
+    @classmethod
+    def validate_dl_issued(cls, v: Optional[date]) -> Optional[date]:
+        if v is None: return None
+        if v >= date.today(): raise ValueError("Driver's license issue date must be in the past")
+        return v
+
 
 class DriverOut(BaseModel):
     """Full detail — PII + document keys. Tenant-scoped by the router."""
     id: int
     tenant_id: int
+    client_id: Optional[int] = None  # ✅ NEW: linked client for personal drivers
     full_name: str
     phone: str
     email: Optional[str] = None
     id_number: str
     dl_number: str
     dl_expiry: Optional[date] = None
+    dl_issued_date: Optional[date] = None  # ✅ NEW
     profile_photo_key: Optional[str] = None
     id_front_key: Optional[str] = None
     id_back_key: Optional[str] = None
     dl_photo_key: Optional[str] = None
+    
+    # ✅ NEW: Vetting track (read-only)
+    verification_status: DriverVerificationStatus = DriverVerificationStatus.unverified
+    selfie_with_id_key: Optional[str] = None
+    vetted_at: Optional[datetime] = None
+    rejection_notes: Optional[str] = None
+
     employment_type: DriverEmploymentType
     status: DriverStatus
     pay_mode: DriverPayMode
@@ -118,10 +191,10 @@ class DriverListOut(BaseModel):
     created_at: datetime
     id_number_masked: Optional[str] = None
     dl_number_masked: Optional[str] = None
+    verification_status: DriverVerificationStatus = DriverVerificationStatus.unverified  # ✅ NEW
 
     @classmethod
     def from_driver(cls, d) -> "DriverListOut":
-        """Explicit mapping from ORM Driver — no magic, no raw PII leak."""
         return cls(
             id=d.id,
             full_name=d.full_name,
@@ -136,4 +209,5 @@ class DriverListOut(BaseModel):
             created_at=d.created_at,
             id_number_masked=_mask(d.id_number),
             dl_number_masked=_mask(d.dl_number),
+            verification_status=d.verification_status,
         )
