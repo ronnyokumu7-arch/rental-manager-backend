@@ -1,4 +1,4 @@
-from app.models.drivers import Driver, DriverEmploymentType, DriverStatus
+from app.models.drivers import Driver, DriverEmploymentType, DriverStatus, DriverVerificationStatus
 from app.models.bookings import Booking
 from app.models.clients import Client
 from app.models.client_invite import ClientInvite, ClientInviteStatus
@@ -36,6 +36,7 @@ __all__ = [
     "Driver",
     "DriverEmploymentType",
     "DriverStatus",
+    "DriverVerificationStatus",  # ✅ NEW: Added verification status enum
     "Booking",
     "Client",
     "CommissionEvent",

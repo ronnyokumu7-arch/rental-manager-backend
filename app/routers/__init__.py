@@ -2,11 +2,12 @@
 
 from . import admin
 from . import auth
-from . import airport_transfer  # ✅ NEW: Airport Transfer CRUD (Milestone 2)
+from . import airport_transfer
 from . import bookings
 from . import clients
+from . import client_vetting
 from . import contracts
-from . import drivers  # ✅ NEW: Staff drivers CRUD (Milestone 2)
+from . import drivers
 from . import invoices
 from . import payments
 from . import reports
@@ -19,17 +20,18 @@ from . import vehicles
 from . import activity_logs
 from . import role_templates
 from . import tasks
-from . import vault  # ✅ NEW: Add the vault router
-from . import services  # ✅ NEW: Service catalog export (Milestone 1.1)
+from . import vault
+from . import services
 
 __all__ = [
     "admin",
     "auth",
-    "airport_transfer",  # ✅ NEW: Milestone 2
+    "airport_transfer",
     "bookings",
     "clients",
+    "client_vetting",
     "contracts",
-    "drivers",  # ✅ NEW: Milestone 2
+    "drivers",
     "invoices",
     "payments",
     "reports",
@@ -42,6 +44,6 @@ __all__ = [
     "activity_logs",
     "role_templates",
     "tasks",
-    "vault",  # ✅ NEW
-    "services",  # ✅ NEW: Milestone 1.1
+    "vault",
+    "services",
 ]

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
 from redis import asyncio as aioredis
-from pydantic import ValidationError  # ✅ NEW: For ValidationError handler
+from pydantic import ValidationError
 
 # 🚨 Rate Limiting Imports
 from slowapi import _rate_limit_exceeded_handler
@@ -19,7 +19,7 @@ from app.core.exceptions import (
     global_exception_handler,
     http_exception_handler,
     validation_exception_handler,
-    pydantic_validation_handler,  # ✅ NEW: Handles ValidationError outside request validation
+    pydantic_validation_handler,
 )
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 from app.db.database import test_db_connection
@@ -32,6 +32,7 @@ from app.routers import (
     bookings,
     client_invites,
     clients,
+    client_vetting,  # ✅ ADDED: Vetting engine router
     commission,
     contracts,
     drivers,
@@ -39,7 +40,7 @@ from app.routers import (
     financials,
     health,
     invoices,
-    investor_contracts,  # ✅ NEW: Import investor contracts router
+    investor_contracts,
     investors,
     payment_verifications,
     payments,
@@ -68,7 +69,7 @@ async def lifespan(app: FastAPI):
     # ✅ 1. TEST DATABASE CONNECTIVITY FIRST
     db_ok = await test_db_connection()
     if not db_ok:
-        print("️ WARNING: Database connection failed at startup. The app will continue, but authenticated requests will fail.")
+        print("⚠️ WARNING: Database connection failed at startup. The app will continue, but authenticated requests will fail.")
         print("   Check that DATABASE_URL points to a resolvable hostname (same region as this web service).")
     
     # ✅ 2. Initialize Redis cache using the centralized fail-safe client
@@ -139,7 +140,7 @@ app.add_middleware(
 # ✅ Exception handlers — order matters: specific → general
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
-app.add_exception_handler(ValidationError, pydantic_validation_handler)  # ✅ NEW
+app.add_exception_handler(ValidationError, pydantic_validation_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
 @app.get("/")
@@ -156,6 +157,7 @@ routers = [
     users,
     client_invites,
     clients,
+    client_vetting,  # ✅ ADDED: Register the vetting router
     commission,
     vehicles,
     drivers,
@@ -173,7 +175,7 @@ routers = [
     contracts,
     financials,
     investors,
-    investor_contracts,  # ✅ NEW: Register investor contracts router
+    investor_contracts,
     admin,
     reports,
     activity_logs,
