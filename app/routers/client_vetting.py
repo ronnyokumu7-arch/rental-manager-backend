@@ -1,4 +1,3 @@
-# app/routers/client_vetting.py
 """
 ✅ VETTING ENGINE — Identity binding for Clients and Drivers.
 
@@ -15,6 +14,7 @@
   - Tokens are single-use and expire (72h default).
 """
 import io
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -48,6 +48,9 @@ from app.services.storage import upload_file
 router = APIRouter()
 
 _PUBLIC_HOME = navigate_action("Go Home", "/")
+
+# ✅ Get frontend URL from environment, default to localhost for dev
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
 
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -134,9 +137,8 @@ async def start_client_verification(
     await db.commit()
     await db.refresh(client)
     
-    # TODO: Integrate Email/WhatsApp service here. For now, return the link.
-    base_url = request.base_url._url.rstrip("/")
-    link = f"{base_url}vetting/{token}"
+    # ✅ FIX: Use the frontend URL, not the backend's request.base_url
+    link = f"{FRONTEND_URL}/vetting/{token}"
     
     return StartVerificationOut(
         verification_link=link,
@@ -165,8 +167,8 @@ async def start_driver_verification(
     await db.commit()
     await db.refresh(driver)
     
-    base_url = request.base_url._url.rstrip("/")
-    link = f"{base_url}vetting/{token}"
+    # ✅ FIX: Use the frontend URL, not the backend's request.base_url
+    link = f"{FRONTEND_URL}/vetting/driver/{token}"
     
     return StartVerificationOut(
         verification_link=link,
