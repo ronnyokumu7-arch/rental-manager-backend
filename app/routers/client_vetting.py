@@ -225,12 +225,22 @@ async def upload_vetting_selfie(
         owner_id=target.id, slot="selfie_with_id", tenant_name=tenant_name,
     )
     
-    # Upload to storage
-    stamped_file = UploadFile(filename=file.filename or "selfie.jpg", file=io.BytesIO(stamped_bytes), size=len(stamped_bytes))
+    # ✅ FIX: Ensure the filename has a valid image extension for the storage provider
+    original_filename = file.filename or "selfie.jpg"
+    if not any(original_filename.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+        original_filename += ".jpg"
+    
+    # Upload to storage with explicit content-type
+    stamped_file = UploadFile(
+        filename=original_filename, 
+        file=io.BytesIO(stamped_bytes), 
+        size=len(stamped_bytes),
+        headers={"content-type": file.content_type or "image/jpeg"}
+    )
+    
     try:
         file_ref = await upload_file(file=stamped_file, tenant_id=target.tenant_id, category="vetting")
     except Exception as e:
-        # ✅ Print the exact error to Render logs
         print(f"❌ CRITICAL SELFIE UPLOAD ERROR: {type(e).__name__}: {e}")
         raise ServerError(title="Upload Failed", message="Could not store selfie.")
     
