@@ -421,6 +421,7 @@ async def upload_invite_document(
     allow_pdf = field != "avatar"
     _assert_upload_content_type(file, allow_pdf=allow_pdf)
 
+    # ✅ Use "compliance" category for ID/DL docs, "avatar" for profile pic
     category = "avatar" if field == "avatar" else "compliance"
 
     # Slot map for registry
@@ -431,35 +432,44 @@ async def upload_invite_document(
         "dl_front": "dl_front",
     }
 
-    # ✅ Secure ingest: hash → watermark → upload → register
-    file_url = await _upload_public_document(
-        file,
-        tenant_id=invite.tenant_id,
-        category=category,
-        db=db,
-        owner_type="client",
-        owner_id=invite.id,  # temporary; re-linked to client.id on submit
-        slot=slot_map[field],
-        tenant_name=invite.tenant.name if invite.tenant else "Agency",
-    )
+    try:
+        # ✅ Secure ingest: hash → watermark → upload → register
+        file_url = await _upload_public_document(
+            file,
+            tenant_id=invite.tenant_id,
+            category=category,
+            db=db,
+            owner_type="client_invite",  # ✅ Changed from "client" to avoid confusion
+            owner_id=invite.id,
+            slot=slot_map[field],
+            tenant_name=invite.tenant.name if invite.tenant else "Agency",
+        )
 
-    # ✅ SLOT UPSERT
-    uploaded = dict(invite.uploaded_files or {})
-    old_url = uploaded.get(field)
-    uploaded[field] = file_url
-    invite.uploaded_files = uploaded
-    await db.commit()
+        # ✅ SLOT UPSERT - Store in invite.uploaded_files
+        uploaded = dict(invite.uploaded_files or {})
+        old_url = uploaded.get(field)
+        uploaded[field] = file_url
+        invite.uploaded_files = uploaded
+        await db.commit()
 
-    if old_url and old_url != file_url:
-        try:
-            delete_file(old_url, tenant_id=invite.tenant_id)
-        except Exception:
-            pass
+        # Clean up old file if replaced
+        if old_url and old_url != file_url:
+            try:
+                delete_file(old_url, tenant_id=invite.tenant_id)
+            except Exception:
+                pass
 
-    return {
-        "type": "success",
-        "title": "Document Received",
-        "message": "Your document was uploaded successfully.",
-        "url": file_url,
-        "field": field,
-    }
+        return {
+            "type": "success",
+            "title": "Document Received",
+            "message": "Your document was uploaded successfully.",
+            "url": file_url,
+            "field": field,
+        }
+    except Exception as e:
+        # ✅ Log the actual error for debugging
+        print(f"❌ Invite upload failed for field={field}: {type(e).__name__}: {e}")
+        raise ServerError(
+            title="Upload Failed",
+            message=f"Failed to upload {field}. Please try again.",
+        )
