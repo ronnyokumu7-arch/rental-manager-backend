@@ -1,4 +1,3 @@
-# app/routers/client_invites.py
 """
 ✅ CLIENT INVITES — single-use onboarding links (tenant + public sides).
 
@@ -17,7 +16,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -41,6 +40,7 @@ from app.models.clients import Client, ClientStatus
 from app.models.tenants import Tenant
 from app.models.users import User
 from app.models.drivers import Driver, DriverEmploymentType, DriverVerificationStatus
+from app.models.document_registry import DocumentRegistry
 from app.schemas.client import ClientOut
 from app.schemas.client_invite import (
     ClientIntakeCreate,
@@ -54,7 +54,6 @@ from app.services.client_identity import (
 )
 from app.services.document_security import (
     assert_allowed_content_type,
-    hash_bytes,
     register_document,
     secure_prepare,
 )
@@ -345,7 +344,7 @@ async def submit_invite(
             field_errors={"dl_image_front": "Required for self-drive arrangement"},
         )
 
-    # 4) CREATE CLIENT
+    # 4) CREATE CLIENT (payload includes id_image_front, id_image_back, dl_image_front, avatar_image)
     client_data = payload.model_dump(exclude={"driver"})
     client_data["full_name"] = _concat_full_name(payload.first_name, payload.last_name)
 
@@ -378,6 +377,14 @@ async def submit_invite(
             )
             db.add(driver)
 
+        # ✅ 6) CRITICAL FIX: Re-link uploaded documents from the temporary invite.id to the new client.id
+        await db.execute(
+            update(DocumentRegistry)
+            .where(DocumentRegistry.owner_type == "client", DocumentRegistry.owner_id == invite.id)
+            .values(owner_id=client.id)
+        )
+
+        # 7) Mark invite as accepted
         invite.status = ClientInviteStatus.accepted
         invite.accepted_client_id = client.id
         invite.uploaded_files = None
@@ -446,7 +453,7 @@ async def upload_invite_document(
         category=category,
         db=db,
         owner_type="client",
-        owner_id=invite.id,  # temporary; re-linked on submit
+        owner_id=invite.id,  # temporary; re-linked to client.id on submit
         slot=slot_map[field],
         tenant_name=invite.tenant.name if invite.tenant else "Agency",
     )
