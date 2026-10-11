@@ -1,4 +1,3 @@
-# app/services/storage.py
 import asyncio
 import time
 import uuid
@@ -39,11 +38,12 @@ MAX_FILE_SIZES = {
     "avatar": 10 * 1024 * 1024,      # 10MB raw (compressed to 1MB stored)
     "compliance": 25 * 1024 * 1024,   # 25MB raw (compressed to 4MB stored)
     "contract": 10 * 1024 * 1024,     # 10MB (PDFs, no compression)
+    "vetting": 15 * 1024 * 1024,      # ✅ NEW: 15MB for selfie with ID (compressed to ~2MB)
     "default": 10 * 1024 * 1024,      # 10MB fallback
 }
 
 # ✅ SECURITY: Valid categories (prevents arbitrary folder creation)
-VALID_CATEGORIES = {"avatar", "compliance", "contract", "misc"}
+VALID_CATEGORIES = {"avatar", "compliance", "contract", "vetting", "misc"}
 
 # Cloudinary is an optional dependency; module still works if not installed.
 try:
@@ -360,7 +360,7 @@ async def upload_file(file: UploadFile, tenant_id: int, category: str = "default
     Args:
         file: The uploaded file
         tenant_id: REQUIRED. The tenant that owns this file.
-        category: "avatar", "compliance", "contract", or "misc"
+        category: "avatar", "compliance", "contract", "vetting", or "misc"
 
     Returns:
         Authenticated API URL string for the uploaded file
