@@ -115,7 +115,7 @@ async def _upload_public_document(
     except AppException:
         raise
     except Exception as e:
-        print(f"️ Public upload storage failure for tenant {tenant_id}: {e}")
+        print(f"⚠️ Public upload storage failure for tenant {tenant_id}: {e}")
         raise ServerError(
             title="Upload Failed",
             message="We couldn't store this document. Please try again.",
@@ -256,7 +256,7 @@ async def revoke_invite(
     }
 
 
-# ─ PUBLIC SIDE (no auth) ───────────────────────────────────────────────────
+# ── PUBLIC SIDE (no auth) ───────────────────────────────────────────────────
 
 @router.get("/clients/invite/{token}", response_model=PublicInvitePreviewOut)
 @limiter.limit("30/minute")
@@ -391,11 +391,11 @@ async def submit_invite(
             db.add(driver)
 
         # ✅ Re-link document registry from invite to client
-        # ✅ FIX: Match the owner_type used in upload_invite_document ("client_invite")
+        # ✅ FIX: owner_type is already "client", just update owner_id from invite.id to client.id
         await db.execute(
             update(DocumentRegistry)
-            .where(DocumentRegistry.owner_type == "client_invite", DocumentRegistry.owner_id == invite.id)
-            .values(owner_id=client.id, owner_type="client")
+            .where(DocumentRegistry.owner_type == "client", DocumentRegistry.owner_id == invite.id)
+            .values(owner_id=client.id)
         )
 
         # 7) Mark invite as accepted
@@ -468,8 +468,8 @@ async def upload_invite_document(
             tenant_id=invite.tenant_id,
             category=category,
             db=db,
-            owner_type="client_invite",  # ✅ Temporary owner type for invite uploads
-            owner_id=invite.id,
+            owner_type="client",  # ✅ FIXED: Use "client" to match DB constraint
+            owner_id=invite.id,   # Temporary owner_id
             slot=slot_map[field],
             tenant_name=invite.tenant.name if invite.tenant else "Agency",
         )
