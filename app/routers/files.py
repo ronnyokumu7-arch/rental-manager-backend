@@ -1,4 +1,3 @@
-# app/routers/files.py
 """
 Authenticated file-serving endpoint.
 Replaces public StaticFiles for sensitive tenant uploads (IDs, DLs, contracts).
@@ -38,7 +37,8 @@ settings = get_settings()
 SIGNED_URL_TTL_SECONDS = 600
 
 # ✅ SECURITY: Valid categories (prevents arbitrary folder access)
-VALID_CATEGORIES = {"avatar", "compliance", "contract", "misc"}
+# ✅ FIX: Added "vetting" to allow signed URL generation for vetting selfies
+VALID_CATEGORIES = {"avatar", "compliance", "contract", "vetting", "misc"}
 
 
 def _get_upload_dir() -> Path:
