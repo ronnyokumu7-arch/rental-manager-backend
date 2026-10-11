@@ -230,6 +230,8 @@ async def upload_vetting_selfie(
     try:
         file_ref = await upload_file(file=stamped_file, tenant_id=target.tenant_id, category="vetting")
     except Exception as e:
+        # ✅ Print the exact error to Render logs
+        print(f"❌ CRITICAL SELFIE UPLOAD ERROR: {type(e).__name__}: {e}")
         raise ServerError(title="Upload Failed", message="Could not store selfie.")
     
     # Register
