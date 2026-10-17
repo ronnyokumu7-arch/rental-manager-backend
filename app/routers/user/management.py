@@ -1,4 +1,3 @@
-# app/routers/user/management.py
 """
 User Management CRUD — tenant-scoped, RBAC-enforced.
 
@@ -12,7 +11,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, File, UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +32,7 @@ from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_c
 from app.services.email import send_welcome_email
 from app.services.cache import get_cached_user_list, set_cached_user_list, invalidate_user_cache, invalidate_tenant_cache
 from app.services.activity_log import ActivityLogService
+from app.services.storage import upload_file   # ✅ ADDED: needed by upload_my_avatar
 from ._helpers import (
     _validate_job_title_and_department,
     _get_user_or_404,
@@ -714,3 +714,48 @@ async def delete_user(
     await db.commit()  # Commit the activity log flush
         
     return None
+
+
+# =============================================================================
+# 5.5 SELF AVATAR UPLOAD
+# =============================================================================
+@router.post("/me/avatar", response_model=UserOut)
+@limiter.limit("10/minute")
+async def upload_my_avatar(
+    request: Request,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Upload or replace the current user's profile avatar."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise BadRequestError(
+            title="Invalid File Type",
+            message="Only image files are allowed.",
+        )
+
+    # Storage service handles size limits + Cloudinary/local routing
+    file_url = await upload_file(
+        file=file,
+        tenant_id=current_user.tenant_id or 0,
+        category="avatar",
+    )
+
+    current_user.avatar_url = file_url
+    await db.commit()
+    await db.refresh(current_user)
+
+    if current_user.tenant_id:
+        await invalidate_user_cache(current_user.tenant_id)
+
+    await ActivityLogService.log(
+        db=db,
+        tenant_id=current_user.tenant_id or 0,
+        user_id=current_user.id,
+        action="upload_avatar_self",
+        target_type="user",
+        target_id=current_user.id,
+    )
+    await db.commit()
+
+    return (await _enrich_users_with_owner_status([current_user], db))[0]
