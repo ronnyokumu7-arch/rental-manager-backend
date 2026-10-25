@@ -1,4 +1,3 @@
-# app/routers/booking/management_create.py
 """
 ✅ CREATE + QUOTE — CONTRACT v2: thin handlers over the booking factory.
 
@@ -71,6 +70,7 @@ async def quote_booking(
         service_details=quote.service_details,
         toll_fees=quote.toll_fees,
         parking_fees=quote.parking_fees,
+        delivery_fee=quote.delivery_fee,  # ✅ NEW: Pass delivery fee to factory
     )
 
 

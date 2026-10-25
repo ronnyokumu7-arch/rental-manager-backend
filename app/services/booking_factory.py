@@ -1,4 +1,3 @@
-# app/services/booking_factory.py
 """
 ✅ BOOKING FACTORY — single source of truth for schedule, pricing, and changes.
 
@@ -41,7 +40,7 @@ from app.models.vehicles import Vehicle, VehicleStatus
 from app.schemas.booking import BookingCreate
 from app.services.activity_log import ActivityLogService
 from app.services.booking_tasks import BookingTaskService
-from app.services.cache import invalidate_booking_cache, invalidate_invoice_cache  # ✅ ADD invoice
+from app.services.cache import invalidate_booking_cache, invalidate_invoice_cache
 from app.services.invoices import create_quotation_for_booking
 from app.services.number_generator import generate_booking_number
 from app.services.pricing_airport import quote_airport_transfer
@@ -140,12 +139,22 @@ async def _assert_vehicle_free(
 def _price(
     *, service_type: str, vehicle: Vehicle, driver: Optional[Driver],
     pickup: datetime, ret: datetime,
-    service_details: Optional[Dict[str, Any]], toll_fees: Decimal, parking_fees: Decimal,
+    service_details: Optional[Dict[str, Any]], 
+    toll_fees: Decimal, parking_fees: Decimal, delivery_fee: Decimal = Decimal("0"),
 ) -> Dict[str, Any]:
     """
-    Dispatch to the pure engines (lifted verbatim from the router).
+    Dispatch to the pure engines + append flat fees (toll/parking/delivery).
     ✅ Rates come ONLY from vehicle/driver config — never from client input.
+    ✅ Delivery fee is added post-engine as it's a phone-agreed surcharge.
     """
+    
+    # Helper to append delivery fee line if present
+    def _append_delivery(lines, total):
+        if delivery_fee > 0:
+            lines.append({"description": "Delivery Fee", "quantity": "1", "amount": delivery_fee})
+            total += delivery_fee
+        return lines, total
+
     if service_type == AIRPORT_TRANSFER:
         if not vehicle.supports_airport_transfer or not vehicle.airport_transfer_base_rate:
             raise BadRequestError(
@@ -159,8 +168,13 @@ def _price(
             )
         except ValueError as e:
             raise ValidationFailedError(title="Pricing Failed", message=str(e))
+        
+        lines = _lines_payload(quote)
+        computed_total = quote.total
+        lines, computed_total = _append_delivery(lines, computed_total)
+        
         return {"daily_rate": vehicle.airport_transfer_base_rate, "billable_days": 1,
-                "computed_total": quote.total, "lines": _lines_payload(quote)}
+                "computed_total": computed_total, "lines": lines}
 
     if service_type == WEDDING:
         if not vehicle.supports_wedding_service or not vehicle.wedding_base_rate:
@@ -181,8 +195,13 @@ def _price(
             )
         except ValueError as e:
             raise ValidationFailedError(title="Pricing Failed", message=str(e))
+            
+        lines = _lines_payload(quote)
+        computed_total = quote.total
+        lines, computed_total = _append_delivery(lines, computed_total)
+        
         return {"daily_rate": vehicle.wedding_base_rate, "billable_days": 1,
-                "computed_total": quote.total, "lines": _lines_payload(quote)}
+                "computed_total": computed_total, "lines": lines}
 
     if service_type == PRO_DRIVER:
         if not driver:
@@ -209,8 +228,13 @@ def _price(
             )
         except ValueError as e:
             raise ValidationFailedError(title="Pricing Failed", message=str(e))
+            
+        lines = _lines_payload(quote)
+        computed_total = quote.total
+        lines, computed_total = _append_delivery(lines, computed_total)
+        
         return {"daily_rate": base_rate, "billable_days": 1,
-                "computed_total": quote.total, "lines": _lines_payload(quote)}
+                "computed_total": computed_total, "lines": lines}
 
     # ✅ SELF-DRIVE: vehicle rate × days (the business rule, untouched)
     if not vehicle.daily_rate or Decimal(vehicle.daily_rate) <= 0:
@@ -226,8 +250,13 @@ def _price(
         )
     except ValueError as e:
         raise ValidationFailedError(title="Pricing Failed", message=str(e))
+        
+    lines = _lines_payload(quote)
+    computed_total = quote.total
+    lines, computed_total = _append_delivery(lines, computed_total)
+    
     return {"daily_rate": vehicle.daily_rate, "billable_days": quote.billable_days,
-            "computed_total": quote.total, "lines": _lines_payload(quote)}
+            "computed_total": computed_total, "lines": lines}
 
 
 def _quote_payload(service_type, pickup, ret, price) -> Dict[str, Any]:
@@ -252,6 +281,7 @@ async def quote_new(
     service_type: str = SELFDRIVE, driver_id: Optional[int] = None,
     service_details: Optional[Dict[str, Any]] = None,
     toll_fees: Decimal = Decimal("0"), parking_fees: Decimal = Decimal("0"),
+    delivery_fee: Decimal = Decimal("0"),
 ) -> Dict[str, Any]:
     """Dry-run pricing with defaults (pickup=now, return=+1d) and conflict check."""
     vehicle = await _load_vehicle(db, tenant_id, vehicle_id)
@@ -268,7 +298,8 @@ async def quote_new(
 
     price = _price(service_type=service_type, vehicle=vehicle, driver=driver,
                    pickup=pickup, ret=ret, service_details=service_details,
-                   toll_fees=toll_fees, parking_fees=parking_fees)
+                   toll_fees=toll_fees, parking_fees=parking_fees,
+                   delivery_fee=delivery_fee)
     return _quote_payload(service_type, pickup, ret, price)
 
 
@@ -312,7 +343,8 @@ async def create_booking(db: AsyncSession, intent: BookingCreate, user: User) ->
     # 4. ✅ Price (server is source of truth)
     price = _price(service_type=intent.service_type, vehicle=vehicle, driver=driver,
                    pickup=pickup, ret=ret, service_details=intent.service_details,
-                   toll_fees=intent.toll_fees, parking_fees=intent.parking_fees)
+                   toll_fees=intent.toll_fees, parking_fees=intent.parking_fees,
+                   delivery_fee=intent.delivery_fee)
 
     # 5. Booking number + persist (both datetime pairs mirrored)
     booking_number = await generate_booking_number(db, user.tenant_id)
@@ -325,6 +357,7 @@ async def create_booking(db: AsyncSession, intent: BookingCreate, user: User) ->
         service_type=intent.service_type, service_details=intent.service_details,
         driver_id=driver.id if driver else None,
         toll_fees=intent.toll_fees, parking_fees=intent.parking_fees,
+        delivery_fee=intent.delivery_fee,  # ✅ NEW: Persist delivery fee
         daily_rate=price["daily_rate"], billable_days=price["billable_days"],
         computed_total=price["computed_total"], total_amount=price["computed_total"],
         manually_adjusted=False, price_note=None,

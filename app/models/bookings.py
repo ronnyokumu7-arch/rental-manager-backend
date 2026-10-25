@@ -73,6 +73,7 @@ class Booking(Base, AuditMixin):
 
     toll_fees = Column(Numeric(10, 2), nullable=False, default=0, server_default="0")
     parking_fees = Column(Numeric(10, 2), nullable=False, default=0, server_default="0")
+    delivery_fee = Column(Numeric(10, 2), nullable=False, default=0, server_default="0") # NEW
 
     status = Column(Enum(BookingStatus), default=BookingStatus.pending, nullable=False, index=True)
 
@@ -103,6 +104,7 @@ class Booking(Base, AuditMixin):
         CheckConstraint("daily_rate >= 0", name="ck_bookings_daily_rate_non_negative"),
         CheckConstraint("toll_fees >= 0", name="ck_bookings_toll_fees_non_negative"),
         CheckConstraint("parking_fees >= 0", name="ck_bookings_parking_fees_non_negative"),
+        CheckConstraint("delivery_fee >= 0", name="ck_bookings_delivery_fee_non_negative"),
         CheckConstraint("scheduled_return_at IS NULL OR pickup_at IS NULL OR scheduled_return_at > pickup_at", name="ck_bookings_valid_schedule"),
         Index("ix_bookings_tenant_dates", "tenant_id", "start_date", "end_date"),
         Index("ix_bookings_tenant_status_created", "tenant_id", "status", "created_at"),

@@ -42,6 +42,7 @@ class BookingBase(BaseModel):
     # ✅ MILESTONE 2: Airport Transfer add-ons
     toll_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
     parking_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
+    delivery_fee: Decimal = Field(default=0.00, ge=0, decimal_places=2)  # NEW
 
     # ✅ MILESTONE 3: Service-specific details (JSON)
     service_details: Optional[Dict[str, Any]] = Field(default=None)
@@ -118,6 +119,7 @@ class BookingOut(BaseModel):
 
     toll_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
     parking_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
+    delivery_fee: Decimal = Field(default=0.00, ge=0, decimal_places=2)  # NEW
 
     cancellation_reason: Optional[CancellationReason] = None
     cancelled_at: Optional[datetime] = None
@@ -152,6 +154,7 @@ class BookingQuote(BaseModel):
     driver_id: Optional[int] = None
     toll_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
     parking_fees: Decimal = Field(default=0.00, ge=0, decimal_places=2)
+    delivery_fee: Decimal = Field(default=0.00, ge=0, decimal_places=2)  # NEW
     service_details: Optional[Dict[str, Any]] = None
     # ✅ daily_rate_override REMOVED — rates come only from vehicle/driver config.
 
