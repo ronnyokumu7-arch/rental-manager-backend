@@ -1,15 +1,25 @@
+# app/routers/client/client_invites.py
 """
 ✅ CLIENT INVITES — single-use onboarding links (tenant + public sides).
 
 ✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 ✅ UPGRADE:
   - Name split: first_name/last_name required; full_name computed server-side.
-  - Driving arrangement: self_drive enforces DL image; own_driver creates
-    linked personal Driver in same transaction.
+  - Driving arrangement: self_drive enforces DL image; own_driver collects
+    the client-owned driver block AND driver document images, stored on the
+    client record's inline driver_* columns (mirrors management.py).
   - Document security: sha256 hash + forensic watermark + registry guard
     blocks duplicate documents across people.
   - Cross-entity identity checks prevent same person as client + driver.
-  - PDFs accepted for doc slots (id_front, id_back, dl_front); avatar image-only.
+  - PDFs accepted for doc slots; avatar image-only.
+
+✅ INVITE ↔ MANAGEMENT PARITY (this pass):
+  - own_driver no longer creates a linked Driver row.
+  - The driver block + driver doc URLs are written onto the client's
+    inline driver_* columns exactly as management.py::create_client does.
+  - VALID_UPLOAD_FIELDS extended with driver_id_front / driver_dl_front.
+  - After acceptance, invite-created clients are indistinguishable from
+    manually-created ones, and the KYC gate passes cleanly.
 """
 import io
 import secrets
@@ -39,7 +49,6 @@ from app.models.client_invite import ClientInvite, ClientInviteStatus
 from app.models.clients import Client, ClientStatus
 from app.models.tenants import Tenant
 from app.models.users import User
-from app.models.drivers import Driver, DriverEmploymentType, DriverVerificationStatus
 from app.models.document_registry import DocumentRegistry
 from app.schemas.client import ClientOut
 from app.schemas.client_invite import (
@@ -64,7 +73,29 @@ router = APIRouter()
 # ✅ Public-side errors send people to the marketing home, not the dashboard
 _PUBLIC_HOME = navigate_action("Go Home", "/")
 
-VALID_UPLOAD_FIELDS = {"avatar", "id_front", "id_back", "dl_front"}
+# ✅ Upload slots — client docs + client-owned driver docs.
+#    Driver slots are only meaningful when arrangement == own_driver;
+#    the upload handler rejects them if the invite can't know that yet.
+#    (Arrangement is declared on the submit payload, not the upload call,
+#    so we accept driver slots unconditionally here and let submit_invite
+#    decide whether they're consumed.)
+VALID_UPLOAD_FIELDS = {
+    "avatar",
+    "id_front",
+    "id_back",
+    "dl_front",
+    "driver_id_front",
+    "driver_dl_front",
+}
+
+# Slots that may receive a PDF (everything except avatar).
+_PDF_ALLOWED_FIELDS = {
+    "id_front",
+    "id_back",
+    "dl_front",
+    "driver_id_front",
+    "driver_dl_front",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +269,7 @@ async def revoke_invite(
             message="This invite was already used and cannot be revoked.",
         )
 
-    # ✅ ORPHAN CLEANUP
+    # ✅ ORPHAN CLEANUP — covers all six slots now (client + driver docs)
     uploaded = dict(invite.uploaded_files or {})
     for field, url in uploaded.items():
         try:
@@ -300,10 +331,20 @@ async def submit_invite(
 ):
     """
     ✅ Public intake submission.
+
+    ✅ PARITY WITH management.py::create_client:
+      - The client-owned driver block is stored INLINE on the client row
+        (driver_full_name / driver_phone / driver_id_number / driver_dl_number /
+        driver_dl_expiry / driver_dl_issued_date), NOT as a linked Driver.
+      - Driver document URLs are copied from invite.uploaded_files onto the
+        inline driver_id_image_front / driver_dl_image_front columns — the
+        exact columns the KYC gate (lifecycle.py::activate_client) reads.
+      - After this commit, ClientOut.driver is fully populated and
+        activation works without any manual re-entry.
     """
     await set_public_rls_context(db, token)
-    
-    # ✅ FIX: Eagerly load tenant to prevent MissingGreenlet lazy-load errors
+
+    # ✅ Eagerly load tenant to prevent MissingGreenlet lazy-load errors
     stmt = (
         select(ClientInvite)
         .options(selectinload(ClientInvite.tenant))
@@ -337,6 +378,12 @@ async def submit_invite(
     )
 
     # 3) ARRANGEMENT GUARDS
+    #    ClientIntakeCreate enforces:
+    #      - own_driver requires a driver block (ClientBase model_validator)
+    #      - driver block is nulled for other arrangements
+    #    Document requirements mirror lifecycle.py::activate_client.
+    uploaded_files = invite.uploaded_files or {}
+
     if payload.driving_arrangement == "self_drive" and not payload.dl_image_front:
         raise ValidationFailedError(
             title="Driver's Licence Image Required",
@@ -344,14 +391,28 @@ async def submit_invite(
             field_errors={"dl_image_front": "Required for self-drive arrangement"},
         )
 
-    # 4) CREATE CLIENT - Map invite uploads to client fields
+    if payload.driving_arrangement == "own_driver":
+        missing_driver_docs: dict[str, str] = {}
+        if not uploaded_files.get("driver_id_front"):
+            missing_driver_docs["driver_id_front"] = (
+                "A photo of the personal driver's ID is required"
+            )
+        if not uploaded_files.get("driver_dl_front"):
+            missing_driver_docs["driver_dl_front"] = (
+                "A photo of the personal driver's licence is required"
+            )
+        if missing_driver_docs:
+            raise ValidationFailedError(
+                title="Driver Documents Required",
+                message="Upload the personal driver's ID and licence photos before submitting.",
+                field_errors=missing_driver_docs,
+            )
+
+    # 4) BUILD CLIENT DATA — mirrors management.py::create_client
     client_data = payload.model_dump(exclude={"driver"})
     client_data["full_name"] = _concat_full_name(payload.first_name, payload.last_name)
-    
-    # ✅ CRITICAL FIX: Copy uploaded documents from invite to client record
-    uploaded_files = invite.uploaded_files or {}
-    
-    # Map invite upload fields to client document fields
+
+    # ✅ Client documents — copy from invite.uploaded_files
     if "id_front" in uploaded_files:
         client_data["id_image_front"] = uploaded_files["id_front"]
     if "id_back" in uploaded_files:
@@ -360,6 +421,21 @@ async def submit_invite(
         client_data["dl_image_front"] = uploaded_files["dl_front"]
     if "avatar" in uploaded_files:
         client_data["avatar_image"] = uploaded_files["avatar"]
+
+    # ✅ Client-owned driver block — written INLINE (management.py parity)
+    if payload.driving_arrangement == "own_driver" and payload.driver:
+        client_data["driver_full_name"] = payload.driver.full_name
+        client_data["driver_phone"] = payload.driver.phone
+        client_data["driver_id_number"] = payload.driver.id_number
+        client_data["driver_dl_number"] = payload.driver.dl_number
+        client_data["driver_dl_expiry"] = payload.driver.dl_expiry
+        client_data["driver_dl_issued_date"] = payload.driver.dl_issued_date
+
+        # ✅ Driver document URLs → inline columns (KYC gate reads these)
+        if "driver_id_front" in uploaded_files:
+            client_data["driver_id_image_front"] = uploaded_files["driver_id_front"]
+        if "driver_dl_front" in uploaded_files:
+            client_data["driver_dl_image_front"] = uploaded_files["driver_dl_front"]
 
     client = Client(
         tenant_id=invite.tenant_id,
@@ -373,32 +449,18 @@ async def submit_invite(
     try:
         await db.flush()
 
-        # 5) OWN DRIVER: create linked Driver record
-        if payload.driving_arrangement == "own_driver" and payload.driver:
-            block = payload.driver
-            driver = Driver(
-                tenant_id=invite.tenant_id,
-                client_id=client.id,
-                full_name=block.full_name,
-                phone=block.phone,
-                id_number=block.id_number,
-                dl_number=block.dl_number,
-                dl_expiry=block.dl_expiry,
-                dl_issued_date=block.dl_issued_date,
-                employment_type=DriverEmploymentType.contracted.value,
-                verification_status=DriverVerificationStatus.unverified.value,
-            )
-            db.add(driver)
-
-        # ✅ Re-link document registry from invite to client
-        # ✅ FIX: owner_type is already "client", just update owner_id from invite.id to client.id
+        # ✅ Re-link document registry from invite to client.
+        #    owner_type is already "client"; only owner_id changes.
         await db.execute(
             update(DocumentRegistry)
-            .where(DocumentRegistry.owner_type == "client", DocumentRegistry.owner_id == invite.id)
+            .where(
+                DocumentRegistry.owner_type == "client",
+                DocumentRegistry.owner_id == invite.id,
+            )
             .values(owner_id=client.id)
         )
 
-        # 7) Mark invite as accepted
+        # ✅ Mark invite accepted
         invite.status = ClientInviteStatus.accepted
         invite.accepted_client_id = client.id
         invite.uploaded_files = None
@@ -424,16 +486,27 @@ async def upload_invite_document(
     request: Request,
     token: str,
     file: UploadFile = File(...),
-    field: str = Query(..., description="avatar | id_front | id_back | dl_front"),
+    field: str = Query(
+        ...,
+        description="avatar | id_front | id_back | dl_front | driver_id_front | driver_dl_front",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
     ✅ PUBLIC: Upload a document with forensic stamping + registry guard.
+
+    ✅ Driver slots (driver_id_front, driver_dl_front) are accepted
+    unconditionally here. Whether they're consumed depends on the
+    driving_arrangement declared on the eventual submit payload.
+    Extra driver docs uploaded on a non-own_driver invite are harmlessly
+    orphaned at submit time — the DB columns won't be written.
     """
     await set_public_rls_context(db, token)
-    
-    # ✅ FIX: Eagerly load tenant to prevent MissingGreenlet lazy-load errors
-    stmt = select(ClientInvite).options(selectinload(ClientInvite.tenant)).where(ClientInvite.token == token)
+
+    # ✅ Eagerly load tenant to prevent MissingGreenlet lazy-load errors
+    stmt = select(ClientInvite).options(selectinload(ClientInvite.tenant)).where(
+        ClientInvite.token == token
+    )
     invite = (await db.execute(stmt)).scalars().first()
 
     _invite_live_or_raise(invite)
@@ -442,39 +515,41 @@ async def upload_invite_document(
     if field not in VALID_UPLOAD_FIELDS:
         raise ValidationFailedError(
             title="Invalid Document Slot",
-            message=f"Unknown upload field. Must be one of: {', '.join(sorted(VALID_UPLOAD_FIELDS))}",
-            field_errors={"field": "Must be one of: avatar, id_front, id_back, dl_front"},
+            message=(
+                f"Unknown upload field. Must be one of: "
+                f"{', '.join(sorted(VALID_UPLOAD_FIELDS))}"
+            ),
+            field_errors={
+                "field": (
+                    "Must be one of: avatar, id_front, id_back, dl_front, "
+                    "driver_id_front, driver_dl_front"
+                )
+            },
         )
 
-    # Content-type guard
-    allow_pdf = field != "avatar"
+    # Content-type guard — avatar is image-only; everything else allows PDF
+    allow_pdf = field in _PDF_ALLOWED_FIELDS
     _assert_upload_content_type(file, allow_pdf=allow_pdf)
 
-    # ✅ Use "compliance" category for ID/DL docs, "avatar" for profile pic
+    # ✅ Use "compliance" category for all compliance docs; avatar for profile pic
     category = "avatar" if field == "avatar" else "compliance"
 
-    # Slot map for registry
-    slot_map = {
-        "avatar": "avatar",
-        "id_front": "id_front",
-        "id_back": "id_back",
-        "dl_front": "dl_front",
-    }
+    # Registry slot name = upload field name (1:1 mapping)
+    slot_map = {name: name for name in VALID_UPLOAD_FIELDS}
 
     try:
-        # ✅ Secure ingest: hash → watermark → upload → register
         file_url = await _upload_public_document(
             file,
             tenant_id=invite.tenant_id,
             category=category,
             db=db,
-            owner_type="client",  # ✅ FIXED: Use "client" to match DB constraint
-            owner_id=invite.id,   # Temporary owner_id
+            owner_type="client",
+            owner_id=invite.id,
             slot=slot_map[field],
             tenant_name=invite.tenant.name if invite.tenant else "Agency",
         )
 
-        # ✅ SLOT UPSERT - Store in invite.uploaded_files
+        # ✅ SLOT UPSERT — stored in invite.uploaded_files
         uploaded = dict(invite.uploaded_files or {})
         old_url = uploaded.get(field)
         uploaded[field] = file_url
@@ -495,8 +570,9 @@ async def upload_invite_document(
             "url": file_url,
             "field": field,
         }
+    except AppException:
+        raise
     except Exception as e:
-        # ✅ Log the actual error for debugging
         print(f"❌ Invite upload failed for field={field}: {type(e).__name__}: {e}")
         raise ServerError(
             title="Upload Failed",
