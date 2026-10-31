@@ -5,8 +5,8 @@
 ✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 ✅ UPGRADE:
   - Name split: full_name concatenated server-side from first/last.
-  - Driving arrangement: self_drive enforces DL data; own_driver creates a
-    linked personal Driver (contracted) in the SAME transaction.
+  - Driving arrangement: self_drive enforces DL data; own_driver stores
+    the personal driver INLINE on the client record (client-owned pack).
   - Identity engine now covers cross-entity (client ↔ driver) collisions.
   - FIXED RUNTIME BUG: BookingStatus.ongoing doesn't exist (AttributeError → 500).
 """
@@ -27,16 +27,15 @@ from app.dependencies.tenant import TenantScope, get_tenant_scope, require_mutat
 from app.models.users import User
 from app.models.clients import Client
 from app.models.bookings import Booking, BookingStatus
-from app.models.drivers import Driver, DriverEmploymentType, DriverVerificationStatus
-from app.schemas.client import ClientCreate, ClientOut, ClientUpdate
+from app.schemas.client import ClientCreate, ClientOut, ClientUpdate, ClientDriverBlock
 from app.schemas.pagination import PaginatedResponse, paginate_items, paginate_cached_items
 from app.services.cache import get_cached_client_list, set_cached_client_list, invalidate_client_cache
 from app.services.client_identity import (
     collect_client_identity_conflicts,
-    collect_driver_identity_conflicts,
     compute_risk_flags,
 )
 from app.services.client_tasks import ClientTaskService
+from app.services.storage import delete_file  # ✅ for driver image cleanup
 from ._helpers import get_authorized_client_async
 
 router = APIRouter()
@@ -80,6 +79,31 @@ def _assert_self_drive_data(client_in: ClientCreate) -> None:
         )
 
 
+def _client_driver_fields(block: ClientDriverBlock) -> dict:
+    """
+    ✅ Flatten a ClientDriverBlock into the client-owned driver_* columns.
+    Called on CREATE and UPDATE — single source of truth.
+    """
+    return {
+        "driver_full_name": block.full_name,
+        "driver_phone": block.phone,
+        "driver_id_number": block.id_number,
+        "driver_dl_number": block.dl_number,
+        "driver_dl_expiry": block.dl_expiry,
+        "driver_dl_issued_date": block.dl_issued_date,
+    }
+
+
+def _safe_delete_orphan(url: str | None, tenant_id: int) -> None:
+    """Fail-safe deletion — never raises, orphaning a file is worse than a 500."""
+    if not url:
+        return
+    try:
+        delete_file(url, tenant_id=tenant_id)
+    except Exception as e:
+        print(f"⚠️ Warning: failed to delete orphaned file {url}: {e}")
+
+
 async def _assert_no_live_bookings(db: AsyncSession, client_id: int, action: str) -> None:
     """✅ FIXED: was BookingStatus.ongoing (AttributeError → 500 on every call)."""
     live_booking = (await db.execute(
@@ -108,7 +132,7 @@ async def create_client(
     current_user: User = Depends(require_not_commission_locked),
     scope: TenantScope = Depends(require_mutation_tenant_scope),
 ):
-    # ✅ IDENTITY ENGINE: hard blocks incl. cross-entity (phone/email/id slot/dl)
+    # ✅ IDENTITY ENGINE: hard blocks (phone/email/id slot/dl on CLIENT fields only)
     conflicts = await collect_client_identity_conflicts(
         db,
         scope.tenant_id,
@@ -123,18 +147,6 @@ async def create_client(
 
     # ✅ ARRANGEMENT GUARDS
     _assert_self_drive_data(client)
-
-    # ✅ OWN DRIVER: pre-check the driver's identity BEFORE touching the client
-    if client.driving_arrangement == "own_driver" and client.driver:
-        driver_conflicts = await collect_driver_identity_conflicts(
-            db,
-            scope.tenant_id,
-            phone=client.driver.phone,
-            id_number=client.driver.id_number,
-            dl_number=client.driver.dl_number,
-        )
-        if driver_conflicts:
-            raise _conflict_error(driver_conflicts, title="Duplicate Driver Details")
 
     # ✅ RISK FLAGS: soft suspicion (F1 self-reference, F2 recycled emergency #)
     is_flagged, flag_notes = await compute_risk_flags(
@@ -153,25 +165,13 @@ async def create_client(
         is_flagged=is_flagged,
         flag_notes=flag_notes,
     )
-    db.add(db_client)
-    await db.flush()  # ✅ populate db_client.id for the driver link
 
-    # ✅ PERSONAL DRIVER: linked record in the SAME transaction
+    # ✅ PERSONAL DRIVER: stored INLINE on the client row (own_driver only)
     if client.driving_arrangement == "own_driver" and client.driver:
-        block = client.driver
-        db_driver = Driver(
-            tenant_id=scope.tenant_id,
-            client_id=db_client.id,
-            full_name=block.full_name,
-            phone=block.phone,
-            id_number=block.id_number,
-            dl_number=block.dl_number,
-            dl_expiry=block.dl_expiry,
-            dl_issued_date=block.dl_issued_date,
-            employment_type=DriverEmploymentType.contracted.value,
-            verification_status=DriverVerificationStatus.unverified.value,
-        )
-        db.add(db_driver)
+        for field, value in _client_driver_fields(client.driver).items():
+            setattr(db_client, field, value)
+
+    db.add(db_client)
 
     try:
         await db.commit()
@@ -286,7 +286,7 @@ async def update_client(
     current_user: User = Depends(require_active_subscription),
 ):
     client = await get_authorized_client_async(client_id, current_user, db)
-    update_data = updates.model_dump(exclude_unset=True)
+    update_data = updates.model_dump(exclude_unset=True, exclude={"driver"})
 
     # ✅ NAME SPLIT: if either name part changes, recompute full_name from the
     # merged state (legacy rows with NULL parts fall back to existing parts).
@@ -322,6 +322,47 @@ async def update_client(
         )
         if conflicts:
             raise _conflict_error(conflicts)
+
+    # ✅ OWN DRIVER: apply nested driver block into inline client_* columns.
+    #    Only when the arrangement remains own_driver.
+    next_arrangement = update_data.get("driving_arrangement", client.driving_arrangement)
+    if updates.driver is not None and next_arrangement == "own_driver":
+        # ✅ Capture the old identity BEFORE overwriting so we can detect
+        #    a driver swap and clear stale driver document images.
+        old_driver_id = client.driver_id_number
+        old_driver_dl = client.driver_dl_number
+
+        for field, value in _client_driver_fields(updates.driver).items():
+            setattr(client, field, value)
+
+        # ✅ If the driver's ID or DL changed, the previously uploaded photos
+        #    belong to the OLD driver — clear them and delete from storage.
+        driver_identity_changed = (
+            updates.driver.id_number != old_driver_id
+            or updates.driver.dl_number != old_driver_dl
+        )
+        if driver_identity_changed:
+            for slot in ("driver_id_image_front", "driver_dl_image_front"):
+                old_url = getattr(client, slot)
+                setattr(client, slot, None)
+                _safe_delete_orphan(old_url, client.tenant_id)
+
+    # ✅ If arrangement is being changed away from own_driver, clear the driver
+    #    block AND its document slots.
+    if (
+        "driving_arrangement" in update_data
+        and update_data["driving_arrangement"] != "own_driver"
+    ):
+        # Clear identity columns
+        for field in _client_driver_fields(ClientDriverBlock(
+            full_name="x", phone="0000000", id_number="x", dl_number="x"
+        )).keys():
+            setattr(client, field, None)
+        # Clear and delete driver document images
+        for slot in ("driver_id_image_front", "driver_dl_image_front"):
+            old_url = getattr(client, slot)
+            setattr(client, slot, None)
+            _safe_delete_orphan(old_url, client.tenant_id)
 
     # Apply updates
     for field, value in update_data.items():

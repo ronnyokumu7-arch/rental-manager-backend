@@ -1,6 +1,6 @@
 from datetime import datetime, date
 from typing import Optional, Literal
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator, computed_field
 from app.models.clients import ClientStatus, IdType, ClientVerificationStatus
 
 # ✅ DRIVING ARRANGEMENT: who is behind the wheel for this client's bookings.
@@ -23,6 +23,11 @@ class ClientDriverBlock(BaseModel):
     dl_number: str = Field(..., min_length=4, max_length=50)
     dl_expiry: Optional[date] = Field(default=None, description="Must be a future date")
     dl_issued_date: Optional[date] = Field(default=None, description="Must be a past date")
+
+    # ✅ Read-only image URLs (populated via the client's driver doc
+    # upload endpoints — never sent by the client on create/update)
+    id_image_front: Optional[str] = None
+    dl_image_front: Optional[str] = None
 
     @field_validator("full_name")
     @classmethod
@@ -174,6 +179,8 @@ class ClientUpdate(BaseModel):
     
     # ✅ Allow updating arrangement later if needed
     driving_arrangement: Optional[DrivingArrangement] = None
+    # ✅ NEW: allow updating the client-owned driver block
+    driver: Optional[ClientDriverBlock] = None
 
     @field_validator("first_name", "last_name", "full_name")
     @classmethod
@@ -242,6 +249,18 @@ class ClientOut(BaseModel):
     # ✅ DRIVING ARRANGEMENT (exposed for frontend badges)
     driving_arrangement: DrivingArrangement = "self_drive"
     
+    # ✅ CLIENT-OWNED DRIVER: raw columns used to assemble the nested
+    # `driver` computed field. `exclude=True` keeps them out of the JSON
+    # response while still letting `from_attributes` read them off the ORM.
+    driver_full_name: Optional[str] = Field(default=None, exclude=True)
+    driver_phone: Optional[str] = Field(default=None, exclude=True)
+    driver_id_number: Optional[str] = Field(default=None, exclude=True)
+    driver_dl_number: Optional[str] = Field(default=None, exclude=True)
+    driver_dl_expiry: Optional[date] = Field(default=None, exclude=True)
+    driver_dl_issued_date: Optional[date] = Field(default=None, exclude=True)
+    driver_id_image_front: Optional[str] = Field(default=None, exclude=True)
+    driver_dl_image_front: Optional[str] = Field(default=None, exclude=True)
+    
     status: ClientStatus
     residential_address: Optional[str] = None
     work_address: Optional[str] = None
@@ -269,3 +288,27 @@ class ClientOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def driver(self) -> Optional[ClientDriverBlock]:
+        """
+        ✅ Expose client-owned driver data as a nested `driver` block
+        whenever `driving_arrangement == "own_driver"` and at least the
+        identity fields are present. Returns None otherwise.
+        """
+        if self.driving_arrangement != "own_driver":
+            return None
+        if not (self.driver_full_name and self.driver_phone
+                and self.driver_id_number and self.driver_dl_number):
+            return None
+        return ClientDriverBlock(
+            full_name=self.driver_full_name,
+            phone=self.driver_phone,
+            id_number=self.driver_id_number,
+            dl_number=self.driver_dl_number,
+            dl_expiry=self.driver_dl_expiry,
+            dl_issued_date=self.driver_dl_issued_date,
+            id_image_front=self.driver_id_image_front,
+            dl_image_front=self.driver_dl_image_front,
+        )

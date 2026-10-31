@@ -5,6 +5,9 @@
 ✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 ✅ AUDIT (Phase B): activation KYC gate now returns field_errors so the form
    can highlight exactly which document is missing.
+✅ UPGRADE: KYC gate is arrangement-aware — self_drive needs the client's DL,
+   own_driver needs the personal driver's ID + DL, chauffeur needs only the
+   client's own ID.
 """
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,16 +45,37 @@ async def activate_client(
             message="This client is already active.",
         )
     
-    # ✅ KYC GATE: field-level errors so the form highlights what's missing
+    # ✅ KYC GATE: arrangement-aware, field-level errors so the form
+    #    highlights exactly what's missing.
     missing_docs: dict[str, str] = {}
+
+    # Every arrangement requires the CLIENT'S OWN ID (they are the account holder)
     if not client.id_image_front:
         missing_docs["id_image_front"] = "A photo of the client's ID is required"
-    if not client.dl_image_front:
-        missing_docs["dl_image_front"] = "A photo of the driver's licence is required"
+
+    arrangement = client.driving_arrangement or "self_drive"
+
+    if arrangement == "self_drive":
+        # Client drives — their own driver's licence must be on file
+        if not client.dl_image_front:
+            missing_docs["dl_image_front"] = "A photo of the client's driver's licence is required"
+
+    elif arrangement == "own_driver":
+        # Personal driver — their ID + DL must be on file
+        if not client.driver_id_image_front:
+            missing_docs["driver_id_image_front"] = "A photo of the personal driver's ID is required"
+        if not client.driver_dl_image_front:
+            missing_docs["driver_dl_image_front"] = "A photo of the personal driver's licence is required"
+
+    # chauffeur → agency-assigned driver; client's own ID is sufficient
+
     if missing_docs:
         raise BadRequestError(
             title="Missing Required Documents",
-            message="Add photos of the client's ID and driver's licence before activating them.",
+            message=(
+                "Complete the required documents before activating this client. "
+                "The specific missing items are listed below."
+            ),
             field_errors=missing_docs,
         )
         

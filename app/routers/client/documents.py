@@ -10,6 +10,9 @@ Re-uploading a slot can NEVER accumulate files.
   - Storage failures → typed ServerError (was: raw 500).
   - Old-file deletion is fail-safe (orphan > false 500 after commit).
   - Removed duplicate on_client_created calls (task trigger lives in CREATE only).
+
+✅ CLIENT-OWNED DRIVER SLOTS: driver ID + DL images are stored on the
+client record (own_driver arrangement only). Same upsert semantics.
 """
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -158,6 +161,74 @@ async def upload_avatar(
 
     old_url = client.avatar_image
     client.avatar_image = file_url
+    await db.commit()
+    await db.refresh(client)
+    _safe_delete_replaced(old_url, file_url, client.tenant_id)
+
+    await invalidate_client_cache(client.tenant_id)
+
+    return client
+
+
+# ---------------------------------------------------------------------------
+# ✅ CLIENT-OWNED DRIVER DOCUMENT UPLOADS (own_driver arrangement only)
+# ---------------------------------------------------------------------------
+
+@router.post("/{client_id}/upload-driver-id-front", response_model=ClientOut)
+@limiter.limit("15/minute")
+async def upload_driver_id_front(
+    request: Request,
+    client_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
+):
+    client = await get_authorized_client_async(client_id, current_user, db)
+
+    # ✅ Guard: only meaningful when the client owns a personal driver
+    if client.driving_arrangement != "own_driver":
+        raise ValidationFailedError(
+            title="No Personal Driver",
+            message="Driver documents can only be uploaded when the driving arrangement is 'own_driver'.",
+            field_errors={"file": "Client has no personal driver"},
+        )
+
+    file_url = await _upload_slot_image(file, client.tenant_id, category="compliance")
+
+    old_url = client.driver_id_image_front
+    client.driver_id_image_front = file_url
+    await db.commit()
+    await db.refresh(client)
+    _safe_delete_replaced(old_url, file_url, client.tenant_id)
+
+    await invalidate_client_cache(client.tenant_id)
+
+    return client
+
+
+@router.post("/{client_id}/upload-driver-dl-front", response_model=ClientOut)
+@limiter.limit("15/minute")
+async def upload_driver_dl_front(
+    request: Request,
+    client_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_active_subscription),
+):
+    client = await get_authorized_client_async(client_id, current_user, db)
+
+    # ✅ Guard: only meaningful when the client owns a personal driver
+    if client.driving_arrangement != "own_driver":
+        raise ValidationFailedError(
+            title="No Personal Driver",
+            message="Driver documents can only be uploaded when the driving arrangement is 'own_driver'.",
+            field_errors={"file": "Client has no personal driver"},
+        )
+
+    file_url = await _upload_slot_image(file, client.tenant_id, category="compliance")
+
+    old_url = client.driver_dl_image_front
+    client.driver_dl_image_front = file_url
     await db.commit()
     await db.refresh(client)
     _safe_delete_replaced(old_url, file_url, client.tenant_id)

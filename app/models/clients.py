@@ -61,6 +61,19 @@ class Client(Base, AuditMixin):
     # derived on read (never store computed years — they go stale).
     dl_issued_date = Column(Date, nullable=True)
 
+    # ✅ CLIENT-OWNED PERSONAL DRIVER (own_driver arrangement only)
+    # These fields belong to the client record — a personal driver is part
+    # of the client's "pack", not a pool Driver row. Stored inline so the
+    # client endpoint is the single source of truth for the client's driver.
+    driver_full_name = Column(String(150), nullable=True)
+    driver_phone = Column(String(30), nullable=True)
+    driver_id_number = Column(String(50), nullable=True)
+    driver_dl_number = Column(String(50), nullable=True)
+    driver_dl_expiry = Column(Date, nullable=True)
+    driver_dl_issued_date = Column(Date, nullable=True)
+    driver_id_image_front = Column(String(500), nullable=True)
+    driver_dl_image_front = Column(String(500), nullable=True)
+
     # ✅ DRIVING ARRANGEMENT: who is behind the wheel for this client's bookings.
     driving_arrangement = Column(
         String(20),
