@@ -31,6 +31,7 @@ from app.schemas.contract import ContractOut
 from app.services.cache import invalidate_contract_cache
 from app.services.contracts import create_contract_for_booking, render_and_store_contract_pdf
 from app.services.email import send_contract_to_client
+from app.services.activity_logs.contract import ContractActivityLogger
 from ._helpers import get_authorized_contract_async
 
 router = APIRouter()
@@ -144,8 +145,11 @@ async def generate_share_link(
     contract.share_token = str(uuid.uuid4())
     contract.share_token_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
 
+    was_sent = contract.status == ContractStatus.sent
     if contract.status == ContractStatus.draft:
         contract.status = ContractStatus.sent
+    if not was_sent and contract.status == ContractStatus.sent:
+        await ContractActivityLogger.on_sent(db, current_user.tenant_id, current_user.id, contract)
 
     await db.commit()
     await db.refresh(contract)
@@ -200,7 +204,10 @@ async def send_contract_to_client_endpoint(
         contract.share_token = str(uuid.uuid4())
         contract.share_token_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
 
+    was_sent = contract.status == ContractStatus.sent
     contract.status = ContractStatus.sent
+    if not was_sent:
+        await ContractActivityLogger.on_sent(db, current_user.tenant_id, current_user.id, contract)
     await db.commit()
     await db.refresh(contract)
     await invalidate_contract_cache(current_user.tenant_id)

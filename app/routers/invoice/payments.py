@@ -132,7 +132,9 @@ async def record_offline_payment(
             payment=db_payment,
             invoice_number=invoice.invoice_number,
         )
+        await db.commit()
     except Exception as e:
+        await db.rollback()
         print(f"⚠️ Warning: Failed to log payment received: {e}")
     
     return db_payment

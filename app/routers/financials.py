@@ -189,9 +189,11 @@ async def get_financial_overview(
     recent_payments_stmt = select(
         Payment, Invoice.invoice_number, Booking.id.label('booking_id')
     ).outerjoin(
-        Invoice, Payment.invoice_id == Invoice.id
+        Invoice,
+        (Payment.invoice_id == Invoice.id) & (Invoice.tenant_id == tenant_id)
     ).outerjoin(
-        Booking, Invoice.booking_id == Booking.id
+        Booking,
+        (Invoice.booking_id == Booking.id) & (Booking.tenant_id == tenant_id)
     ).where(
         Payment.tenant_id == tenant_id,
         Payment.status == PaymentStatus.completed
@@ -217,6 +219,7 @@ async def get_financial_overview(
         Booking, Contract.booking_id == Booking.id
     ).where(
         Contract.tenant_id == tenant_id,
+        Booking.tenant_id == tenant_id,
         Contract.status == ContractStatus.signed
     ).order_by(Contract.client_signed_at.desc()).limit(2)
     
@@ -229,6 +232,29 @@ async def get_financial_overview(
             title="Contract Signed",
             description=f"Contract #{c.contract_number} signed",
             timestamp=c.client_signed_at or c.created_at,
+            link=f"/dashboard/bookings/{booking_id}"
+        ))
+
+    # Fetch recent sent contracts (last 2)
+    recent_sent_contracts_stmt = select(
+        Contract, Booking.id.label('booking_id')
+    ).join(
+        Booking, Contract.booking_id == Booking.id
+    ).where(
+        Contract.tenant_id == tenant_id,
+        Booking.tenant_id == tenant_id,
+        Contract.status == ContractStatus.sent
+    ).order_by(Contract.updated_at.desc()).limit(2)
+
+    recent_sent_contracts_result = (await db.execute(recent_sent_contracts_stmt)).all()
+
+    for c, booking_id in recent_sent_contracts_result:
+        activities.append(ActivityItem(
+            id=f"con_sent_{c.id}",
+            type="contract_sent",
+            title="Contract Sent",
+            description=f"Contract #{c.contract_number} sent",
+            timestamp=c.updated_at or c.created_at,
             link=f"/dashboard/bookings/{booking_id}"
         ))
 

@@ -32,6 +32,7 @@ router = APIRouter(
 
 MAX_LOG_LIMIT = 100
 DEFAULT_LOG_LIMIT = 50
+RECENT_ACTIVITY_ACTIONS = ("payment_received", "contract_sent", "contract_signed")
 
 
 @router.get("/", response_model=PaginatedResponse[ActivityLogOut])
@@ -40,6 +41,10 @@ async def get_activity_logs(
     request: Request,
     user_id: Optional[int] = Query(None, description="Filter by specific user ID (personal/audit view)"),
     action: Optional[str] = Query(None, description="Filter by specific action (e.g., 'payment_received')"),
+    recent_activity_only: bool = Query(
+        False,
+        description="Limit results to payments received and contracts sent or signed",
+    ),
     target_type: Optional[str] = Query(None, description="Filter by target type (e.g., 'booking', 'vehicle')"),
     start_date: Optional[datetime] = Query(None, description="Start date for filtering"),
     end_date: Optional[datetime] = Query(None, description="End date for filtering"),
@@ -85,6 +90,8 @@ async def get_activity_logs(
     # ── Optional dimension filters ─────────────────────────────────────────
     if action:
         filters.append(ActivityLog.action == action)
+    if recent_activity_only:
+        filters.append(ActivityLog.action.in_(RECENT_ACTIVITY_ACTIONS))
     if target_type:
         filters.append(ActivityLog.target_type == target_type)
     if start_date:

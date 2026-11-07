@@ -41,6 +41,7 @@ from app.services.cache import (
     invalidate_booking_cache, invalidate_vehicle_cache, invalidate_contract_cache,
 )
 from app.services.contract_pdf import generate_contract_pdf
+from app.services.activity_logs.contract import ContractActivityLogger
 from app.services.storage import upload_file
 
 router = APIRouter()
@@ -237,6 +238,12 @@ async def sign_contract_public(
     contract.client_signed_at = now
     contract.status = ContractStatus.signed
     contract.pdf_path = None   # force fresh render with signature
+    await ContractActivityLogger.on_signed(
+        db=db,
+        tenant_id=contract.tenant_id,
+        user_id=None,
+        contract=contract,
+    )
     await db.flush()
 
     # ✅ AUTO-START: only when pickup time has arrived (now or past).

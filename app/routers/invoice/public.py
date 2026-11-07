@@ -46,6 +46,7 @@ from app.services.cache import (
 )
 from app.services.invoice_pdf import generate_invoice_pdf
 from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure engine
+from app.services.activity_logs.payment import PaymentActivityLogger
 
 router = APIRouter()
 
@@ -427,6 +428,30 @@ async def record_payment_public(
     await db.refresh(db_payment)
     await invalidate_subscription_cache(invoice.tenant_id)
     await invalidate_invoice_cache(invoice.tenant_id)
+
+    try:
+        payment_stmt = select(Payment).options(
+            selectinload(Payment.invoice)
+            .selectinload(Invoice.booking)
+            .selectinload(Booking.client)
+        ).where(
+            Payment.id == db_payment.id,
+            Payment.tenant_id == invoice.tenant_id,
+        )
+        payment = (await db.execute(payment_stmt)).scalars().unique().first()
+        if payment is None:
+            raise RuntimeError("Newly recorded payment could not be reloaded for activity logging")
+        await PaymentActivityLogger.on_recorded(
+            db=db,
+            tenant_id=invoice.tenant_id,
+            user_id=None,
+            payment=payment,
+            invoice_number=invoice.invoice_number,
+        )
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"⚠️ Warning: Failed to log public payment received: {e}")
 
     return await _build_public_view(db, invoice.id, token)
 

@@ -21,16 +21,42 @@ class ContractActivityLogger:
     """Logger for Contract lifecycle events."""
 
     @staticmethod
+    async def on_sent(db: AsyncSession, tenant_id: int, user_id: Optional[int], contract) -> None:
+        """Log a contract entering the sent status."""
+        booking = _rel(contract, "booking")
+        client = _rel(booking, "client")
+        summary = {
+            "contract_number": contract.contract_number,
+            "booking_number": booking.booking_number if booking else None,
+            "client_name": client.full_name if client else None,
+            "client_phone": client.phone if client else None,
+        }
+
+        await ActivityLogService.log(
+            db=db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="contract_sent",
+            label="Contract Sent",
+            target_type="contract",
+            target_id=contract.id,
+            summary=summary,
+            details={"contract_number": contract.contract_number},
+            priority=2,
+        )
+
+    @staticmethod
     async def on_generated(db: AsyncSession, tenant_id: int, user_id: Optional[int], contract) -> None:
         """
         Log a contract generation event.
         """
-        client = _rel(contract, "client")
+        booking = _rel(contract, "booking")
+        client = _rel(booking, "client")
         summary = {
             "contract_number": contract.contract_number,
             "client_name": client.full_name if client else None,
             "client_phone": client.phone if client else None,
-            "booking_number": contract.booking_number if hasattr(contract, "booking_number") else None,
+            "booking_number": booking.booking_number if booking else None,
         }
 
         await ActivityLogService.log(
@@ -56,20 +82,21 @@ class ContractActivityLogger:
 
         ✅ CRITICAL: Signed contracts are High Priority (Business Win / Revenue).
         """
-        client = _rel(contract, "client")
+        booking = _rel(contract, "booking")
+        client = _rel(booking, "client")
         summary = {
             "contract_number": contract.contract_number,
             "client_name": client.full_name if client else None,
             "client_phone": client.phone if client else None,
             "signed_by": signer,
-            "booking_number": contract.booking_number if hasattr(contract, "booking_number") else None,
+            "booking_number": booking.booking_number if booking else None,
         }
 
         await ActivityLogService.log(
             db=db,
             tenant_id=tenant_id,
             user_id=user_id,
-            action="sign_contract",
+            action="contract_signed",
             label="Contract Signed",
             target_type="contract",
             target_id=contract.id,
@@ -86,7 +113,8 @@ class ContractActivityLogger:
         """
         Log a contract void event.
         """
-        client = _rel(contract, "client")
+        booking = _rel(contract, "booking")
+        client = _rel(booking, "client")
         summary = {
             "contract_number": contract.contract_number,
             "client_name": client.full_name if client else None,
