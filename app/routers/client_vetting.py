@@ -61,6 +61,68 @@ def _generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _save_client_driving_details(client: Client, payload: VettingDrivingDetails) -> None:
+    """Persist driving details while retaining evidence that still matches them."""
+    arrangement = payload.driving_arrangement
+    dl_number = payload.dl_number.strip().upper() if payload.dl_number else None
+    driver_id_number = payload.driver_id_number.strip().upper() if payload.driver_id_number else None
+    driver_dl_number = payload.driver_dl_number.strip().upper() if payload.driver_dl_number else None
+
+    if arrangement == "self_drive":
+        same_licence = (
+            client.driving_arrangement == arrangement
+            and client.dl_number == dl_number
+            and client.dl_expiry == payload.dl_expiry
+            and client.dl_issued_date == payload.dl_issued_date
+        )
+        client.driving_arrangement = arrangement
+        client.dl_number = dl_number
+        client.dl_expiry = payload.dl_expiry
+        client.dl_issued_date = payload.dl_issued_date
+        if not same_licence:
+            client.dl_image_front = None
+        for field in (
+            "driver_full_name", "driver_phone", "driver_id_number", "driver_dl_number",
+            "driver_dl_expiry", "driver_dl_issued_date", "driver_id_image_front", "driver_dl_image_front",
+        ):
+            setattr(client, field, None)
+    elif arrangement == "own_driver":
+        same_driver = (
+            client.driving_arrangement == arrangement
+            and client.driver_full_name == payload.driver_full_name
+            and client.driver_phone == payload.driver_phone
+            and client.driver_id_number == driver_id_number
+            and client.driver_dl_number == driver_dl_number
+            and client.driver_dl_expiry == payload.driver_dl_expiry
+            and client.driver_dl_issued_date == payload.driver_dl_issued_date
+        )
+        client.driving_arrangement = arrangement
+        client.dl_number = None
+        client.dl_expiry = None
+        client.dl_issued_date = None
+        client.dl_image_front = None
+        client.driver_full_name = payload.driver_full_name
+        client.driver_phone = payload.driver_phone
+        client.driver_id_number = driver_id_number
+        client.driver_dl_number = driver_dl_number
+        client.driver_dl_expiry = payload.driver_dl_expiry
+        client.driver_dl_issued_date = payload.driver_dl_issued_date
+        if not same_driver:
+            client.driver_id_image_front = None
+            client.driver_dl_image_front = None
+    else:
+        client.driving_arrangement = arrangement
+        client.dl_number = None
+        client.dl_expiry = None
+        client.dl_issued_date = None
+        client.dl_image_front = None
+        for field in (
+            "driver_full_name", "driver_phone", "driver_id_number", "driver_dl_number",
+            "driver_dl_expiry", "driver_dl_issued_date", "driver_id_image_front", "driver_dl_image_front",
+        ):
+            setattr(client, field, None)
+
+
 def _get_expiry() -> datetime:
     return datetime.now(timezone.utc) + timedelta(hours=72)
 
@@ -199,6 +261,41 @@ async def preview_vetting(request: Request, token: str, db: AsyncSession = Depen
         tenant_name=tenant_name,
         expires_at=target.verification_expires_at,
         person_first_name=first_name,
+        id_front_uploaded=bool(
+            person_type == "client" and getattr(target, "id_image_front", None)
+        ),
+        driving_arrangement=(
+            target.driving_arrangement
+            if person_type == "client" and target.driving_arrangement in {"self_drive", "own_driver", "chauffeur"}
+            else None
+        ),
+        dl_number=getattr(target, "dl_number", None) if person_type == "client" else None,
+        dl_expiry=getattr(target, "dl_expiry", None) if person_type == "client" else None,
+        dl_issued_date=getattr(target, "dl_issued_date", None) if person_type == "client" else None,
+        driver_full_name=getattr(target, "driver_full_name", None) if person_type == "client" else None,
+        driver_phone=getattr(target, "driver_phone", None) if person_type == "client" else None,
+        driver_id_number=getattr(target, "driver_id_number", None) if person_type == "client" else None,
+        driver_dl_number=getattr(target, "driver_dl_number", None) if person_type == "client" else None,
+        driver_dl_expiry=getattr(target, "driver_dl_expiry", None) if person_type == "client" else None,
+        driver_dl_issued_date=getattr(target, "driver_dl_issued_date", None) if person_type == "client" else None,
+        uploaded_slots=(
+            [
+                slot for slot, field in (
+                    ("id_front", "id_image_front"),
+                    ("dl_front", "dl_image_front"),
+                    ("driver_id_front", "driver_id_image_front"),
+                    ("driver_dl_front", "driver_dl_image_front"),
+                )
+                if getattr(target, field, None)
+            ]
+            if person_type == "client"
+            else []
+        ),
+        selfie_uploaded=bool(
+            getattr(target, "selfie_with_id_image", None)
+            if person_type == "client"
+            else getattr(target, "selfie_with_id_key", None)
+        ),
         steps=steps,
     )
 
@@ -221,42 +318,7 @@ async def save_vetting_driving_details(
             message="Driving details can only be supplied for a client verification.",
         )
 
-    client.driving_arrangement = payload.driving_arrangement
-    if payload.driving_arrangement == "self_drive":
-        client.dl_number = payload.dl_number.strip().upper() if payload.dl_number else None
-        client.dl_expiry = payload.dl_expiry
-        client.dl_issued_date = payload.dl_issued_date
-        # Evidence must match the newly declared licence.
-        client.dl_image_front = None
-        for field in (
-            "driver_full_name", "driver_phone", "driver_id_number", "driver_dl_number",
-            "driver_dl_expiry", "driver_dl_issued_date", "driver_id_image_front", "driver_dl_image_front",
-        ):
-            setattr(client, field, None)
-    elif payload.driving_arrangement == "own_driver":
-        client.dl_number = None
-        client.dl_expiry = None
-        client.dl_issued_date = None
-        client.driver_full_name = payload.driver_full_name
-        client.driver_phone = payload.driver_phone
-        client.driver_id_number = payload.driver_id_number.strip().upper() if payload.driver_id_number else None
-        client.driver_dl_number = payload.driver_dl_number.strip().upper() if payload.driver_dl_number else None
-        client.driver_dl_expiry = payload.driver_dl_expiry
-        client.driver_dl_issued_date = payload.driver_dl_issued_date
-        # A driver can be changed between attempts; never retain the previous
-        # driver's evidence after details are re-submitted.
-        client.driver_id_image_front = None
-        client.driver_dl_image_front = None
-    else:  # chauffeur
-        client.dl_number = None
-        client.dl_expiry = None
-        client.dl_issued_date = None
-        client.dl_image_front = None
-        for field in (
-            "driver_full_name", "driver_phone", "driver_id_number", "driver_dl_number",
-            "driver_dl_expiry", "driver_dl_issued_date", "driver_id_image_front", "driver_dl_image_front",
-        ):
-            setattr(client, field, None)
+    _save_client_driving_details(client, payload)
 
     await db.commit()
     return {"type": "success", "message": "Driving details saved."}
@@ -267,7 +329,7 @@ async def save_vetting_driving_details(
 async def upload_vetting_document(
     request: Request,
     token: str,
-    slot: Literal["id_front", "id_back", "dl_front", "driver_id_front", "driver_dl_front"] = Query(...),
+    slot: Literal["id_front", "dl_front", "driver_id_front", "driver_dl_front"] = Query(...),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
@@ -312,7 +374,6 @@ async def upload_vetting_document(
     )
     field_for_slot = {
         "id_front": "id_image_front",
-        "id_back": "id_image_back",
         "dl_front": "dl_image_front",
         "driver_id_front": "driver_id_image_front",
         "driver_dl_front": "driver_dl_image_front",

@@ -7,7 +7,9 @@ from pydantic import ValidationError
 from app.schemas.client import ClientCreate
 from app.schemas.client_invite import ClientIntakeCreate
 from app.schemas.vetting import VettingDrivingDetails
+from app.routers.client_vetting import _save_client_driving_details
 from app.services.client_verification import missing_client_verification_requirements
+from app.services.document_security import assert_allowed_content_type
 
 
 def basic_client_payload(**values):
@@ -35,8 +37,11 @@ def test_public_intake_accepts_basic_details_without_driving_info_or_documents()
 
     assert client.driving_arrangement == "pending"
     assert client.id_image_front is None
-    assert client.id_image_back is None
     assert client.dl_image_front is None
+
+
+def test_public_intake_does_not_accept_an_id_back_upload_field():
+    assert "id_image_back" not in ClientIntakeCreate.model_fields
 
 
 @pytest.mark.parametrize(
@@ -162,6 +167,17 @@ def test_verification_does_not_require_my_driver_issue_date():
     assert details.driver_dl_issued_date is None
 
 
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "image/jpeg", "image/png", "image/webp", "image/heic",
+        "image/heif", "image/avif", "image/bmp", "image/tiff",
+    ],
+)
+def test_vetting_accepts_supported_mobile_image_types(content_type):
+    assert_allowed_content_type(content_type, allow_pdf=False)
+
+
 def test_verification_still_requires_my_driver_licence_expiry():
     with pytest.raises(ValidationError):
         VettingDrivingDetails(
@@ -171,6 +187,93 @@ def test_verification_still_requires_my_driver_licence_expiry():
             driver_id_number="87654321",
             driver_dl_number="DL-456",
         )
+
+
+def test_saving_same_driving_details_preserves_uploaded_evidence():
+    client = SimpleNamespace(
+        driving_arrangement="self_drive",
+        dl_number="DL-123",
+        dl_expiry=date.today() + timedelta(days=30),
+        dl_issued_date=None,
+        dl_image_front="client-dl.jpg",
+        driver_full_name=None,
+        driver_phone=None,
+        driver_id_number=None,
+        driver_dl_number=None,
+        driver_dl_expiry=None,
+        driver_dl_issued_date=None,
+        driver_id_image_front=None,
+        driver_dl_image_front=None,
+    )
+    payload = VettingDrivingDetails(
+        driving_arrangement="self_drive",
+        dl_number="dl-123",
+        dl_expiry=date.today() + timedelta(days=30),
+    )
+
+    _save_client_driving_details(client, payload)
+
+    assert client.dl_image_front == "client-dl.jpg"
+
+
+def test_changing_driving_details_clears_stale_evidence():
+    client = SimpleNamespace(
+        driving_arrangement="self_drive",
+        dl_number="DL-123",
+        dl_expiry=date.today() + timedelta(days=30),
+        dl_issued_date=None,
+        dl_image_front="client-dl.jpg",
+        driver_full_name=None,
+        driver_phone=None,
+        driver_id_number=None,
+        driver_dl_number=None,
+        driver_dl_expiry=None,
+        driver_dl_issued_date=None,
+        driver_id_image_front=None,
+        driver_dl_image_front=None,
+    )
+    payload = VettingDrivingDetails(
+        driving_arrangement="self_drive",
+        dl_number="DL-456",
+        dl_expiry=date.today() + timedelta(days=30),
+    )
+
+    _save_client_driving_details(client, payload)
+
+    assert client.dl_number == "DL-456"
+    assert client.dl_image_front is None
+
+
+def test_saving_same_personal_driver_preserves_uploaded_evidence():
+    expiry = date.today() + timedelta(days=30)
+    client = SimpleNamespace(
+        driving_arrangement="own_driver",
+        dl_number=None,
+        dl_expiry=None,
+        dl_issued_date=None,
+        dl_image_front=None,
+        driver_full_name="Brian Otieno",
+        driver_phone="+254711111111",
+        driver_id_number="87654321",
+        driver_dl_number="DL-456",
+        driver_dl_expiry=expiry,
+        driver_dl_issued_date=None,
+        driver_id_image_front="driver-id.jpg",
+        driver_dl_image_front="driver-dl.jpg",
+    )
+    payload = VettingDrivingDetails(
+        driving_arrangement="own_driver",
+        driver_full_name="Brian Otieno",
+        driver_phone="+254711111111",
+        driver_id_number="87654321",
+        driver_dl_number="dl-456",
+        driver_dl_expiry=expiry,
+    )
+
+    _save_client_driving_details(client, payload)
+
+    assert client.driver_id_image_front == "driver-id.jpg"
+    assert client.driver_dl_image_front == "driver-dl.jpg"
 
 
 @pytest.mark.parametrize(
@@ -196,11 +299,11 @@ def test_verification_still_requires_my_driver_licence_expiry():
         },
     ],
 )
-def test_activation_requirements_do_not_include_licence_issue_date(driving_details):
+def test_activation_requirements_do_not_include_id_back_or_licence_issue_date(driving_details):
     client = SimpleNamespace(
         verification_status="verified",
         id_image_front="client-id-front.jpg",
-        id_image_back="client-id-back.jpg",
+        id_image_back=None,
         selfie_with_id_image="selfie.jpg",
         driving_arrangement=driving_details["driving_arrangement"],
         dl_number=driving_details.get("dl_number"),

@@ -25,7 +25,7 @@ class ClientInvite(Base, AuditMixin):
     - `expected_name` / `expected_phone` are OPTIONAL and informational only:
       they tell the tenant WHO they're expecting. Never enforced at intake.
     - `uploaded_files` tracks per-slot file URLs during the invite's life
-      (keys: "avatar" | "id_front" | "id_back" | "dl_front"). On re-upload,
+      (new uploads: "avatar" | "id_front" | "dl_front"). On re-upload,
       the previous file is deleted from storage. Cleared when invite is consumed.
     - created_by comes free from AuditMixin (which staff user sent the invite).
     """
@@ -60,7 +60,7 @@ class ClientInvite(Base, AuditMixin):
     )
 
     # ✅ MILESTONE: Per-slot file URL tracking during invite lifecycle.
-    # Keys: "avatar" | "id_front" | "id_back" | "dl_front".
+    # New upload keys: "avatar" | "id_front" | "dl_front".
     # On each re-upload, the previous URL is deleted from storage before storing new.
     # Cleared when the invite is consumed (accepted) or revoked.
     uploaded_files = Column(JSON, nullable=True, default=dict)

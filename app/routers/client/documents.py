@@ -98,30 +98,6 @@ async def upload_id_front(
     return client
 
 
-@router.post("/{client_id}/upload-id-back", response_model=ClientOut)
-@limiter.limit("15/minute")
-async def upload_id_back(
-    request: Request,
-    client_id: int,
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_active_subscription),
-):
-    client = await get_authorized_client_async(client_id, current_user, db)
-
-    file_url = await _upload_slot_image(file, client.tenant_id, category="compliance")
-
-    old_url = client.id_image_back
-    client.id_image_back = file_url
-    await db.commit()
-    await db.refresh(client)
-    _safe_delete_replaced(old_url, file_url, client.tenant_id)
-
-    await invalidate_client_cache(client.tenant_id)
-
-    return client
-
-
 @router.post("/{client_id}/upload-dl-front", response_model=ClientOut)
 @limiter.limit("15/minute")
 async def upload_dl_front(

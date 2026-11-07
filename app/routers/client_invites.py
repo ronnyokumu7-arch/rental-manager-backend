@@ -83,7 +83,6 @@ _PUBLIC_HOME = navigate_action("Go Home", "/")
 VALID_UPLOAD_FIELDS = {
     "avatar",
     "id_front",
-    "id_back",
     "dl_front",
     "driver_id_front",
     "driver_dl_front",
@@ -92,7 +91,6 @@ VALID_UPLOAD_FIELDS = {
 # Slots that may receive a PDF (everything except avatar).
 _PDF_ALLOWED_FIELDS = {
     "id_front",
-    "id_back",
     "dl_front",
     "driver_id_front",
     "driver_dl_front",
@@ -389,8 +387,6 @@ async def submit_invite(
     # ✅ Client documents — copy from invite.uploaded_files
     if "id_front" in uploaded_files:
         client_data["id_image_front"] = uploaded_files["id_front"]
-    if "id_back" in uploaded_files:
-        client_data["id_image_back"] = uploaded_files["id_back"]
     if "dl_front" in uploaded_files:
         client_data["dl_image_front"] = uploaded_files["dl_front"]
     if "avatar" in uploaded_files:
@@ -462,7 +458,7 @@ async def upload_invite_document(
     file: UploadFile = File(...),
     field: str = Query(
         ...,
-        description="avatar | id_front | id_back | dl_front | driver_id_front | driver_dl_front",
+        description="avatar | id_front | dl_front | driver_id_front | driver_dl_front",
     ),
     db: AsyncSession = Depends(get_db),
 ):
@@ -498,7 +494,7 @@ async def upload_invite_document(
             ),
             field_errors={
                 "field": (
-                    "Must be one of: avatar, id_front, id_back, dl_front, "
+                    "Must be one of: avatar, id_front, dl_front, "
                     "driver_id_front, driver_dl_front"
                 )
             },

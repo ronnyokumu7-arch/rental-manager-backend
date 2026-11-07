@@ -41,7 +41,7 @@ class ClientInviteOut(BaseModel):
     Pydantic picks them up via from_attributes, no cleanup job needed.
 
     ✅ MILESTONE: `uploaded_files` exposes per-slot upload progress
-    (keys: avatar | id_front | id_back | dl_front) so the tenant can see
+    (keys: avatar | id_front | dl_front) so the tenant can see
     how far the invitee got before submitting. URLs are tenant-owned
     (authenticated storage), safe to expose here.
     """
@@ -100,5 +100,4 @@ class ClientIntakeCreate(ClientBase):
     # not need to provide any of these fields.
     avatar_image: Optional[str] = Field(default=None, max_length=500)
     id_image_front: Optional[str] = Field(default=None, max_length=500)
-    id_image_back: Optional[str] = Field(default=None, max_length=500)
     dl_image_front: Optional[str] = Field(default=None, max_length=500)

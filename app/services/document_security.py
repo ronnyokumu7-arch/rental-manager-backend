@@ -27,8 +27,11 @@ from app.models.document_registry import DocumentRegistry
 
 OWNER_LABEL = {"client": "Client", "driver": "Driver"}
 
-# ✅ Content-type policy: doc slots allow images + PDF; avatar/selfie images only
-IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+# ✅ Content-type policy matches image formats supported by the storage pipeline.
+IMAGE_TYPES = {
+    "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
+    "image/avif", "image/bmp", "image/tiff",
+}
 
 
 def assert_allowed_content_type(content_type: Optional[str], *, allow_pdf: bool) -> None:

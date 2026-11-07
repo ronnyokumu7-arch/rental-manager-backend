@@ -10,8 +10,6 @@ def missing_client_verification_requirements(client: Client) -> dict[str, str]:
         missing["verification_status"] = "Client verification must be approved first"
     if not client.id_image_front:
         missing["id_image_front"] = "A photo of the front of the client's ID is required"
-    if not client.id_image_back:
-        missing["id_image_back"] = "A photo of the back of the client's ID is required"
     if not client.selfie_with_id_image:
         missing["selfie_with_id"] = "A selfie holding the client's ID is required"
 

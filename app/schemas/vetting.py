@@ -3,7 +3,8 @@
 ✅ VETTING (identity binding) schemas — public portal + admin review.
 
 Privacy stance mirrors client_invite.py:
-  * Public preview exposes branding + first name + remaining steps ONLY.
+  * Public preview exposes branding and the token owner's saved verification
+    details/documents so an interrupted owner can resume the same submission.
   * Dead/used/expired tokens → 410 GoneError (no existence leakage).
   * Tokens NEVER appear in any Out schema.
   * Status transitions are server-owned — no status field in any payload.
@@ -30,8 +31,8 @@ class StartVerificationOut(BaseModel):
 
 class PublicVettingPreviewOut(BaseModel):
     """
-    ✅ WHAT THE PUBLIC VETTING PAGE SEES for a VALID token:
-    branding + first name + remaining steps. Nothing else.
+    What the public vetting page sees for a valid bearer token: branding,
+    first name, and that person's saved verification details for resumption.
     Invalid/expired/used tokens → 410 Gone instead.
     """
     person_type: PersonType
@@ -41,6 +42,21 @@ class PublicVettingPreviewOut(BaseModel):
     tenant_email: Optional[str] = None
     expires_at: datetime
     person_first_name: str
+    id_front_uploaded: bool = False
+    driving_arrangement: Optional[Literal["self_drive", "own_driver", "chauffeur"]] = None
+    dl_number: Optional[str] = None
+    dl_expiry: Optional[date] = None
+    dl_issued_date: Optional[date] = None
+    driver_full_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    driver_id_number: Optional[str] = None
+    driver_dl_number: Optional[str] = None
+    driver_dl_expiry: Optional[date] = None
+    driver_dl_issued_date: Optional[date] = None
+    uploaded_slots: list[
+        Literal["id_front", "dl_front", "driver_id_front", "driver_dl_front"]
+    ] = Field(default_factory=list)
+    selfie_uploaded: bool = False
     steps: list[str]                  # remaining required steps
 
 
