@@ -8,7 +8,7 @@ Privacy stance mirrors client_invite.py:
   * Tokens NEVER appear in any Out schema.
   * Status transitions are server-owned — no status field in any payload.
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -17,8 +17,8 @@ from pydantic import BaseModel, Field, model_validator
 PersonType = Literal["client", "driver"]
 
 # ✅ Portal wizard step names (drive the frontend step order)
-CLIENT_VETTING_STEPS = ["selfie_with_id"]
-DRIVER_VETTING_STEPS = ["id_front", "id_back", "dl_front", "selfie_with_id"]
+CLIENT_VETTING_STEPS = ["driving_details", "documents", "selfie_with_id"]
+DRIVER_VETTING_STEPS = ["selfie_with_id"]
 
 
 class StartVerificationOut(BaseModel):
@@ -58,6 +58,46 @@ class VettingSubmitPayload(BaseModel):
     Documents are NOT re-collected here (one set only — Phase 1 owns them).
     """
     selfie_with_id: str = Field(..., max_length=500)
+
+
+class VettingDrivingDetails(BaseModel):
+    """Driving information collected only after basic client intake."""
+    driving_arrangement: Literal["self_drive", "own_driver", "chauffeur"]
+    dl_number: Optional[str] = Field(default=None, max_length=50)
+    dl_expiry: Optional[date] = None
+    dl_issued_date: Optional[date] = None
+    driver_full_name: Optional[str] = Field(default=None, min_length=2, max_length=150)
+    driver_phone: Optional[str] = Field(default=None, min_length=7, max_length=30)
+    driver_id_number: Optional[str] = Field(default=None, min_length=4, max_length=50)
+    driver_dl_number: Optional[str] = Field(default=None, min_length=4, max_length=50)
+    driver_dl_expiry: Optional[date] = None
+    driver_dl_issued_date: Optional[date] = None
+
+    @model_validator(mode="after")
+    def validate_arrangement_details(self):
+        if self.driving_arrangement == "self_drive":
+            if not self.dl_number or not self.dl_expiry:
+                raise ValueError("Licence number and expiry date are required for self-drive")
+            if self.dl_expiry <= date.today():
+                raise ValueError("Licence expiry date must be in the future")
+            if self.dl_issued_date and self.dl_issued_date >= date.today():
+                raise ValueError("Licence issue date must be in the past")
+            if self.dl_issued_date and self.dl_issued_date >= self.dl_expiry:
+                raise ValueError("Licence issue date must be before its expiry date")
+        elif self.driving_arrangement == "own_driver":
+            required = (
+                "driver_full_name", "driver_phone", "driver_id_number",
+                "driver_dl_number", "driver_dl_expiry",
+            )
+            if any(not getattr(self, field) for field in required):
+                raise ValueError("Complete personal-driver details are required for My Driver")
+            if self.driver_dl_expiry and self.driver_dl_expiry <= date.today():
+                raise ValueError("Personal-driver licence expiry date must be in the future")
+            if self.driver_dl_issued_date and self.driver_dl_issued_date >= date.today():
+                raise ValueError("Personal-driver licence issue date must be in the past")
+            if self.driver_dl_issued_date and self.driver_dl_expiry and self.driver_dl_issued_date >= self.driver_dl_expiry:
+                raise ValueError("Personal-driver licence issue date must be before its expiry date")
+        return self
 
 
 class VettingReviewPayload(BaseModel):

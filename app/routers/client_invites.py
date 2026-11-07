@@ -5,9 +5,10 @@
 ✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 ✅ UPGRADE:
   - Name split: first_name/last_name required; full_name computed server-side.
-  - Driving arrangement: self_drive enforces DL image; own_driver collects
-    the client-owned driver block AND driver document images, stored on the
-    client record's inline driver_* columns (mirrors management.py).
+  - Driving arrangement: self_drive requires the client's DL; own_driver
+    means the client rents for their personal driver and requires that
+    driver's details and ID/DL images; chauffeur means the agency supplies
+    a driver.
   - Document security: sha256 hash + forensic watermark + registry guard
     blocks duplicate documents across people.
   - Cross-entity identity checks prevent same person as client + driver.
@@ -377,36 +378,9 @@ async def submit_invite(
         next_of_kin_phone=payload.next_of_kin_phone,
     )
 
-    # 3) ARRANGEMENT GUARDS
-    #    ClientIntakeCreate enforces:
-    #      - own_driver requires a driver block (ClientBase model_validator)
-    #      - driver block is nulled for other arrangements
-    #    Document requirements mirror lifecycle.py::activate_client.
+    # 3) Optional legacy uploads. Documents are never required at intake;
+    #    the verification flow owns all document and driving checks.
     uploaded_files = invite.uploaded_files or {}
-
-    if payload.driving_arrangement == "self_drive" and not payload.dl_image_front:
-        raise ValidationFailedError(
-            title="Driver's Licence Image Required",
-            message="Self-drive clients must upload a photo of their driver's licence.",
-            field_errors={"dl_image_front": "Required for self-drive arrangement"},
-        )
-
-    if payload.driving_arrangement == "own_driver":
-        missing_driver_docs: dict[str, str] = {}
-        if not uploaded_files.get("driver_id_front"):
-            missing_driver_docs["driver_id_front"] = (
-                "A photo of the personal driver's ID is required"
-            )
-        if not uploaded_files.get("driver_dl_front"):
-            missing_driver_docs["driver_dl_front"] = (
-                "A photo of the personal driver's licence is required"
-            )
-        if missing_driver_docs:
-            raise ValidationFailedError(
-                title="Driver Documents Required",
-                message="Upload the personal driver's ID and licence photos before submitting.",
-                field_errors=missing_driver_docs,
-            )
 
     # 4) BUILD CLIENT DATA — mirrors management.py::create_client
     client_data = payload.model_dump(exclude={"driver"})
@@ -504,8 +478,11 @@ async def upload_invite_document(
     await set_public_rls_context(db, token)
 
     # ✅ Eagerly load tenant to prevent MissingGreenlet lazy-load errors
-    stmt = select(ClientInvite).options(selectinload(ClientInvite.tenant)).where(
-        ClientInvite.token == token
+    stmt = (
+        select(ClientInvite)
+        .options(selectinload(ClientInvite.tenant))
+        .where(ClientInvite.token == token)
+        .with_for_update()
     )
     invite = (await db.execute(stmt)).scalars().first()
 

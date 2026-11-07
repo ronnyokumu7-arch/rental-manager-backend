@@ -3,19 +3,21 @@ from typing import Optional, Literal
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator, computed_field
 from app.models.clients import ClientStatus, IdType, ClientVerificationStatus
 
-# ✅ DRIVING ARRANGEMENT: who is behind the wheel for this client's bookings.
-# self_drive  → client's own DL required (docs + vetting)
-# own_driver  → client's personal driver (identity now, docs+vetting via driver portal)
-# chauffeur   → agency assigns a company driver at booking time
-DrivingArrangement = Literal["self_drive", "own_driver", "chauffeur"]
+# ✅ DRIVING ARRANGEMENT: who drives the rental vehicle.
+# self_drive  → client drives; client's DL is required
+# own_driver  → client drives with their personal driver; driver's details/docs are required
+# chauffeur   → agency supplies and assigns a driver
+# `pending` means the applicant has not selected how the vehicle will be
+# driven yet.  It is only valid while their account remains pending
+# verification; activation rejects it.
+DrivingArrangement = Literal["pending", "self_drive", "own_driver", "chauffeur"]
 
 
 class ClientDriverBlock(BaseModel):
     """
     ✅ PERSONAL DRIVER IDENTITY (own_driver arrangement only).
-    Identity data captured at client onboarding; the driver's documents
-    and selfie-with-ID are collected later via the driver's OWN vetting
-    portal (the driver is usually not present when the client onboarded).
+    The client rents the vehicle for their personal driver to drive; this is
+    distinct from a chauffeur booking where the agency supplies the driver.
     """
     full_name: str = Field(..., min_length=2, max_length=150)
     phone: str = Field(..., min_length=7, max_length=30)
@@ -86,8 +88,8 @@ class ClientBase(BaseModel):
     next_of_kin_name: Optional[str] = Field(default=None, max_length=255)
     next_of_kin_phone: Optional[str] = Field(default=None, max_length=50)
 
-    # ✅ DRIVING ARRANGEMENT (default preserves legacy self-drive behaviour)
-    driving_arrangement: DrivingArrangement = "self_drive"
+    # Driving is selected during verification, not basic account creation.
+    driving_arrangement: DrivingArrangement = "pending"
     driver: Optional[ClientDriverBlock] = None
 
     @field_validator("first_name", "last_name")
@@ -137,9 +139,24 @@ class ClientBase(BaseModel):
 
     @model_validator(mode="after")
     def validate_arrangement_consistency(self):
-        """own_driver requires the driver block; other arrangements ignore it."""
-        if self.driving_arrangement == "own_driver" and self.driver is None:
-            raise ValueError("Driver details are required when 'own_driver' is selected")
+        """Validate driving details only when an arrangement is selected."""
+        if self.driving_arrangement == "self_drive":
+            if not self.dl_number or not self.dl_expiry:
+                raise ValueError(
+                    "Licence number and expiry date are required for self-drive"
+                )
+        elif self.driving_arrangement == "own_driver":
+            if self.driver is None:
+                raise ValueError("Driver details are required when 'own_driver' is selected")
+            if not self.driver.dl_expiry:
+                raise ValueError(
+                    "Driver licence expiry date is required when 'own_driver' is selected"
+                )
+            if (
+                self.driver.dl_issued_date
+                and self.driver.dl_issued_date >= self.driver.dl_expiry
+            ):
+                raise ValueError("Driver licence issue date must be before its expiry date")
         if self.driving_arrangement != "own_driver":
             self.driver = None
         # ✅ DL coherence: issued must precede expiry
@@ -247,7 +264,7 @@ class ClientOut(BaseModel):
     dl_issued_date: Optional[date] = None
     
     # ✅ DRIVING ARRANGEMENT (exposed for frontend badges)
-    driving_arrangement: DrivingArrangement = "self_drive"
+    driving_arrangement: DrivingArrangement = "pending"
     
     # ✅ CLIENT-OWNED DRIVER: raw columns used to assemble the nested
     # `driver` computed field. `exclude=True` keeps them out of the JSON

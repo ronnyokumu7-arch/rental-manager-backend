@@ -317,10 +317,10 @@ async def create_booking(db: AsyncSession, intent: BookingCreate, user: User) ->
             title="Client Not Found",
             message="We couldn't find this client. Refresh the list and try again.",
         )
-    if client.status == ClientStatus.suspended or client.is_archived:
+    if client.status != ClientStatus.active or client.is_archived:
         raise BadRequestError(
             title="Client Cannot Book",
-            message="This client is suspended or archived. Activate the client or choose someone else.",
+            message="This client is not active or is archived. Complete verification before creating a booking.",
         )
 
     # 2. Vehicle + driver

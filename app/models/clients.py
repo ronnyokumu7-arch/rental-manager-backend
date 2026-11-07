@@ -78,8 +78,8 @@ class Client(Base, AuditMixin):
     driving_arrangement = Column(
         String(20),
         nullable=False,
-        default="self_drive",
-        server_default="self_drive",
+        default="pending",
+        server_default="pending",
     )
     
     status = Column(
@@ -161,7 +161,7 @@ class Client(Base, AuditMixin):
 
         # ✅ 7. Driving arrangement guard
         CheckConstraint(
-            "driving_arrangement IN ('self_drive', 'own_driver', 'chauffeur')",
+            "driving_arrangement IN ('pending', 'self_drive', 'own_driver', 'chauffeur')",
             name="ck_clients_driving_arrangement_valid",
         ),
     )

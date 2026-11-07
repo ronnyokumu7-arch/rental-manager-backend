@@ -83,9 +83,9 @@ class ClientIntakeCreate(ClientBase):
     Inherits the upgraded ClientBase: name split, required ID slot,
     driving arrangement + optional driver block, all normalizers.
 
-    ✅ TIGHTENED DOCUMENT SLOTS: the invitee is holding their own ID, so
-    ID front + back are REQUIRED at intake. DL front is enforced server-side
-    for self_drive arrangements (ValidationFailedError with field_errors).
+    Documents and driving details intentionally do not gate intake. They are
+    captured through the single-use verification link after the account is
+    created, where conditional requirements can be enforced consistently.
 
     Security: status / is_flagged / vetting fields are NOT in this schema —
     the server hardcodes status=pending, verification_status=unverified and
@@ -96,9 +96,9 @@ class ClientIntakeCreate(ClientBase):
     )
     id_number: str = Field(..., min_length=3, max_length=50)
 
-    # ✅ DOCUMENT URLS (uploaded first via POST /clients/invite/{token}/upload,
-    # then passed here so they're stored on the client record)
+    # Legacy clients may still submit documents with intake. New clients do
+    # not need to provide any of these fields.
     avatar_image: Optional[str] = Field(default=None, max_length=500)
-    id_image_front: str = Field(..., max_length=500)
-    id_image_back: str = Field(..., max_length=500)
+    id_image_front: Optional[str] = Field(default=None, max_length=500)
+    id_image_back: Optional[str] = Field(default=None, max_length=500)
     dl_image_front: Optional[str] = Field(default=None, max_length=500)

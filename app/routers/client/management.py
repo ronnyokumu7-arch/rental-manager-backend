@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import BadRequestError, ConflictError, ValidationFailedError
+from app.core.errors import BadRequestError, ConflictError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -60,23 +60,6 @@ def _conflict_error(conflicts, title: str = "Duplicate Client Details") -> Confl
 
 def _concat_full_name(first_name: str, last_name: str) -> str:
     return " ".join(part for part in [first_name.strip(), last_name.strip()] if part)
-
-
-def _assert_self_drive_data(client_in: ClientCreate) -> None:
-    """✅ self_drive clients must carry licence DATA at creation (images can follow)."""
-    if client_in.driving_arrangement != "self_drive":
-        return
-    missing: dict[str, str] = {}
-    if not client_in.dl_number:
-        missing["dl_number"] = "Self-drive clients must provide their licence number"
-    if not client_in.dl_expiry:
-        missing["dl_expiry"] = "Self-drive clients must provide their licence expiry date"
-    if missing:
-        raise ValidationFailedError(
-            title="Driver's Licence Required",
-            message="Self-drive clients must provide their driver's licence details.",
-            field_errors=missing,
-        )
 
 
 def _client_driver_fields(block: ClientDriverBlock) -> dict:
@@ -144,9 +127,6 @@ async def create_client(
     )
     if conflicts:
         raise _conflict_error(conflicts)
-
-    # ✅ ARRANGEMENT GUARDS
-    _assert_self_drive_data(client)
 
     # ✅ RISK FLAGS: soft suspicion (F1 self-reference, F2 recycled emergency #)
     is_flagged, flag_notes = await compute_risk_flags(

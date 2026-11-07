@@ -1,6 +1,7 @@
 # app/services/task_core.py
 
 from datetime import datetime
+from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,36 +29,18 @@ class TaskCoreService:
         target_role: str = None,       # Optional: For auto-assignment by job title
         assignee_id: int = None,       # Optional: For direct assignment (manual tasks)
         is_system_generated: bool = True
-    ):
+    ) -> Optional[Task]:
         """
-        UNIVERSAL ROUTER:
-        1. Duplicate Check (Only for system-generated tasks to prevent spam).
-        2. Plan A: Direct Assignment (if assignee_id provided).
-        3. Plan B: Role Matching (if target_role provided).
-        4. Plan C: Unassigned Pool (fallback).
+        System-generated tasks are disabled; manually requested tasks remain
+        available through the existing task-management flow.
         """
-        
-        # 1. Duplicate Check (Prevents auto-task spam)
         if is_system_generated:
-            existing_stmt = select(Task).where(
-                Task.tenant_id == tenant_id,
-                Task.target_type == target_type,
-                Task.target_id == target_id,
-                Task.title == title,
-                Task.status != TaskStatus.completed
-            )
-            existing_result = await db.execute(existing_stmt)
-            existing = existing_result.scalars().first()
-            
-            if existing:
-                return  # Task already exists, do nothing.
+            return None
 
-        # 2. Determine Assignment Strategy
         final_user_id = assignee_id
         final_status = TaskStatus.pending if assignee_id else TaskStatus.unassigned
         final_requires_role = None
 
-        # Plan B: Role Matching (Only if no direct assignee is provided)
         if not final_user_id and target_role:
             assignee_stmt = select(User).where(
                 User.job_title == target_role,
@@ -71,26 +54,24 @@ class TaskCoreService:
                 final_user_id = role_match.id
                 final_status = TaskStatus.pending
             else:
-                # Plan C: Fallback to Unassigned Pool
                 final_requires_role = target_role
 
-        # 3. Create the Task
         task = Task(
             tenant_id=tenant_id,
             user_id=final_user_id,
             requires_role=final_requires_role,
-            title=title, 
+            title=title,
             description=description,
-            category=category, 
-            priority=priority, 
+            category=category,
+            priority=priority,
             due_date=due_date,
             status=final_status,
-            is_system_generated=is_system_generated, 
-            target_type=target_type, 
+            is_system_generated=False,
+            target_type=target_type,
             target_id=target_id
         )
-        
+
         db.add(task)
         await db.commit()
-        await db.refresh(task) # Refresh to get the ID
+        await db.refresh(task)
         return task

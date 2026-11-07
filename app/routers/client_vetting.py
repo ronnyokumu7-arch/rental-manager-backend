@@ -39,9 +39,11 @@ from app.schemas.vetting import (
     PublicVettingPreviewOut,
     VettingSubmitPayload,
     VettingReviewPayload,
+    VettingDrivingDetails,
     CLIENT_VETTING_STEPS,
     DRIVER_VETTING_STEPS,
 )
+from app.services.client_verification import missing_client_verification_requirements
 from app.services.document_security import secure_prepare, register_document, assert_allowed_content_type
 from app.services.storage import upload_file
 
@@ -168,7 +170,7 @@ async def start_driver_verification(
     await db.refresh(driver)
     
     # ✅ FIX: Use the frontend URL, not the backend's request.base_url
-    link = f"{FRONTEND_URL}/vetting/driver/{token}"
+    link = f"{FRONTEND_URL}/vetting/{token}"
     
     return StartVerificationOut(
         verification_link=link,
@@ -199,6 +201,125 @@ async def preview_vetting(request: Request, token: str, db: AsyncSession = Depen
         person_first_name=first_name,
         steps=steps,
     )
+
+
+# ─── PUBLIC: VERIFICATION STEP 1 ────────────────────────────────────────────
+
+@router.put("/vetting/{token}/driving-details", status_code=status.HTTP_200_OK)
+@limiter.limit("10/minute")
+async def save_vetting_driving_details(
+    request: Request,
+    token: str,
+    payload: VettingDrivingDetails,
+    db: AsyncSession = Depends(get_db),
+):
+    """Save the conditional driving data after basic account creation."""
+    person_type, client = await _resolve_token_target(db, token)
+    if person_type != "client":
+        raise ValidationFailedError(
+            title="Unsupported Verification Step",
+            message="Driving details can only be supplied for a client verification.",
+        )
+
+    client.driving_arrangement = payload.driving_arrangement
+    if payload.driving_arrangement == "self_drive":
+        client.dl_number = payload.dl_number.strip().upper() if payload.dl_number else None
+        client.dl_expiry = payload.dl_expiry
+        client.dl_issued_date = payload.dl_issued_date
+        # Evidence must match the newly declared licence.
+        client.dl_image_front = None
+        for field in (
+            "driver_full_name", "driver_phone", "driver_id_number", "driver_dl_number",
+            "driver_dl_expiry", "driver_dl_issued_date", "driver_id_image_front", "driver_dl_image_front",
+        ):
+            setattr(client, field, None)
+    elif payload.driving_arrangement == "own_driver":
+        client.dl_number = None
+        client.dl_expiry = None
+        client.dl_issued_date = None
+        client.driver_full_name = payload.driver_full_name
+        client.driver_phone = payload.driver_phone
+        client.driver_id_number = payload.driver_id_number.strip().upper() if payload.driver_id_number else None
+        client.driver_dl_number = payload.driver_dl_number.strip().upper() if payload.driver_dl_number else None
+        client.driver_dl_expiry = payload.driver_dl_expiry
+        client.driver_dl_issued_date = payload.driver_dl_issued_date
+        # A driver can be changed between attempts; never retain the previous
+        # driver's evidence after details are re-submitted.
+        client.driver_id_image_front = None
+        client.driver_dl_image_front = None
+    else:  # chauffeur
+        client.dl_number = None
+        client.dl_expiry = None
+        client.dl_issued_date = None
+        client.dl_image_front = None
+        for field in (
+            "driver_full_name", "driver_phone", "driver_id_number", "driver_dl_number",
+            "driver_dl_expiry", "driver_dl_issued_date", "driver_id_image_front", "driver_dl_image_front",
+        ):
+            setattr(client, field, None)
+
+    await db.commit()
+    return {"type": "success", "message": "Driving details saved."}
+
+
+@router.post("/vetting/{token}/upload-document", status_code=status.HTTP_201_CREATED)
+@limiter.limit("15/minute")
+async def upload_vetting_document(
+    request: Request,
+    token: str,
+    slot: Literal["id_front", "id_back", "dl_front", "driver_id_front", "driver_dl_front"] = Query(...),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Token-scoped document upload for verification step 1.
+
+    The client chooses camera or device in the UI; both reach this same secure
+    endpoint. Selfies deliberately use the separate camera-only endpoint.
+    """
+    person_type, target = await _resolve_token_target(db, token)
+    if person_type != "client":
+        raise ValidationFailedError(title="Unsupported Verification Step", message="Use the driver verification flow for driver documents.")
+
+    arrangement = target.driving_arrangement
+    if slot == "dl_front" and arrangement != "self_drive":
+        raise ValidationFailedError(title="Document Not Needed", message="A client licence is only needed for self-drive.")
+    if slot in {"driver_id_front", "driver_dl_front"} and arrangement != "own_driver":
+        raise ValidationFailedError(title="Document Not Needed", message="Personal-driver documents are only needed for My Driver.")
+
+    assert_allowed_content_type(file.content_type, allow_pdf=False)
+    raw_bytes = await file.read()
+    tenant_name = await _get_tenant_name(db, target.tenant_id)
+    stamped_bytes, file_hash = await secure_prepare(
+        raw_bytes, db=db, tenant_id=target.tenant_id, owner_type="client",
+        owner_id=target.id, slot=slot, tenant_name=tenant_name,
+    )
+    filename = file.filename or f"{slot}.jpg"
+    stamped_file = UploadFile(
+        filename=filename,
+        file=io.BytesIO(stamped_bytes),
+        size=len(stamped_bytes),
+        headers={"content-type": file.content_type or "image/jpeg"},
+    )
+    try:
+        file_ref = await upload_file(file=stamped_file, tenant_id=target.tenant_id, category="compliance")
+    except Exception as exc:
+        print(f"Document upload failed: {type(exc).__name__}: {exc}")
+        raise ServerError(title="Upload Failed", message="Could not store this document.")
+
+    await register_document(
+        db, tenant_id=target.tenant_id, owner_type="client", owner_id=target.id,
+        slot=slot, file_hash=file_hash, file_ref=file_ref, content_type=file.content_type,
+    )
+    field_for_slot = {
+        "id_front": "id_image_front",
+        "id_back": "id_image_back",
+        "dl_front": "dl_image_front",
+        "driver_id_front": "driver_id_image_front",
+        "driver_dl_front": "driver_dl_image_front",
+    }
+    setattr(target, field_for_slot[slot], file_ref)
+    await db.commit()
+    return {"slot": slot, "file_ref": file_ref}
 
 
 # ─── PUBLIC: UPLOAD SELFIE ──────────────────────────────────────────────────
@@ -277,6 +398,18 @@ async def submit_vetting(request: Request, token: str, payload: VettingSubmitPay
             message="Please upload your selfie holding your ID before submitting.",
             field_errors={"selfie_with_id": "Required"}
         )
+
+    if person_type == "client":
+        missing = missing_client_verification_requirements(target)
+        # A sent token is expected at this point; all evidence requirements
+        # must still be present before the review queue can receive it.
+        missing.pop("verification_status", None)
+        if missing:
+            raise ValidationFailedError(
+                title="Verification Incomplete",
+                message="Complete the required documents and driving details before submitting.",
+                field_errors=missing,
+            )
     
     # Flip status
     if person_type == "client":
@@ -310,6 +443,19 @@ async def review_client(
         raise BadRequestError(title="Not Under Review", message="This client is not currently under review.")
         
     if payload.decision == "approve":
+        # Approval is the only path to activation. Re-run the full gate here
+        # so an incomplete profile can never become active by bypassing the
+        # lifecycle endpoint.
+        missing = missing_client_verification_requirements(client)
+        # The client is under review, not verified yet; ignore that expected
+        # transitional state while checking the remaining evidence.
+        missing.pop("verification_status", None)
+        if missing:
+            raise BadRequestError(
+                title="Verification Incomplete",
+                message="The client still has required verification items missing.",
+                field_errors=missing,
+            )
         client.verification_status = ClientVerificationStatus.verified.value
         client.verification_token = None
         client.verification_expires_at = None

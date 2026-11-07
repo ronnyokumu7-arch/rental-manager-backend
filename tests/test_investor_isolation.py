@@ -5,25 +5,37 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from unittest.mock import AsyncMock, MagicMock
 
-from app.dependencies.tenant import reject_investor_tenant_access
+from app.dependencies.tenant import resolve_tenant_scope
 from app.models.users import UserRole
 from app.models.vehicles import Vehicle
 from app.routers.vehicle._helpers import get_authorized_vehicle_async
 
 
-def test_investor_is_denied_tenant_data_access():
-    investor = SimpleNamespace(role=UserRole.investor)
+def test_investor_is_scoped_to_their_own_tenant():
+    investor = SimpleNamespace(role=UserRole.investor, tenant_id=4)
+
+    scope = resolve_tenant_scope(investor)
+
+    assert scope.tenant_id == 4
+    assert scope.is_system_scope is False
+
+
+def test_investor_cannot_select_another_tenant():
+    investor = SimpleNamespace(role=UserRole.investor, tenant_id=4)
 
     with pytest.raises(HTTPException) as exc:
-        reject_investor_tenant_access(investor)
+        resolve_tenant_scope(investor, requested_tenant_id=9)
 
     assert exc.value.status_code == 403
 
 
-def test_tenant_user_can_access_tenant_data():
-    tenant_admin = SimpleNamespace(role=UserRole.tenant_admin)
+def test_tenant_admin_is_scoped_to_their_own_tenant():
+    tenant_admin = SimpleNamespace(role=UserRole.tenant_admin, tenant_id=4)
 
-    reject_investor_tenant_access(tenant_admin)
+    scope = resolve_tenant_scope(tenant_admin)
+
+    assert scope.tenant_id == 4
+    assert scope.is_system_scope is False
 
 
 @pytest.mark.asyncio
