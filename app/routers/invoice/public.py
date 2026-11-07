@@ -13,7 +13,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -42,11 +42,11 @@ from app.services.booking_lifecycle import BookingLifecycleService
 from app.services.contracts import ensure_contract_for_booking, render_and_store_contract_pdf
 from app.services.invoices import morph_quotation_to_invoice
 from app.services.cache import (
-    invalidate_invoice_cache, invalidate_subscription_cache, invalidate_booking_cache, invalidate_contract_cache,
+    invalidate_invoice_cache, invalidate_payment_cache,
+    invalidate_booking_cache, invalidate_contract_cache,
 )
 from app.services.invoice_pdf import generate_invoice_pdf
 from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure engine
-from app.services.activity_logs.payment import PaymentActivityLogger
 
 router = APIRouter()
 
@@ -131,6 +131,16 @@ async def _build_public_view(
     result = await db.execute(stmt)
     invoice = result.scalars().unique().first()
 
+    payment_reported = await db.scalar(
+        select(
+            exists().where(
+                Payment.invoice_id == invoice.id,
+                Payment.tenant_id == invoice.tenant_id,
+                Payment.status == PaymentStatus.pending,
+            )
+        )
+    )
+
     booking = invoice.booking
     client = booking.client if booking else None
     vehicle = booking.vehicle if booking else None
@@ -171,6 +181,7 @@ async def _build_public_view(
         amount_due=invoice.amount_due,
         amount_paid=invoice.amount_paid or 0,
         remaining_balance=max(0, (invoice.amount_due or 0) - (invoice.amount_paid or 0)),
+        payment_reported=bool(payment_reported),
         currency_code=invoice.currency_code,
         due_date=invoice.due_date,
         paid_at=invoice.paid_at,
@@ -390,6 +401,21 @@ async def record_payment_public(
     request: Request, token: str, payload: PublicPaymentCreate, db: AsyncSession = Depends(get_db)
 ):
     invoice = await _load_invoice_by_token(db, token)
+    invoice_stmt = (
+        select(Invoice)
+        .where(
+            Invoice.id == invoice.id,
+            Invoice.tenant_id == invoice.tenant_id,
+        )
+        .with_for_update()
+    )
+    invoice = (await db.execute(invoice_stmt)).scalars().first()
+    if invoice is None:
+        raise NotFoundError(
+            title="Invoice Not Found",
+            message="We couldn't find this invoice. Check that the link is complete and try again.",
+            action=_PUBLIC_HOME,
+        )
     if invoice.status == InvoiceStatus.void:
         raise _voided_doc_error()
     if invoice.status == InvoiceStatus.paid:
@@ -406,52 +432,18 @@ async def record_payment_public(
             field_errors={"amount": f"Maximum {remaining} {invoice.currency_code}"},
         )
 
-    now = datetime.now(timezone.utc)
     db_payment = Payment(
         invoice_id=invoice.id, tenant_id=invoice.tenant_id, amount=payload.amount,
         currency_code=invoice.currency_code, method=payload.method, reference=payload.reference,
-        status=PaymentStatus.completed, paid_at=now, recorded_by=None,
-        notes=payload.notes or "Self-reported by client via public payment portal",
+        status=PaymentStatus.pending, paid_at=None, recorded_by=None,
+        notes=f"Self-reported by client via public payment portal. {payload.notes or ''}".strip(),
     )
     db.add(db_payment)
-
-    new_paid = (invoice.amount_paid or Decimal("0")) + payload.amount
-    invoice.amount_paid = new_paid
-    if new_paid >= (invoice.amount_due or Decimal("0")):
-        invoice.status = InvoiceStatus.paid
-        invoice.paid_at = now
-    elif new_paid > Decimal("0"):
-        invoice.status = InvoiceStatus.partially_paid
 
     await db.commit()
     await set_rls_context(db, tenant_id=invoice.tenant_id)
     await db.refresh(db_payment)
-    await invalidate_subscription_cache(invoice.tenant_id)
-    await invalidate_invoice_cache(invoice.tenant_id)
-
-    try:
-        payment_stmt = select(Payment).options(
-            selectinload(Payment.invoice)
-            .selectinload(Invoice.booking)
-            .selectinload(Booking.client)
-        ).where(
-            Payment.id == db_payment.id,
-            Payment.tenant_id == invoice.tenant_id,
-        )
-        payment = (await db.execute(payment_stmt)).scalars().unique().first()
-        if payment is None:
-            raise RuntimeError("Newly recorded payment could not be reloaded for activity logging")
-        await PaymentActivityLogger.on_recorded(
-            db=db,
-            tenant_id=invoice.tenant_id,
-            user_id=None,
-            payment=payment,
-            invoice_number=invoice.invoice_number,
-        )
-        await db.commit()
-    except Exception as e:
-        await db.rollback()
-        print(f"⚠️ Warning: Failed to log public payment received: {e}")
+    await invalidate_payment_cache(invoice.tenant_id)
 
     return await _build_public_view(db, invoice.id, token)
 

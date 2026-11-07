@@ -149,6 +149,7 @@ class PublicInvoiceView(BaseModel):
     amount_due: Decimal
     amount_paid: Decimal
     remaining_balance: Decimal
+    payment_reported: bool
     currency_code: str
     due_date: datetime
     paid_at: Optional[datetime] = None

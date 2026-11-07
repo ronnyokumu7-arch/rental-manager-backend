@@ -40,7 +40,13 @@ def get_authorized_payment(payment_id: int, user: User, db: Session) -> Payment:
     return payment
 
 
-async def get_authorized_payment_async(payment_id: int, user: User, db: AsyncSession) -> Payment:
+async def get_authorized_payment_async(
+    payment_id: int,
+    user: User,
+    db: AsyncSession,
+    *,
+    for_update: bool = False,
+) -> Payment:
     """Async helper with Super Admin bypass."""
     if user.role == UserRole.super_admin:
         stmt = select(Payment).where(Payment.id == payment_id)
@@ -54,6 +60,9 @@ async def get_authorized_payment_async(payment_id: int, user: User, db: AsyncSes
             Payment.id == payment_id,
             Payment.tenant_id == user.tenant_id
         )
+
+    if for_update:
+        stmt = stmt.with_for_update()
     
     result = await db.execute(stmt)
     payment = result.scalars().first()

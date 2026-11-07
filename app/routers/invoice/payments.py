@@ -51,7 +51,7 @@ async def record_offline_payment(
     stmt = select(Invoice).where(
         Invoice.id == invoice_id,
         Invoice.tenant_id == current_user.tenant_id
-    )
+    ).with_for_update()
     invoice = (await db.execute(stmt)).scalars().first()
 
     if not invoice:
