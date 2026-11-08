@@ -19,23 +19,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # ✅ FIX: Drop existing enums first to prevent "DuplicateObject" errors 
-    # from previous failed migration attempts.
-    op.execute("DROP TYPE IF EXISTS notificationtype")
-    op.execute("DROP TYPE IF EXISTS notificationpriority")
-
-    # 1. Create Enums
-    notification_type_enum = sa.Enum(
-        'booking', 'payment', 'client', 'vehicle', 'system', 'alert',
-        name='notificationtype'
+    # ✅ 1. Create Enums using raw SQL to safely handle "IF NOT EXISTS"
+    # This completely bypasses SQLAlchemy's sometimes aggressive ENUM creation logic
+    op.execute(
+        "CREATE TYPE IF NOT EXISTS notificationtype AS ENUM ('booking', 'payment', 'client', 'vehicle', 'system', 'alert')"
     )
-    notification_type_enum.create(op.get_bind(), checkfirst=True)
-
-    notification_priority_enum = sa.Enum(
-        'low', 'normal', 'high',
-        name='notificationpriority'
+    op.execute(
+        "CREATE TYPE IF NOT EXISTS notificationpriority AS ENUM ('low', 'normal', 'high')"
     )
-    notification_priority_enum.create(op.get_bind(), checkfirst=True)
 
     # 2. Create Table
     op.create_table(
@@ -43,8 +34,9 @@ def upgrade() -> None:
         sa.Column('id', sa.Integer(), nullable=False),
         sa.Column('tenant_id', sa.Integer(), nullable=False),
         sa.Column('user_id', sa.Integer(), nullable=False),
-        sa.Column('type', notification_type_enum, nullable=False),
-        sa.Column('priority', notification_priority_enum, nullable=False, server_default='normal'),
+        # ✅ Use postgresql.ENUM with create_type=False so it doesn't try to create it again
+        sa.Column('type', postgresql.ENUM(name='notificationtype', create_type=False), nullable=False),
+        sa.Column('priority', postgresql.ENUM(name='notificationpriority', create_type=False), nullable=False, server_default='normal'),
         sa.Column('title', sa.String(length=255), nullable=False),
         sa.Column('message', sa.Text(), nullable=False),
         sa.Column('payload', postgresql.JSONB(astext_type=sa.Text()), nullable=True, server_default=sa.text("'{}'::jsonb")),
@@ -80,15 +72,6 @@ def downgrade() -> None:
     # 2. Drop Table
     op.drop_table('notifications')
 
-    # 3. Drop Enums
-    notification_type_enum = sa.Enum(
-        'booking', 'payment', 'client', 'vehicle', 'system', 'alert',
-        name='notificationtype'
-    )
-    notification_type_enum.drop(op.get_bind(), checkfirst=True)
-
-    notification_priority_enum = sa.Enum(
-        'low', 'normal', 'high',
-        name='notificationpriority'
-    )
-    notification_priority_enum.drop(op.get_bind(), checkfirst=True)
+    # 3. Drop Enums (using raw SQL for safety)
+    op.execute("DROP TYPE IF EXISTS notificationtype")
+    op.execute("DROP TYPE IF EXISTS notificationpriority")
