@@ -31,7 +31,7 @@ class NotificationTriggers:
             title="Trip Completed & Mileage Due",
             message=f"Booking {booking_number} for {client_name} has been completed. Please update the vehicle mileage.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            payload={"booking_id": booking_id, "client_name": client_name},  # ✅ FIXED
+            payload={"booking_id": booking_id, "client_name": client_name},
         )
 
     @staticmethod
@@ -43,17 +43,39 @@ class NotificationTriggers:
         client_name: str,
         payment_id: int,
     ) -> None:
-        """Triggered when a new payment is recorded."""
+        """Triggered when the agency confirms a payment."""
         await NotificationService.create(
             db=db,
             tenant_id=tenant_id,
             user_ids=target_user_id,
             type=NotificationType.payment,
             priority=NotificationPriority.high,
-            title="Payment Received",
-            message=f"A payment of {amount} has been successfully recorded for {client_name}.",
+            title="Payment Confirmed",
+            message=f"A payment of {amount} has been successfully confirmed for {client_name}.",
             action_url=f"/dashboard/financials/payments/{payment_id}",
-            payload={"payment_id": payment_id, "amount": amount},  # ✅ FIXED
+            payload={"payment_id": payment_id, "amount": amount},
+        )
+
+    @staticmethod
+    async def on_payment_submitted(
+        db: AsyncSession,
+        tenant_id: int,
+        target_user_id: int,
+        amount: float,
+        reference: str,
+        payment_id: int,
+    ) -> None:
+        """Triggered when a client submits a payment proof via public link. Notifies the Agency."""
+        await NotificationService.create(
+            db=db,
+            tenant_id=tenant_id,
+            user_ids=target_user_id,
+            type=NotificationType.payment,
+            priority=NotificationPriority.high,
+            title="New Payment Proof Submitted",
+            message=f"A client has submitted a payment proof of {amount} (Ref: {reference}). Please review and confirm it.",
+            action_url="/dashboard/financials/payments?status=pending",
+            payload={"payment_id": payment_id, "amount": amount, "reference": reference},
         )
 
     @staticmethod
@@ -75,7 +97,7 @@ class NotificationTriggers:
             title="Contract Signed",
             message=f"{client_name} has signed the rental contract for booking {booking_number}.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            payload={"booking_id": booking_id, "client_name": client_name},  # ✅ FIXED
+            payload={"booking_id": booking_id, "client_name": client_name},
         )
 
     @staticmethod
@@ -96,7 +118,7 @@ class NotificationTriggers:
             title="Commission Accrued",
             message=f"Commission of {amount} accrued for booking {booking_number}.",
             action_url="/dashboard/financials/commission",
-            payload={"amount": amount, "booking_number": booking_number},  # ✅ FIXED
+            payload={"amount": amount, "booking_number": booking_number},
         )
 
     @staticmethod
@@ -124,7 +146,7 @@ class NotificationTriggers:
                 title="Commission Payment Submitted",
                 message=f"A commission payment of {amount} (Ref: {reference}) is awaiting verification.",
                 action_url=f"/super-admin/commission/payments?status=pending",
-                payload={"payment_id": payment_id, "amount": amount, "reference": reference},  # ✅ FIXED
+                payload={"payment_id": payment_id, "amount": amount, "reference": reference},
             )
 
     @staticmethod
@@ -146,7 +168,7 @@ class NotificationTriggers:
             title="Commission Payment Verified",
             message=f"Your commission payment of {amount} (Ref: {reference}) has been verified. Your account is now in good standing.",
             action_url="/dashboard/commission",
-            payload={"payment_id": payment_id, "amount": amount, "reference": reference},  # ✅ FIXED
+            payload={"payment_id": payment_id, "amount": amount, "reference": reference},
         )
 
     @staticmethod
@@ -168,7 +190,7 @@ class NotificationTriggers:
             title="Booking Confirmed",
             message=f"Booking {booking_number} for {client_name} has been confirmed.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            payload={"booking_id": booking_id, "client_name": client_name},  # ✅ FIXED
+            payload={"booking_id": booking_id, "client_name": client_name},
         )
 
     @staticmethod
@@ -190,7 +212,7 @@ class NotificationTriggers:
             title="Trip Started",
             message=f"Trip for booking {booking_number} ({client_name}) has started. Vehicle is now rented.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            payload={"booking_id": booking_id, "client_name": client_name},  # ✅ FIXED
+            payload={"booking_id": booking_id, "client_name": client_name},
         )
 
     @staticmethod
@@ -213,5 +235,5 @@ class NotificationTriggers:
             title="Booking Cancelled",
             message=f"Booking {booking_number} for {client_name} has been cancelled. Reason: {reason}.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            payload={"booking_id": booking_id, "client_name": client_name, "reason": reason},  # ✅ FIXED
+            payload={"booking_id": booking_id, "client_name": client_name, "reason": reason},
         )
