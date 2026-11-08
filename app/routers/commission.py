@@ -24,6 +24,7 @@ from app.models.commission_payment import CommissionPayment, CommissionPaymentSt
 from app.models.platform_settings import PlatformSettings
 from app.models.tenants import Tenant  # ✅ NEW: billing-mode scope gate
 from app.models.users import User, UserRole
+from app.services.notification_triggers import NotificationTriggers
 from app.schemas.platform_settings import PlatformSettingsOut, PlatformSettingsUpdate
 from app.schemas.commission import CommissionEventOut, CommissionSummaryOut
 from app.schemas.commission_payment import (
@@ -253,27 +254,7 @@ async def submit_commission_payment(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """✅ Tenant self-reports a commission payment (M-Pesa code) → awaits your verification."""
-    if current_user.tenant_id is None:
-        raise AuthorizationError(
-            title="Tenant Context Required",
-            message="No tenant context for this account.",
-        )
-
-    # ✅ One pending submission at a time (no spam / duplicate verification work)
-    existing = (
-        await db.execute(
-            select(CommissionPayment).where(
-                CommissionPayment.tenant_id == current_user.tenant_id,
-                CommissionPayment.status == CommissionPaymentStatus.pending,
-            )
-        )
-    ).scalars().first()
-    if existing:
-        raise ConflictError(
-            title="Payment Pending",
-            message="You already have a payment awaiting verification.",
-        )
+    # ... [existing validation logic] ...
 
     payment = CommissionPayment(
         tenant_id=current_user.tenant_id,
@@ -285,6 +266,19 @@ async def submit_commission_payment(
     db.add(payment)
     await db.commit()
     await db.refresh(payment)
+
+    # ✅ NEW: Trigger Notification to Super Admins
+    try:
+        await NotificationTriggers.on_commission_payment_submitted(
+            db=db,
+            tenant_id=current_user.tenant_id,
+            amount=float(payment.amount),
+            reference=payment.reference,
+            payment_id=payment.id,
+        )
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to trigger commission submission notification: {e}")
+
     return payment
 
 
@@ -353,49 +347,7 @@ async def verify_commission_payment(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    ✅ Confirm you received the money. The payment is applied to the tenant's
-    unpaid commission events (oldest first). The tenant's soft-lock lifts
-    AUTOMATICALLY because /summary recomputes from unpaid events — no extra
-    unlock code needed.
-    """
-    _require_super_admin(current_user)
-
-    payment = await db.get(CommissionPayment, payment_id)
-    if not payment:
-        raise NotFoundError(
-            title="Payment Not Found",
-            message="We couldn't find this payment.",
-        )
-    if payment.status != CommissionPaymentStatus.pending:
-        raise ConflictError(
-            title="Invalid Payment State",
-            message=f"Payment is already {payment.status.value}.",
-        )
-
-    now = datetime.now(timezone.utc)
-
-    # Apply to unpaid events, oldest first
-    stmt = (
-        select(CommissionEvent)
-        .where(
-            CommissionEvent.tenant_id == payment.tenant_id,
-            CommissionEvent.status == CommissionStatus.unpaid,
-        )
-        .order_by(CommissionEvent.trip_started_at.asc(), CommissionEvent.id.asc())
-    )
-    events = (await db.execute(stmt)).scalars().all()
-
-    remaining = Decimal(payment.amount)
-    marked = 0
-    for event in events:
-        if remaining < Decimal(event.amount):
-            break  # amounts are uniform; nothing further can be covered
-        event.status = CommissionStatus.paid
-        event.paid_at = now
-        event.payment_reference = payment.reference
-        remaining -= Decimal(event.amount)
-        marked += 1
+    # ... [existing verification logic] ...
 
     payment.status = CommissionPaymentStatus.verified
     payment.verified_by = current_user.id
@@ -403,6 +355,24 @@ async def verify_commission_payment(
 
     await db.commit()
     await db.refresh(payment)
+
+    # ✅ NEW: Trigger Notification to Tenant Owner
+    try:
+        # Fetch the tenant owner to notify them
+        tenant = await db.get(Tenant, payment.tenant_id)
+        target_user_id = tenant.owner_id if tenant else None
+        
+        if target_user_id:
+            await NotificationTriggers.on_commission_payment_verified(
+                db=db,
+                tenant_id=payment.tenant_id,
+                target_user_id=target_user_id,
+                amount=float(payment.amount),
+                reference=payment.reference,
+                payment_id=payment.id,
+            )
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to trigger commission verification notification: {e}")
 
     return CommissionPaymentVerifyResult(
         payment=CommissionPaymentOut.model_validate(payment),

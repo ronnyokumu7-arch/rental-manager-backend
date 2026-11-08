@@ -37,6 +37,7 @@ from app.models.contracts import Contract, ContractStatus
 from app.models.tenant_profile import TenantProfile
 from app.schemas.contract import ContractSignPayload, PublicContractView
 from app.services.booking_lifecycle import BookingLifecycleService
+from app.services.notification_triggers import NotificationTriggers
 from app.services.cache import (
     invalidate_booking_cache, invalidate_vehicle_cache, invalidate_contract_cache,
 )
@@ -211,10 +212,6 @@ async def sign_contract_public(
     now = datetime.now(timezone.utc)
     booking = await _load_booking_locked(db, contract.booking_id)
 
-    # ✅ SIGNING IS ALWAYS AVAILABLE — no time gate.
-    # Clients can sign immediately to lock in the booking.
-    # Auto-start is handled separately below (now/past) or by the scheduler (future).
-
     # ✅ Signature upload (Cloudinary via storage service) — validated + capped
     signature_bytes = _decode_signature(payload)
     signature_file = UploadFile(
@@ -238,6 +235,7 @@ async def sign_contract_public(
     contract.client_signed_at = now
     contract.status = ContractStatus.signed
     contract.pdf_path = None   # force fresh render with signature
+    
     await ContractActivityLogger.on_signed(
         db=db,
         tenant_id=contract.tenant_id,
@@ -245,6 +243,22 @@ async def sign_contract_public(
         contract=contract,
     )
     await db.flush()
+
+    # ✅ NEW: Trigger Notification to the Agency (Tenant Owner)
+    try:
+        target_user_id = booking.tenant.owner_id
+        if target_user_id:
+            await NotificationTriggers.on_contract_signed(
+                db=db,
+                tenant_id=contract.tenant_id,
+                target_user_id=target_user_id,
+                booking_number=booking.booking_number,
+                client_name=booking.client.full_name if booking.client else "Client",
+                booking_id=booking.id,
+            )
+    except Exception as e:
+        # ✅ Fail silently to protect the core signing transaction
+        print(f"⚠️ Warning: Failed to trigger contract signed notification: {e}")
 
     # ✅ AUTO-START: only when pickup time has arrived (now or past).
     # Future pickups stay pending/confirmed — the scheduler starts them at pickup time.

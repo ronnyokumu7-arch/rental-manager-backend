@@ -22,6 +22,11 @@ from .booking import get_cached_booking_list, set_cached_booking_list, invalidat
 from .tenant import get_cached_tenant_list, set_cached_tenant_list, invalidate_tenant_cache
 from .task import get_cached_task_list, set_cached_task_list, invalidate_task_cache
 from .user import get_cached_user_list, set_cached_user_list, invalidate_user_cache
+from .notification import (
+    get_cached_notification_counts, set_cached_notification_counts,
+    get_cached_notification_list, set_cached_notification_list,
+    invalidate_notification_cache, invalidate_user_notification_cache
+)
 
 __all__ = [
     "get_cached_subscription_status", "set_cached_subscription_status",
@@ -38,4 +43,7 @@ __all__ = [
     "get_cached_tenant_list", "set_cached_tenant_list", "invalidate_tenant_cache",
     "get_cached_task_list", "set_cached_task_list", "invalidate_task_cache",
     "get_cached_user_list", "set_cached_user_list", "invalidate_user_cache",
+    "get_cached_notification_counts", "set_cached_notification_counts",
+    "get_cached_notification_list", "set_cached_notification_list",
+    "invalidate_notification_cache", "invalidate_user_notification_cache",
 ]

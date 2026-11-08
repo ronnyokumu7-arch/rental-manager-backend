@@ -32,7 +32,7 @@ from app.routers import (
     bookings,
     client_invites,
     clients,
-    client_vetting,  # ✅ ADDED: Vetting engine router
+    client_vetting,
     commission,
     contracts,
     drivers,
@@ -42,6 +42,7 @@ from app.routers import (
     invoices,
     investor_contracts,
     investors,
+    notifications,  # ✅ ADDED: Notifications router
     payment_verifications,
     payments,
     pricing,
@@ -157,7 +158,7 @@ routers = [
     users,
     client_invites,
     clients,
-    client_vetting,  # ✅ ADDED: Register the vetting router
+    client_vetting,
     commission,
     vehicles,
     drivers,
@@ -185,6 +186,7 @@ routers = [
     vault,
     files,
     health,
+    notifications,  # ✅ ADDED: Notifications router
 ]
 
 # ✅ CLEAN: Register all routers without the blunt global block.

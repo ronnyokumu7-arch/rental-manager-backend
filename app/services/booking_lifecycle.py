@@ -12,6 +12,7 @@ BookingLifecycleService — SINGLE SOURCE OF TRUTH for booking + vehicle transit
     relationships still loaded → rich summaries, rows actually persist).
   - ✅ TRIP-START GATE owned HERE: no handover without a signed contract AND
     at least a partial payment. Manual start → friendly error; auto-start → silent skip.
+  - ✅ NOTIFICATIONS owned HERE: fire atomically with each state transition.
 
 ✅ ERROR SYSTEM: typed AppException subclasses (app.core.errors).
 """
@@ -41,6 +42,7 @@ from app.services.cache import invalidate_booking_cache, invalidate_vehicle_cach
 # ✅ NEW: Activity Loggers
 from app.services.activity_logs.booking import BookingActivityLogger
 from app.services.activity_logs.vehicle import VehicleActivityLogger
+from app.services.notification_triggers import NotificationTriggers
 
 
 def _client_name(booking: Optional[Booking]) -> Optional[str]:
@@ -165,6 +167,21 @@ class BookingLifecycleService:
         except Exception as e:
             print(f"️ Warning: Failed to log booking confirmation: {e}")
 
+        # ✅ NEW: Trigger Notification for Booking Confirmation
+        try:
+            target_user_id = booking.tenant.owner_id
+            if target_user_id and target_user_id != current_user.id:
+                await NotificationTriggers.on_booking_confirmed(
+                    db=db,
+                    tenant_id=current_user.tenant_id,
+                    target_user_id=target_user_id,
+                    booking_number=booking.booking_number,
+                    client_name=_client_name(booking),
+                    booking_id=booking.id,
+                )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to trigger booking confirmation notification: {e}")
+
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
 
@@ -245,6 +262,21 @@ class BookingLifecycleService:
         except Exception as e:
             print(f"⚠️ Warning: Failed to log booking start: {e}")
 
+        # ✅ NEW: Trigger Notification for Trip Started
+        try:
+            target_user_id = booking.tenant.owner_id
+            if target_user_id and target_user_id != current_user.id:
+                await NotificationTriggers.on_trip_started(
+                    db=db,
+                    tenant_id=current_user.tenant_id,
+                    target_user_id=target_user_id,
+                    booking_number=booking.booking_number,
+                    client_name=_client_name(booking),
+                    booking_id=booking.id,
+                )
+        except Exception as e:
+            print(f"️ Warning: Failed to trigger trip start notification: {e}")
+
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
 
@@ -266,7 +298,7 @@ class BookingLifecycleService:
         vehicle = await cls._load_vehicle_locked(db, booking.vehicle_id, current_user.tenant_id)
 
         booking.status = BookingStatus.completed
-        booking.actual_return_at = datetime.now(timezone.utc)   # ✅ late-return reconciliation
+        booking.actual_return_at = datetime.now(timezone.utc)
 
         # ✅ Vehicle returns to the rentable pool immediately; mileage tracked as a flag.
         vehicle.status = VehicleStatus.available
@@ -295,7 +327,22 @@ class BookingLifecycleService:
                 new_status="completed",
             )
         except Exception as e:
-            print(f"⚠️ Warning: Failed to log booking completion: {e}")
+            print(f"️ Warning: Failed to log booking completion: {e}")
+
+        # ✅ NEW: Trigger Notification for Mileage Update
+        try:
+            target_user_id = booking.tenant.owner_id
+            if target_user_id and target_user_id != current_user.id:
+                await NotificationTriggers.on_booking_completed(
+                    db=db,
+                    tenant_id=current_user.tenant_id,
+                    target_user_id=target_user_id,
+                    booking_number=booking.booking_number,
+                    client_name=_client_name(booking),
+                    booking_id=booking.id,
+                )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to trigger booking completion notification: {e}")
 
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
@@ -362,6 +409,22 @@ class BookingLifecycleService:
         except Exception as e:
             print(f"⚠️ Warning: Failed to log booking cancel: {e}")
 
+        # ✅ NEW: Trigger Notification for Booking Cancellation
+        try:
+            target_user_id = booking.tenant.owner_id
+            if target_user_id and target_user_id != current_user.id:
+                await NotificationTriggers.on_booking_cancelled(
+                    db=db,
+                    tenant_id=current_user.tenant_id,
+                    target_user_id=target_user_id,
+                    booking_number=booking.booking_number,
+                    client_name=_client_name(booking),
+                    booking_id=booking.id,
+                    reason=reason.value,
+                )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to trigger booking cancellation notification: {e}")
+
         await db.commit()
         await cls._invalidate(db, current_user.tenant_id)
 
@@ -415,7 +478,7 @@ class BookingLifecycleService:
             created_by=created_by,
         ))
 
-    # ─── CLIENT-DRIVEN (public, no authenticated user) — flush-only ────────
+    # ─── CLIENT-DRIVEN (public, no authenticated user) — flush-only ───────
     @classmethod
     async def confirm_client(cls, db: AsyncSession, booking: Booking) -> Booking:
         """Quotation accept ⇒ confirmed. FLUSH only — caller commits atomically.
@@ -441,6 +504,21 @@ class BookingLifecycleService:
             )
         except Exception as e:
             print(f"⚠️ Warning: Failed to log client booking confirmation: {e}")
+
+        # ✅ NEW: Trigger Notification for Client Confirmation
+        try:
+            target_user_id = booking.tenant.owner_id
+            if target_user_id:
+                await NotificationTriggers.on_booking_confirmed(
+                    db=db,
+                    tenant_id=booking.tenant_id,
+                    target_user_id=target_user_id,
+                    booking_number=booking.booking_number,
+                    client_name=_client_name(booking),
+                    booking_id=booking.id,
+                )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to trigger client confirmation notification: {e}")
 
         await db.flush()
         return booking
@@ -494,7 +572,23 @@ class BookingLifecycleService:
                 new_status="cancelled",
             )
         except Exception as e:
-            print(f"⚠️ Warning: Failed to log client booking cancel: {e}")
+            print(f"️ Warning: Failed to log client booking cancel: {e}")
+
+        # ✅ NEW: Trigger Notification for Client Cancellation
+        try:
+            target_user_id = booking.tenant.owner_id
+            if target_user_id:
+                await NotificationTriggers.on_booking_cancelled(
+                    db=db,
+                    tenant_id=booking.tenant_id,
+                    target_user_id=target_user_id,
+                    booking_number=booking.booking_number,
+                    client_name=_client_name(booking),
+                    booking_id=booking.id,
+                    reason=reason.value,
+                )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to trigger client cancellation notification: {e}")
 
         await db.flush()
         return booking
@@ -570,6 +664,21 @@ class BookingLifecycleService:
         except Exception as e:
             print(f"⚠️ Warning: Failed to log auto booking start: {e}")
 
+        # ✅ NEW: Trigger Notification for Auto Trip Start
+        try:
+            target_user_id = booking.tenant.owner_id
+            if target_user_id:
+                await NotificationTriggers.on_trip_started(
+                    db=db,
+                    tenant_id=booking.tenant_id,
+                    target_user_id=target_user_id,
+                    booking_number=booking.booking_number,
+                    client_name=_client_name(booking),
+                    booking_id=booking.id,
+                )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to trigger auto trip start notification: {e}")
+
         await db.flush()
         return booking
 
@@ -620,6 +729,21 @@ class BookingLifecycleService:
             )
         except Exception as e:
             print(f"⚠️ Warning: Failed to log auto booking completion: {e}")
+
+        # ✅ NEW: Trigger Notification for Auto Trip Completion
+        try:
+            target_user_id = booking.tenant.owner_id
+            if target_user_id:
+                await NotificationTriggers.on_booking_completed(
+                    db=db,
+                    tenant_id=booking.tenant_id,
+                    target_user_id=target_user_id,
+                    booking_number=booking.booking_number,
+                    client_name=_client_name(booking),
+                    booking_id=booking.id,
+                )
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to trigger auto completion notification: {e}")
 
         await db.flush()
         return booking
