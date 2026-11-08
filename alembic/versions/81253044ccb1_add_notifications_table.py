@@ -19,6 +19,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # ✅ FIX: Drop existing enums first to prevent "DuplicateObject" errors 
+    # from previous failed migration attempts.
+    op.execute("DROP TYPE IF EXISTS notificationtype")
+    op.execute("DROP TYPE IF EXISTS notificationpriority")
+
     # 1. Create Enums
     notification_type_enum = sa.Enum(
         'booking', 'payment', 'client', 'vehicle', 'system', 'alert',
@@ -42,7 +47,6 @@ def upgrade() -> None:
         sa.Column('priority', notification_priority_enum, nullable=False, server_default='normal'),
         sa.Column('title', sa.String(length=255), nullable=False),
         sa.Column('message', sa.Text(), nullable=False),
-        # ✅ FIXED: Renamed from 'metadata' to 'payload' to avoid SQLAlchemy reserved name conflict
         sa.Column('payload', postgresql.JSONB(astext_type=sa.Text()), nullable=True, server_default=sa.text("'{}'::jsonb")),
         sa.Column('action_url', sa.String(length=500), nullable=True),
         sa.Column('is_read', sa.Boolean(), nullable=False, server_default='false'),
