@@ -45,7 +45,7 @@ class NotificationService:
         title: str,
         message: str,
         priority: NotificationPriority = NotificationPriority.normal,
-        metadata: dict = None,
+        payload: dict = None,  # ✅ FIXED: Renamed from 'metadata'
         action_url: str = None,
     ) -> List[Notification]:
         """
@@ -64,7 +64,7 @@ class NotificationService:
                 priority=priority,
                 title=title,
                 message=message,
-                metadata=metadata or {},
+                payload=payload or {},  # ✅ FIXED: Renamed from 'metadata'
                 action_url=action_url,
                 is_read=False,
             )

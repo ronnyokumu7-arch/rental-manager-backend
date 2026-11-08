@@ -16,7 +16,7 @@ class NotificationBase(BaseModel):
     priority: NotificationPriority = NotificationPriority.normal
     title: str
     message: str
-    metadata: Optional[Dict[str, Any]] = None
+    payload: Optional[Dict[str, Any]] = None  # ✅ FIXED: Renamed from 'metadata'
     action_url: Optional[str] = None
     is_read: bool = False
 

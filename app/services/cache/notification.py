@@ -110,7 +110,7 @@ async def get_cached_notification_list(
         cached = await redis.get(cache_key)
         return deserialize_cache_list(cached) if cached else None
     except Exception as e:
-        logger.warning(f"️ Failed to read notification list cache: {e}")
+        logger.warning(f"⚠️ Failed to read notification list cache: {e}")
         return None
 
 
@@ -158,7 +158,8 @@ async def set_cached_notification_list(
                         "priority": notif.priority.value if hasattr(notif.priority, 'value') else notif.priority,
                         "title": notif.title,
                         "message": notif.message,
-                        "metadata": notif.metadata or {},
+                        # ✅ FIXED: Renamed from 'metadata' to 'payload'
+                        "payload": getattr(notif, 'payload', None) or {},
                         "action_url": notif.action_url,
                         "is_read": notif.is_read,
                         "created_at": notif.created_at.isoformat() if notif.created_at else None,
@@ -208,7 +209,7 @@ async def invalidate_notification_cache(
         if deleted_count > 0:
             logger.info(f"✅ Invalidated {deleted_count} notification cache keys for tenant {tenant_id}")
     except Exception as e:
-        logger.warning(f"️ Failed to invalidate notification cache: {e}")
+        logger.warning(f"⚠️ Failed to invalidate notification cache: {e}")
 
 
 async def invalidate_user_notification_cache(user_id: int) -> None:

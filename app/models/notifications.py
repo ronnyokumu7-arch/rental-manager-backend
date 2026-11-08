@@ -61,9 +61,10 @@ class Notification(Base, AuditMixin):
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     
+    # ✅ FIXED: Renamed from 'metadata' to 'payload' to avoid SQLAlchemy reserved name conflict.
     # JSONB allows flexible data (e.g., {"booking_id": 123, "amount": 5000}) 
     # without needing to alter the schema for every new notification type.
-    metadata = Column(JSONB, nullable=True, server_default=text("'{}'::jsonb"), default=dict)
+    payload = Column(JSONB, nullable=True, server_default=text("'{}'::jsonb"), default=dict)
 
     # ========================================================================
     # ACTION & STATE

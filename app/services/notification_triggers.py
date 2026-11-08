@@ -2,6 +2,7 @@
 Notification Triggers — Domain-specific helpers to fire notifications 
 from business logic services without bloating them.
 """
+from sqlalchemy import select  # ✅ ADDED: Required for on_commission_payment_submitted
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.notification import NotificationService
@@ -30,7 +31,7 @@ class NotificationTriggers:
             title="Trip Completed & Mileage Due",
             message=f"Booking {booking_number} for {client_name} has been completed. Please update the vehicle mileage.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            metadata={"booking_id": booking_id, "client_name": client_name},
+            payload={"booking_id": booking_id, "client_name": client_name},  # ✅ FIXED
         )
 
     @staticmethod
@@ -52,7 +53,7 @@ class NotificationTriggers:
             title="Payment Received",
             message=f"A payment of {amount} has been successfully recorded for {client_name}.",
             action_url=f"/dashboard/financials/payments/{payment_id}",
-            metadata={"payment_id": payment_id, "amount": amount},
+            payload={"payment_id": payment_id, "amount": amount},  # ✅ FIXED
         )
 
     @staticmethod
@@ -74,7 +75,7 @@ class NotificationTriggers:
             title="Contract Signed",
             message=f"{client_name} has signed the rental contract for booking {booking_number}.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            metadata={"booking_id": booking_id, "client_name": client_name},
+            payload={"booking_id": booking_id, "client_name": client_name},  # ✅ FIXED
         )
 
     @staticmethod
@@ -95,7 +96,7 @@ class NotificationTriggers:
             title="Commission Accrued",
             message=f"Commission of {amount} accrued for booking {booking_number}.",
             action_url="/dashboard/financials/commission",
-            metadata={"amount": amount, "booking_number": booking_number},
+            payload={"amount": amount, "booking_number": booking_number},  # ✅ FIXED
         )
 
     @staticmethod
@@ -123,7 +124,7 @@ class NotificationTriggers:
                 title="Commission Payment Submitted",
                 message=f"A commission payment of {amount} (Ref: {reference}) is awaiting verification.",
                 action_url=f"/super-admin/commission/payments?status=pending",
-                metadata={"payment_id": payment_id, "amount": amount, "reference": reference},
+                payload={"payment_id": payment_id, "amount": amount, "reference": reference},  # ✅ FIXED
             )
 
     @staticmethod
@@ -145,7 +146,7 @@ class NotificationTriggers:
             title="Commission Payment Verified",
             message=f"Your commission payment of {amount} (Ref: {reference}) has been verified. Your account is now in good standing.",
             action_url="/dashboard/commission",
-            metadata={"payment_id": payment_id, "amount": amount, "reference": reference},
+            payload={"payment_id": payment_id, "amount": amount, "reference": reference},  # ✅ FIXED
         )
 
     @staticmethod
@@ -167,7 +168,7 @@ class NotificationTriggers:
             title="Booking Confirmed",
             message=f"Booking {booking_number} for {client_name} has been confirmed.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            metadata={"booking_id": booking_id, "client_name": client_name},
+            payload={"booking_id": booking_id, "client_name": client_name},  # ✅ FIXED
         )
 
     @staticmethod
@@ -189,7 +190,7 @@ class NotificationTriggers:
             title="Trip Started",
             message=f"Trip for booking {booking_number} ({client_name}) has started. Vehicle is now rented.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            metadata={"booking_id": booking_id, "client_name": client_name},
+            payload={"booking_id": booking_id, "client_name": client_name},  # ✅ FIXED
         )
 
     @staticmethod
@@ -212,5 +213,5 @@ class NotificationTriggers:
             title="Booking Cancelled",
             message=f"Booking {booking_number} for {client_name} has been cancelled. Reason: {reason}.",
             action_url=f"/dashboard/bookings/{booking_id}",
-            metadata={"booking_id": booking_id, "client_name": client_name, "reason": reason},
+            payload={"booking_id": booking_id, "client_name": client_name, "reason": reason},  # ✅ FIXED
         )

@@ -1,8 +1,8 @@
 """add_notifications_table
 
-Revision ID: 89a59490ce0b
+Revision ID: 81253044ccb1
 Revises: d4e5f6a7b8c9
-Create Date: 2026-11-08 17:08:10.290176
+Create Date: 2026-11-08 21:17:46.870731
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '89a59490ce0b'
+revision: str = '81253044ccb1'
 down_revision: Union[str, Sequence[str], None] = 'd4e5f6a7b8c9'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -42,7 +42,8 @@ def upgrade() -> None:
         sa.Column('priority', notification_priority_enum, nullable=False, server_default='normal'),
         sa.Column('title', sa.String(length=255), nullable=False),
         sa.Column('message', sa.Text(), nullable=False),
-        sa.Column('metadata', postgresql.JSONB(astext_type=sa.Text()), nullable=True, server_default=sa.text("'{}'::jsonb")),
+        # ✅ FIXED: Renamed from 'metadata' to 'payload' to avoid SQLAlchemy reserved name conflict
+        sa.Column('payload', postgresql.JSONB(astext_type=sa.Text()), nullable=True, server_default=sa.text("'{}'::jsonb")),
         sa.Column('action_url', sa.String(length=500), nullable=True),
         sa.Column('is_read', sa.Boolean(), nullable=False, server_default='false'),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')),
