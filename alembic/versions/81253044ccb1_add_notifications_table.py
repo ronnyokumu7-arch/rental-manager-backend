@@ -19,22 +19,31 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # ✅ 1. Create Enums using raw SQL to safely handle "IF NOT EXISTS"
-    # This completely bypasses SQLAlchemy's sometimes aggressive ENUM creation logic
-    op.execute(
-        "CREATE TYPE IF NOT EXISTS notificationtype AS ENUM ('booking', 'payment', 'client', 'vehicle', 'system', 'alert')"
-    )
-    op.execute(
-        "CREATE TYPE IF NOT EXISTS notificationpriority AS ENUM ('low', 'normal', 'high')"
-    )
+    # ✅ 1. Create Enums safely using PostgreSQL DO blocks.
+    # This is the standard, correct way to handle "create if not exists" for ENUMs in Postgres.
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE notificationtype AS ENUM ('booking', 'payment', 'client', 'vehicle', 'system', 'alert');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """)
+    
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE notificationpriority AS ENUM ('low', 'normal', 'high');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """)
 
     # 2. Create Table
+    # create_type=False is critical here so SQLAlchemy doesn't try to create the ENUM again
     op.create_table(
         'notifications',
         sa.Column('id', sa.Integer(), nullable=False),
         sa.Column('tenant_id', sa.Integer(), nullable=False),
         sa.Column('user_id', sa.Integer(), nullable=False),
-        # ✅ Use postgresql.ENUM with create_type=False so it doesn't try to create it again
         sa.Column('type', postgresql.ENUM(name='notificationtype', create_type=False), nullable=False),
         sa.Column('priority', postgresql.ENUM(name='notificationpriority', create_type=False), nullable=False, server_default='normal'),
         sa.Column('title', sa.String(length=255), nullable=False),
@@ -72,6 +81,6 @@ def downgrade() -> None:
     # 2. Drop Table
     op.drop_table('notifications')
 
-    # 3. Drop Enums (using raw SQL for safety)
+    # 3. Drop Enums
     op.execute("DROP TYPE IF EXISTS notificationtype")
     op.execute("DROP TYPE IF EXISTS notificationpriority")
