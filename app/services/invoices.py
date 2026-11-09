@@ -179,6 +179,12 @@ async def create_quotation_for_booking(
 ) -> Invoice:
     """
     ✅ AUTO-CALLED on booking create. Creates the price offer the client accepts.
+
+    - doc_type=quotation, status=sent (shareable immediately)
+    - due_date = rental start (tentative; becomes the real due date on morph)
+    - share_token generated so the public link is ready to send
+    - Idempotent: returns the existing quotation if one already exists
+    - FLUSH only — the caller (booking create) commits atomically
     """
     existing = await get_booking_quotation(db, booking.id)
     if existing:
@@ -211,6 +217,12 @@ async def morph_quotation_to_invoice(
 ) -> Optional[Invoice]:
     """
     ✅ CALLED on client accept. The quotation becomes the payable invoice.
+
+    - doc_type: quotation → invoice
+    - due_date = rental start (the initial payment due date)
+    - amount re-synced from booking.total_amount (human adjustments included)
+    - FLUSH only — the caller (accept flow) commits atomically
+    Returns None if no quotation exists (nothing to morph).
     """
     quotation = await get_booking_quotation(db, booking.id)
     if not quotation:
@@ -251,7 +263,6 @@ async def morph_quotation_to_invoice(
                 amount=float(booking.total_amount or 0),
             )
     except Exception as e:
-        # ✅ Fail silently for notifications to protect the core business transaction
         print(f"⚠️ Warning: Failed to trigger quotation accepted notification: {e}")
 
     return quotation
