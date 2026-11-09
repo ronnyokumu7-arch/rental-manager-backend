@@ -5,8 +5,6 @@
 ✅ COPY RULE: this is client-facing — messages speak to the client and point
    them at the agency ("contact the agency"), never at dashboard concepts.
 ✅ AUDIT (Phase B): PDF failures → typed ServerError (was raw 500).
-✅ NOTIFICATIONS: Fires a "New Payment Proof Submitted" alert to the agency
-   immediately after a client uploads a payment receipt via the public link.
 """
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -48,7 +46,6 @@ from app.services.cache import (
 )
 from app.services.invoice_pdf import generate_invoice_pdf
 from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure engine
-from app.services.notification_triggers import NotificationTriggers  # ✅ NEW: Notification triggers
 
 router = APIRouter()
 
@@ -446,25 +443,6 @@ async def record_payment_public(
     await set_rls_context(db, tenant_id=invoice.tenant_id)
     await db.refresh(db_payment)
     await invalidate_payment_cache(invoice.tenant_id)
-
-    # ✅ NEW: Trigger Notification for Agency (Pending Confirmation)
-    try:
-        # Fetch tenant to get the owner_id for the notification target
-        tenant = await db.get(Tenant, invoice.tenant_id)
-        target_user_id = tenant.owner_id if tenant else None
-        
-        if target_user_id:
-            await NotificationTriggers.on_payment_submitted(
-                db=db,
-                tenant_id=invoice.tenant_id,
-                target_user_id=target_user_id,
-                amount=float(payload.amount),
-                reference=payload.reference,
-                payment_id=db_payment.id,
-            )
-    except Exception as e:
-        # Fail silently to ensure the client still sees the success message
-        print(f"⚠️ Warning: Failed to trigger payment submission notification: {e}")
 
     return await _build_public_view(db, invoice.id, token)
 

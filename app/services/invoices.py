@@ -27,9 +27,6 @@ from app.services.number_generator import generate_invoice_number
 from app.services.cache import invalidate_booking_cache
 from app.services.pricing_selfdrive import compute_billable_days, quote_selfdrive
 
-# ✅ NEW: Import notification triggers
-from app.services.notification_triggers import NotificationTriggers
-
 # Quotation public link validity (days)
 QUOTATION_VALID_DAYS = 7
 
@@ -236,33 +233,4 @@ async def morph_quotation_to_invoice(
     _ensure_share_token(quotation)
 
     await db.flush()      # caller commits
-
-    # ✅ NEW: Trigger Notification for Quotation Acceptance
-    try:
-        target_user_id = booking.tenant.owner_id
-        
-        client_name = "Client"
-        if hasattr(booking, 'client') and booking.client:
-            client_name = booking.client.full_name
-        else:
-            client_result = await db.execute(
-                select(booking.__class__.client).where(booking.__class__.id == booking.id)
-            )
-            client = client_result.scalars().first()
-            if client:
-                client_name = client.full_name
-
-        if target_user_id:
-            await NotificationTriggers.on_quotation_accepted(
-                db=db,
-                tenant_id=booking.tenant_id,
-                target_user_id=target_user_id,
-                booking_number=booking.booking_number,
-                client_name=client_name,
-                booking_id=booking.id,
-                amount=float(booking.total_amount or 0),
-            )
-    except Exception as e:
-        print(f"⚠️ Warning: Failed to trigger quotation accepted notification: {e}")
-
     return quotation
