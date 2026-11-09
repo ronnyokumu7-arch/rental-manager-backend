@@ -62,9 +62,101 @@ async def create_invoice_for_booking(
     due_date_override: Optional[datetime] = None,
     notes: Optional[str] = None,
 ) -> Invoice:
-    # ... (keep your existing create_invoice_for_booking logic exactly as is) ...
-    # (Omitted for brevity, no changes needed here unless you want to notify on manual invoice creation)
-    pass 
+    """
+    Create or update an invoice for a booking.
+
+    Precedence for the invoice amount:
+      custom_amount  >  engine total (after custom_rate re-price)  >  booking.total_amount
+    """
+    existing_stmt = select(Invoice).where(Invoice.booking_id == booking.id)
+    existing_result = await db.execute(existing_stmt)
+    existing_invoice = existing_result.scalars().first()
+
+    if custom_rate is not None:
+        # ✅ PHASE 1: override the effective rate for THIS booking only and
+        # re-price through the pure self-drive engine (days × rate + driver fees).
+        booking.daily_rate = custom_rate
+        try:
+            pickup_at = booking.pickup_at or booking.start_date
+            return_at = booking.scheduled_return_at or booking.end_date
+
+            # Locked day count when present (Phase 1 bookings); legacy rows recompute.
+            days = booking.billable_days or compute_billable_days(pickup_at, return_at)
+
+            # Driver fee (explicit query — never lazy-load in async context).
+            driver_daily_fee = None
+            if booking.driver_id:
+                driver = (await db.execute(
+                    select(Driver).where(Driver.id == booking.driver_id)
+                )).scalars().first()
+                if driver:
+                    driver_daily_fee = driver.daily_fee
+
+            quote = quote_selfdrive(
+                pickup_at=pickup_at,
+                return_at=return_at,
+                daily_rate=Decimal(custom_rate),
+                driver_daily_fee=(
+                    Decimal(driver_daily_fee) if driver_daily_fee else None
+                ),
+            )
+            booking.billable_days = quote.billable_days
+            booking.computed_total = quote.total
+            booking.total_amount = quote.total
+        except ValueError:
+            pass  # invalid schedule on legacy row — keep previous total
+        await db.commit()
+        await db.refresh(booking)
+        await invalidate_booking_cache(booking.tenant_id)
+
+    if existing_invoice:
+        if custom_amount is not None:
+            existing_invoice.amount_due = custom_amount
+        elif custom_rate is not None:
+            existing_invoice.amount_due = booking.total_amount
+        if custom_currency is not None:
+            existing_invoice.currency_code = custom_currency
+        if discount_amount is not None:
+            existing_invoice.discount_amount = discount_amount
+        if discount_reason is not None:
+            existing_invoice.discount_reason = discount_reason
+        if due_date_override is not None:
+            existing_invoice.due_date = due_date_override
+        if notes is not None:
+            existing_invoice.notes = notes
+
+        await db.commit()
+        await db.refresh(existing_invoice)
+        return existing_invoice
+
+    invoice_number = await generate_invoice_number(db, booking.tenant_id)
+
+    if custom_amount is not None:
+        final_amount = custom_amount
+    else:
+        final_amount = booking.total_amount
+
+    final_currency = custom_currency or booking.currency_code or "KES"
+    effective_discount = discount_amount or Decimal("0")
+
+    db_invoice = Invoice(
+        tenant_id=booking.tenant_id,
+        booking_id=booking.id,
+        invoice_number=invoice_number,
+        status=InvoiceStatus.draft,
+        amount_due=final_amount,
+        amount_paid=Decimal("0"),
+        currency_code=final_currency,
+        discount_amount=effective_discount,
+        discount_reason=discount_reason,
+        due_date=due_date_override or booking.end_date,
+        notes=notes,
+    )
+    db.add(db_invoice)
+
+    await db.commit()
+    await db.refresh(db_invoice)
+    return db_invoice
 
 
 # =============================================================================
@@ -85,8 +177,32 @@ async def create_quotation_for_booking(
     db: AsyncSession,
     notes: Optional[str] = None,
 ) -> Invoice:
-    # ... (keep your existing create_quotation_for_booking logic exactly as is) ...
-    pass
+    """
+    ✅ AUTO-CALLED on booking create. Creates the price offer the client accepts.
+    """
+    existing = await get_booking_quotation(db, booking.id)
+    if existing:
+        return existing
+
+    invoice_number = await generate_invoice_number(db, booking.tenant_id)
+
+    quotation = Invoice(
+        tenant_id=booking.tenant_id,
+        booking_id=booking.id,
+        invoice_number=invoice_number,
+        doc_type="quotation",
+        status=InvoiceStatus.sent,
+        amount_due=booking.total_amount,
+        amount_paid=Decimal("0"),
+        currency_code=booking.currency_code or "KES",
+        discount_amount=Decimal("0"),
+        due_date=_rental_start(booking),
+        notes=notes,
+    )
+    _ensure_share_token(quotation)
+    db.add(quotation)
+    await db.flush()      # caller commits
+    return quotation
 
 
 async def morph_quotation_to_invoice(
@@ -95,12 +211,6 @@ async def morph_quotation_to_invoice(
 ) -> Optional[Invoice]:
     """
     ✅ CALLED on client accept. The quotation becomes the payable invoice.
-
-    - doc_type: quotation → invoice
-    - due_date = rental start (the initial payment due date)
-    - amount re-synced from booking.total_amount (human adjustments included)
-    - FLUSH only — the caller (accept flow) commits atomically
-    Returns None if no quotation exists (nothing to morph).
     """
     quotation = await get_booking_quotation(db, booking.id)
     if not quotation:
@@ -116,18 +226,13 @@ async def morph_quotation_to_invoice(
     await db.flush()      # caller commits
 
     # ✅ NEW: Trigger Notification for Quotation Acceptance
-    # We do this AFTER flush so the quotation is in the DB, but BEFORE the caller's commit,
-    # keeping everything in the same atomic transaction.
     try:
-        # Notify the tenant owner, or fallback to a super admin if needed
         target_user_id = booking.tenant.owner_id
         
-        # We need the client name. If it's not eagerly loaded, we fetch it safely.
         client_name = "Client"
         if hasattr(booking, 'client') and booking.client:
             client_name = booking.client.full_name
         else:
-            # Safe fallback fetch if not loaded
             client_result = await db.execute(
                 select(booking.__class__.client).where(booking.__class__.id == booking.id)
             )
