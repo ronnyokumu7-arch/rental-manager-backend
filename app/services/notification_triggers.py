@@ -237,3 +237,49 @@ class NotificationTriggers:
             action_url=f"/dashboard/bookings/{booking_id}",
             payload={"booking_id": booking_id, "client_name": client_name, "reason": reason},
         )
+
+    # ========================================================================
+    # ✅ NEW: SAFE TRIGGERS FOR TESTING (Client & Vehicle Creation)
+    # ========================================================================
+
+    @staticmethod
+    async def on_client_created(
+        db: AsyncSession,
+        tenant_id: int,
+        target_user_id: int,
+        client_name: str,
+        client_id: int,
+    ) -> None:
+        """Triggered when a new client is added to the system."""
+        await NotificationService.create(
+            db=db,
+            tenant_id=tenant_id,
+            user_ids=target_user_id,
+            type=NotificationType.client,
+            priority=NotificationPriority.low,
+            title="New Client Added",
+            message=f"A new client profile for {client_name} has been created.",
+            action_url=f"/dashboard/clients/{client_id}",
+            payload={"client_id": client_id, "client_name": client_name},
+        )
+
+    @staticmethod
+    async def on_vehicle_created(
+        db: AsyncSession,
+        tenant_id: int,
+        target_user_id: int,
+        vehicle_plate: str,
+        vehicle_id: int,
+    ) -> None:
+        """Triggered when a new vehicle is added to the fleet."""
+        await NotificationService.create(
+            db=db,
+            tenant_id=tenant_id,
+            user_ids=target_user_id,
+            type=NotificationType.vehicle,
+            priority=NotificationPriority.low,
+            title="New Vehicle Added",
+            message=f"A new vehicle ({vehicle_plate}) has been added to your fleet.",
+            action_url=f"/dashboard/fleet/{vehicle_id}",
+            payload={"vehicle_id": vehicle_id, "vehicle_plate": vehicle_plate},
+        )

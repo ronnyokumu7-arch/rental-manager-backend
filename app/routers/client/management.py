@@ -1,4 +1,3 @@
-# app/routers/client/management.py
 """
 ✅ CLIENT CRUD — identity engine + risk flags + tenant-scoped caching.
 
@@ -164,6 +163,19 @@ async def create_client(
         )
 
     await ClientTaskService.on_client_created(db, db_client, db_client.tenant_id)
+
+    # ✅ NEW: Safe Notification Trigger for Client Creation
+    try:
+        from app.services.notification_triggers import NotificationTriggers
+        await NotificationTriggers.on_client_created(
+            db=db,
+            tenant_id=db_client.tenant_id,
+            target_user_id=current_user.id,
+            client_name=db_client.full_name,
+            client_id=db_client.id,
+        )
+    except Exception as e:
+        print(f"⚠️ Notification failed (non-critical): {e}")
 
     # ✅ Invalidate cache
     await invalidate_client_cache(db_client.tenant_id)

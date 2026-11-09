@@ -423,6 +423,21 @@ async def record_payment_public(
             message="This invoice is fully paid. Thank you!",
         )
 
+    # ✅ NEW: STRICT LOCK - Prevent duplicate pending payment submissions for this invoice
+    existing_pending = await db.scalar(
+        select(
+            exists().where(
+                Payment.invoice_id == invoice.id,
+                Payment.status == PaymentStatus.pending,
+            )
+        )
+    )
+    if existing_pending:
+        raise BadRequestError(
+            title="Payment Already Reported",
+            message="You have already submitted a payment proof for this invoice. Please wait for the agency to confirm it before submitting another.",
+        )
+
     remaining = (invoice.amount_due or Decimal("0")) - (invoice.amount_paid or Decimal("0"))
     if payload.amount > remaining:
         raise ValidationFailedError(

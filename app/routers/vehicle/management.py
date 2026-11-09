@@ -1,4 +1,3 @@
-# app/routers/vehicle/management.py
 """
 ✅ VEHICLE CRUD — tenant/investor-scoped, cached lists, lifecycle tasks.
 
@@ -29,6 +28,8 @@ from app.schemas.pagination import PaginatedResponse, paginate_items
 from app.schemas.vehicle import VehicleCreate, VehicleOut, VehicleUpdate
 from app.services.cache import get_cached_vehicle_list, set_cached_vehicle_list, invalidate_vehicle_cache
 from app.services.vehicle_tasks import VehicleTaskService
+# ✅ NEW: Import notification triggers
+from app.services.notification_triggers import NotificationTriggers
 from ._helpers import get_authorized_vehicle_async
 
 router = APIRouter()
@@ -109,6 +110,18 @@ async def create_vehicle(
     # Trigger lifecycle tasks
     await VehicleTaskService.on_vehicle_created(db, db_vehicle, db_vehicle.tenant_id)
     await VehicleTaskService.dispatch_lifecycle_tasks(db, db_vehicle, "created")
+
+    # ✅ NEW: Safe Notification Trigger for Vehicle Creation
+    try:
+        await NotificationTriggers.on_vehicle_created(
+            db=db,
+            tenant_id=db_vehicle.tenant_id,
+            target_user_id=current_user.id,
+            vehicle_plate=db_vehicle.plate_number,
+            vehicle_id=db_vehicle.id,
+        )
+    except Exception as e:
+        print(f"⚠️ Notification failed (non-critical): {e}")
     
     # ✅ CRITICAL: Invalidate cache so new vehicle appears immediately
     await invalidate_vehicle_cache(db_vehicle.tenant_id)
