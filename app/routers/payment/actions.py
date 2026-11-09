@@ -31,8 +31,6 @@ from ._helpers import get_authorized_payment_async
 
 # ✅ NEW: Import Activity Loggers
 from app.services.activity_logs.payment import PaymentActivityLogger
-# ✅ NEW: Import Notification Triggers
-from app.services.notification_triggers import NotificationTriggers
 
 router = APIRouter()
 
@@ -125,7 +123,6 @@ async def confirm_payment(
             selectinload(Payment.invoice)
             .selectinload(Invoice.booking)
             .selectinload(Booking.client)
-            .selectinload(Booking.tenant) # ✅ Ensure tenant is loaded for owner_id
         ).where(
             Payment.id == payment_id,
             Payment.tenant_id == tenant_id,
@@ -133,26 +130,6 @@ async def confirm_payment(
         logged_payment = (await db.execute(logged_payment_stmt)).scalars().unique().first()
         if logged_payment is None:
             raise RuntimeError("Confirmed payment could not be reloaded for activity logging")
-            
-        # ✅ NEW: Trigger Notification for Payment Received
-        try:
-            booking = logged_payment.invoice.booking
-            client_name = booking.client.full_name if booking.client else "Client"
-            # Notify the tenant owner (unless they are the ones confirming it)
-            target_user_id = booking.tenant.owner_id if booking.tenant else None
-            
-            if target_user_id and target_user_id != current_user.id:
-                await NotificationTriggers.on_payment_received(
-                    db=db,
-                    tenant_id=tenant_id,
-                    target_user_id=target_user_id,
-                    amount=float(payment.amount),
-                    client_name=client_name,
-                    payment_id=payment.id,
-                )
-        except Exception as e:
-            print(f"⚠️ Warning: Failed to trigger payment notification: {e}")
-
         await PaymentActivityLogger.on_recorded(
             db=db,
             tenant_id=tenant_id,
