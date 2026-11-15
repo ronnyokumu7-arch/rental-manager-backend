@@ -1,4 +1,3 @@
-# app/routers/invoice/payments.py
 """
 ✅ OFFLINE PAYMENT RECORDING — operator-logged payments (M-Pesa/cash/bank).
 
@@ -6,32 +5,35 @@
 ✅ AUDIT: balance/amount guards return field_errors so the payment form
    highlights the exact problem (zero / over-balance).
 """
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload  # ✅ NEW: Added import
+from sqlalchemy.orm import selectinload
 
 from app.core.errors import BadRequestError, NotFoundError, ValidationFailedError
 from app.db.database import get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
 from app.dependencies.subscription import require_active_subscription
-from app.models.bookings import Booking  # ✅ NEW: Added import
+from app.models.bookings import Booking
 from app.models.invoices import Invoice, InvoiceStatus
 from app.models.payments import Payment, PaymentStatus
 from app.models.users import User
 from app.schemas.payment import PaymentCreate, PaymentOut
-from app.services.cache import invalidate_subscription_cache, invalidate_invoice_cache
-from app.services.activity_logs.payment import PaymentActivityLogger  # ✅ NEW
+# ✅ FIX 1: Added invalidate_payment_cache to imports
+from app.services.cache import invalidate_subscription_cache, invalidate_invoice_cache, invalidate_payment_cache
+from app.services.activity_logs.payment import PaymentActivityLogger
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/{invoice_id}/record-payment", response_model=PaymentOut)
-@limiter.limit("30/minute")  # 🚨 STRICT: Direct financial transaction and state change
+@limiter.limit("30/minute")
 async def record_offline_payment(
     request: Request,
     invoice_id: int,
@@ -39,7 +41,6 @@ async def record_offline_payment(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_active_subscription),
 ):
-    # ✅ Validate payment amount is positive (defense in depth)
     if payload.amount <= Decimal("0"):
         raise ValidationFailedError(
             title="Invalid Amount",
@@ -47,7 +48,6 @@ async def record_offline_payment(
             field_errors={"amount": "Must be greater than zero"},
         )
 
-    # ✅ Async query to fetch the invoice with tenant isolation
     stmt = select(Invoice).where(
         Invoice.id == invoice_id,
         Invoice.tenant_id == current_user.tenant_id
@@ -105,25 +105,16 @@ async def record_offline_payment(
     elif new_paid > Decimal("0"):
         invoice.status = InvoiceStatus.partially_paid
 
-    # ✅ Async commit and refresh
+    # ✅ FIX 2: Commit the financial transaction FIRST. 
+    # A failed activity log must NEVER rollback a successful payment.
     await db.commit()
     await db.refresh(db_payment)
 
-    # ✅ NEW: Re-fetch payment with eager-loaded client chain (prevents MissingGreenlet)
-    stmt = select(Payment).options(
-        selectinload(Payment.invoice)
-        .selectinload(Invoice.booking)
-        .selectinload(Booking.client)
-    ).where(Payment.id == db_payment.id)
-    result = await db.execute(stmt)
-    db_payment = result.scalars().unique().first()
-    
-    # ✅ CRITICAL: Invalidate caches since payment status changed
-    # This ensures subscription warnings and invoice lists update immediately
-    await invalidate_subscription_cache(current_user.tenant_id)
+    # ✅ FIX 3: Invalidate ALL relevant caches immediately
     await invalidate_invoice_cache(current_user.tenant_id)
+    await invalidate_payment_cache(current_user.tenant_id)  # ✅ ADDED
     
-    # ✅ NEW: Log the payment received
+    # ✅ FIX 4: Log the payment received (non-blocking, non-transactional)
     try:
         await PaymentActivityLogger.on_recorded(
             db=db,
@@ -132,9 +123,20 @@ async def record_offline_payment(
             payment=db_payment,
             invoice_number=invoice.invoice_number,
         )
+        # If the logger does its own db.add(), we can commit it here safely 
+        # without affecting the already-committed payment.
         await db.commit()
     except Exception as e:
-        await db.rollback()
-        print(f"⚠️ Warning: Failed to log payment received: {e}")
+        # ✅ CRITICAL: Do NOT rollback the payment if logging fails.
+        logger.error(f"⚠️ Failed to log payment received for invoice {invoice.id}: {e}")
     
-    return db_payment
+    # Re-fetch payment with eager-loaded client chain for the response
+    stmt = select(Payment).options(
+        selectinload(Payment.invoice)
+        .selectinload(Invoice.booking)
+        .selectinload(Booking.client)
+    ).where(Payment.id == db_payment.id)
+    result = await db.execute(stmt)
+    final_payment = result.scalars().unique().first()
+    
+    return final_payment
