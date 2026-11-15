@@ -140,3 +140,31 @@ async def record_offline_payment(
     final_payment = result.scalars().unique().first()
     
     return final_payment
+
+@router.get("/{payment_id}", response_model=PaymentOut)
+@limiter.limit("60/minute")
+async def get_payment(
+    request: Request,
+    payment_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Single payment lookup. Not cached. Enforces tenant isolation."""
+    stmt = select(Payment).options(
+        selectinload(Payment.invoice)
+        .selectinload(Invoice.booking)
+        .selectinload(Booking.client)
+    ).where(
+        Payment.id == payment_id,
+        Payment.tenant_id == current_user.tenant_id
+    )
+    result = await db.execute(stmt)
+    payment = result.scalars().unique().first()
+
+    if not payment:
+        raise NotFoundError(
+            title="Payment Not Found",
+            message="We couldn't find this payment, or you may not have access to it.",
+        )
+
+    return payment

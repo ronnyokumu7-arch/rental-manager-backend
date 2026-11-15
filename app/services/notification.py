@@ -164,6 +164,7 @@ class NotificationService:
         if not notif.is_read:
             notif.is_read = True
             await db.flush()
+            await db.commit()  # ✅ FIX: Added commit to persist the change
             await cls._invalidate_user_cache(user_id)
 
         return notif
@@ -178,6 +179,7 @@ class NotificationService:
         )
         result = await db.execute(stmt)
         await db.flush()
+        await db.commit()  # ✅ FIX: Added commit to persist the change
         
         if result.rowcount > 0:
             await cls._invalidate_user_cache(user_id)
@@ -202,6 +204,7 @@ class NotificationService:
         )
         result = await db.execute(stmt)
         await db.flush()
+        await db.commit()  # ✅ FIX: Added commit to persist the change
         
         if result.rowcount > 0:
             await cls._invalidate_user_cache(user_id)
@@ -220,6 +223,7 @@ class NotificationService:
         )
         result = await db.execute(stmt)
         await db.flush()
+        await db.commit()  # ✅ FIX: Added commit to persist the change
         
         if result.rowcount > 0:
             await cls._invalidate_user_cache(user_id)
@@ -235,7 +239,8 @@ class NotificationService:
             Notification.is_read == True
         )
         result = await db.execute(stmt)
-        await db.flush()  # ✅ UPDATED: Changed from commit() to flush() for consistency
+        await db.flush()
+        await db.commit()  # ✅ FIX: Reverted to commit() to ensure deletion persists
         
         if result.rowcount > 0:
             await cls._invalidate_user_cache(user_id)
@@ -252,6 +257,7 @@ class NotificationService:
             Notification.created_at < cutoff_date
         )
         result = await db.execute(stmt)
-        await db.flush()  # ✅ UPDATED: Changed from commit() to flush() for consistency
+        await db.flush()
+        await db.commit()  # ✅ FIX: Reverted to commit() to ensure deletion persists
         
         return result.rowcount
