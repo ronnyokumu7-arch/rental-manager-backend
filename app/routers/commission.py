@@ -1,4 +1,3 @@
-# app/routers/commission.py
 """
 Commission Management — tenant dashboard, payment submissions, and super-admin verification queue.
 
@@ -6,6 +5,7 @@ Commission Management — tenant dashboard, payment submissions, and super-admin
 ✅ AUDIT (Phase B): "No tenant context" errors shifted from 400 → 403 (AuthorizationError)
    since this is a scope/authorization failure, not a malformed request.
 """
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
@@ -36,6 +36,9 @@ from app.schemas.commission_payment import (
 )
 
 router = APIRouter(prefix="/commission")
+
+# ✅ Logger for proper production error tracking (replaces bare print())
+logger = logging.getLogger(__name__)
 
 # ✅ PLATFORM TIMEZONE: the commission day rolls over at 00:00H East Africa Time
 PLATFORM_TZ = ZoneInfo("Africa/Nairobi")
@@ -264,10 +267,9 @@ async def submit_commission_payment(
         submitted_by=current_user.id,
     )
     db.add(payment)
-    await db.commit()
-    await db.refresh(payment)
 
-    # ✅ NEW: Trigger Notification to Super Admins
+    # ✅ FIX: Fire trigger BEFORE commit so it's part of the same atomic transaction.
+    # The trigger's internal db.flush() will also assign the payment.id.
     try:
         await NotificationTriggers.on_commission_payment_submitted(
             db=db,
@@ -277,7 +279,11 @@ async def submit_commission_payment(
             payment_id=payment.id,
         )
     except Exception as e:
-        print(f"⚠️ Warning: Failed to trigger commission submission notification: {e}")
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception(f"Failed to trigger commission submission notification")
+
+    await db.commit()
+    await db.refresh(payment)
 
     return payment
 
@@ -353,10 +359,7 @@ async def verify_commission_payment(
     payment.verified_by = current_user.id
     payment.verified_at = now
 
-    await db.commit()
-    await db.refresh(payment)
-
-    # ✅ NEW: Trigger Notification to Tenant Owner
+    # ✅ FIX: Fire trigger BEFORE commit so it's part of the same atomic transaction.
     try:
         # Fetch the tenant owner to notify them
         tenant = await db.get(Tenant, payment.tenant_id)
@@ -372,7 +375,11 @@ async def verify_commission_payment(
                 payment_id=payment.id,
             )
     except Exception as e:
-        print(f"⚠️ Warning: Failed to trigger commission verification notification: {e}")
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception(f"Failed to trigger commission verification notification")
+
+    await db.commit()
+    await db.refresh(payment)
 
     return CommissionPaymentVerifyResult(
         payment=CommissionPaymentOut.model_validate(payment),

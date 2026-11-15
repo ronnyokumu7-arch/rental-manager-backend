@@ -8,6 +8,7 @@
   - create: duplicate plate → typed ConflictError (was raw 500).
   - create: past insurance expiry now rejected (parity with update).
 """
+import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import select
@@ -33,6 +34,9 @@ from app.services.notification_triggers import NotificationTriggers
 from ._helpers import get_authorized_vehicle_async
 
 router = APIRouter()
+
+# ✅ Logger for proper production error tracking (replaces bare print())
+logger = logging.getLogger(__name__)
 
 # ✅ LIVE STATUSES that block archive/delete (pending counts — quotation in flight)
 ACTIVE_BLOCKING_STATUSES = [
@@ -97,6 +101,21 @@ async def create_vehicle(
     # ✅ SECURE: scope.tenant_id is guaranteed to be valid by the dependency
     db_vehicle = Vehicle(**data, tenant_id=scope.tenant_id, owner_id=owner_id)
     db.add(db_vehicle)
+
+    # ✅ FIX: Fire trigger BEFORE commit so it's part of the same atomic transaction.
+    # The trigger's internal db.flush() will also assign the vehicle.id safely.
+    try:
+        await NotificationTriggers.on_vehicle_created(
+            db=db,
+            tenant_id=db_vehicle.tenant_id,
+            target_user_id=current_user.id,
+            vehicle_plate=db_vehicle.plate_number,
+            vehicle_id=db_vehicle.id,
+        )
+    except Exception as e:
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception("Failed to trigger vehicle creation notification")
+
     try:
         await db.commit()
         await db.refresh(db_vehicle)
@@ -110,18 +129,6 @@ async def create_vehicle(
     # Trigger lifecycle tasks
     await VehicleTaskService.on_vehicle_created(db, db_vehicle, db_vehicle.tenant_id)
     await VehicleTaskService.dispatch_lifecycle_tasks(db, db_vehicle, "created")
-
-    # ✅ NEW: Safe Notification Trigger for Vehicle Creation
-    try:
-        await NotificationTriggers.on_vehicle_created(
-            db=db,
-            tenant_id=db_vehicle.tenant_id,
-            target_user_id=current_user.id,
-            vehicle_plate=db_vehicle.plate_number,
-            vehicle_id=db_vehicle.id,
-        )
-    except Exception as e:
-        print(f"⚠️ Notification failed (non-critical): {e}")
     
     # ✅ CRITICAL: Invalidate cache so new vehicle appears immediately
     await invalidate_vehicle_cache(db_vehicle.tenant_id)

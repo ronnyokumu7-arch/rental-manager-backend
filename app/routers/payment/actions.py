@@ -5,6 +5,7 @@
 ✅ AUDIT (Phase B): payments on VOID invoices are frozen as records
    (matches the cancel flow's "payments stay as records" rule).
 """
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -31,8 +32,13 @@ from ._helpers import get_authorized_payment_async
 
 # ✅ NEW: Import Activity Loggers
 from app.services.activity_logs.payment import PaymentActivityLogger
+# ✅ NEW: Import Notification Triggers to wire up dead code
+from app.services.notification_triggers import NotificationTriggers
 
 router = APIRouter()
+
+# ✅ Logger for proper production error tracking (replaces bare print())
+logger = logging.getLogger(__name__)
 
 
 @router.post("/{payment_id}/confirm", response_model=PaymentOut)
@@ -112,6 +118,30 @@ async def confirm_payment(
         invoice.status = InvoiceStatus.partially_paid
 
     invoice_number = invoice.invoice_number
+
+    # ✅ FIX: Fetch client name for notification before commit
+    client_name = "Unknown Client"
+    if invoice.booking_id:
+        booking_stmt = select(Booking).options(selectinload(Booking.client)).where(Booking.id == invoice.booking_id)
+        booking = (await db.execute(booking_stmt)).scalars().first()
+        if booking and booking.client:
+            client_name = booking.client.full_name
+
+    # ✅ FIX: Fire notification trigger BEFORE commit so it's part of the same atomic transaction.
+    # The trigger's internal db.flush() will also assign the notification ID safely.
+    try:
+        await NotificationTriggers.on_payment_received(
+            db=db,
+            tenant_id=tenant_id,
+            target_user_id=current_user.id,
+            amount=float(payment.amount),
+            client_name=client_name,
+            payment_id=payment.id,
+        )
+    except Exception as e:
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception("Failed to trigger payment received notification")
+
     await db.commit()
     await db.refresh(payment)
     await invalidate_payment_cache(tenant_id)
@@ -141,7 +171,8 @@ async def confirm_payment(
         return logged_payment
     except Exception as e:
         await db.rollback()
-        print(f"⚠️ Warning: Failed to log confirmed payment: {e}")
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception("Failed to log confirmed payment")
         return payment
 
 
@@ -229,6 +260,7 @@ async def void_payment(
             reason=payload.reason,
         )
     except Exception as e:
-        print(f"⚠️ Warning: Failed to log payment void: {e}")
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception("Failed to log payment void")
     
     return payment

@@ -2,14 +2,12 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Union
 
-from fastapi_cache.decorator import cache
 from sqlalchemy import select, func, update, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.errors import NotFoundError
 from app.models.notifications import Notification, NotificationType, NotificationPriority
-from app.schemas.notification import NotificationCreate, NotificationOut, NotificationCountResponse
+from app.schemas.notification import NotificationCountResponse
 
 logger = logging.getLogger(__name__)
 
@@ -17,22 +15,31 @@ logger = logging.getLogger(__name__)
 class NotificationService:
     """
     Handles all notification logic: creation, retrieval, and state management.
-    Integrates with Redis to cache unread counts for high-performance UI updates.
     """
 
     # ─── CACHE HELPERS ─────────────────────────────────────────────────────
     @staticmethod
     async def _invalidate_user_cache(user_id: int) -> None:
-        """Clears Redis cache for a specific user's notification counts."""
+        """
+        Clears Redis cache for a specific user's notification counts.
+        ✅ FIX: Uses SCAN to match the actual keys written by the cache service.
+        """
         try:
             from app.core.redis_client import get_redis
             redis = await get_redis()
             if redis:
-                # Delete both unread and total count keys
-                await redis.delete(f"notification:unread:{user_id}")
-                await redis.delete(f"notification:total:{user_id}")
+                # Match the keys written by app/services/cache/notification.py
+                pattern = f"notifications:*user_{user_id}*"
+                cursor = 0
+                while True:
+                    cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=100)
+                    if keys:
+                        await redis.delete(*keys)
+                    if cursor == 0:
+                        break
         except Exception as e:
-            logger.warning(f"Failed to invalidate notification cache for user {user_id}: {e}")
+            # ✅ FIX: Use logger.exception instead of print/logger.warning
+            logger.exception(f"Failed to invalidate notification cache for user {user_id}")
 
     # ─── CREATION ──────────────────────────────────────────────────────────
     @classmethod
@@ -45,12 +52,12 @@ class NotificationService:
         title: str,
         message: str,
         priority: NotificationPriority = NotificationPriority.normal,
-        payload: dict = None,  # ✅ FIXED: Renamed from 'metadata'
+        payload: dict = None,
         action_url: str = None,
     ) -> List[Notification]:
         """
         Creates notifications for one or more users.
-        Automatically invalidates their unread count cache.
+        Uses flush() to get IDs. Caller MUST commit the transaction.
         """
         if isinstance(user_ids, int):
             user_ids = [user_ids]
@@ -64,7 +71,7 @@ class NotificationService:
                 priority=priority,
                 title=title,
                 message=message,
-                payload=payload or {},  # ✅ FIXED: Renamed from 'metadata'
+                payload=payload or {},
                 action_url=action_url,
                 is_read=False,
             )
@@ -89,10 +96,7 @@ class NotificationService:
         per_page: int = 20,
         unread_only: bool = False,
     ) -> dict:
-        """
-        Fetches paginated notifications for a user.
-        """
-        # Base query
+        """Fetches paginated notifications for a user."""
         stmt = select(Notification).where(Notification.user_id == user_id)
         count_stmt = select(func.count(Notification.id)).where(Notification.user_id == user_id)
 
@@ -100,17 +104,13 @@ class NotificationService:
             stmt = stmt.where(Notification.is_read == False)
             count_stmt = count_stmt.where(Notification.is_read == False)
 
-        # Get total count
         total = (await db.execute(count_stmt)).scalar() or 0
 
-        # Order by newest first
         stmt = stmt.order_by(desc(Notification.created_at))
         
-        # Pagination
         offset = (page - 1) * per_page
         stmt = stmt.offset(offset).limit(per_page)
 
-        # Execute
         result = await db.execute(stmt)
         items = result.scalars().all()
 
@@ -126,13 +126,7 @@ class NotificationService:
 
     @classmethod
     async def get_counts(cls, db: AsyncSession, user_id: int) -> NotificationCountResponse:
-        """
-        Gets unread and total counts. 
-        Note: In a production setup, you might wrap this with @cache(expire=60) 
-        from fastapi_cache, but since we invalidate on write, we can also just query DB 
-        or use a manual Redis get/set here. For simplicity and consistency with your 
-        existing cache setup, we'll query the DB directly (it's fast with the index).
-        """
+        """Gets unread and total counts."""
         unread_stmt = select(func.count(Notification.id)).where(
             Notification.user_id == user_id,
             Notification.is_read == False
@@ -173,7 +167,7 @@ class NotificationService:
 
     @classmethod
     async def mark_all_as_read(cls, db: AsyncSession, user_id: int) -> int:
-        """Marks all unread notifications for a user as read. Returns count of updated rows."""
+        """Marks all unread notifications for a user as read."""
         stmt = (
             update(Notification)
             .where(Notification.user_id == user_id, Notification.is_read == False)
@@ -190,10 +184,7 @@ class NotificationService:
     # ─── CLEANUP & ARCHIVING ───────────────────────────────────────────────
     @classmethod
     async def clear_read_notifications(cls, db: AsyncSession, user_id: int) -> int:
-        """
-        Manually clears all read notifications for a specific user.
-        Used by the "Clear read" button in the UI.
-        """
+        """Manually clears all read notifications for a specific user."""
         stmt = delete(Notification).where(
             Notification.user_id == user_id,
             Notification.is_read == True
@@ -208,10 +199,7 @@ class NotificationService:
 
     @classmethod
     async def archive_old_read_notifications(cls, db: AsyncSession, days_to_keep: int = 30) -> int:
-        """
-        Background job helper: Hard deletes read notifications older than X days 
-        to keep the database table small and performant.
-        """
+        """Background job helper: Hard deletes read notifications older than X days."""
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
         
         stmt = delete(Notification).where(

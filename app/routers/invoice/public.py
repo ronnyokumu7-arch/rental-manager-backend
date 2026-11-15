@@ -6,6 +6,7 @@
    them at the agency ("contact the agency"), never at dashboard concepts.
 ✅ AUDIT (Phase B): PDF failures → typed ServerError (was raw 500).
 """
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
@@ -46,8 +47,13 @@ from app.services.cache import (
 )
 from app.services.invoice_pdf import generate_invoice_pdf
 from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure engine
+# ✅ NEW: Import notification triggers to wire up dead code
+from app.services.notification_triggers import NotificationTriggers
 
 router = APIRouter()
+
+# ✅ Logger for proper production error tracking (replaces bare print())
+logger = logging.getLogger(__name__)
 
 # ✅ Client-facing errors lead home, never to the dashboard
 _PUBLIC_HOME = navigate_action("Go Home", "/")
@@ -423,7 +429,7 @@ async def record_payment_public(
             message="This invoice is fully paid. Thank you!",
         )
 
-    # ✅ NEW: STRICT LOCK - Prevent duplicate pending payment submissions for this invoice
+    # ✅ STRICT LOCK - Prevent duplicate pending payment submissions for this invoice
     existing_pending = await db.scalar(
         select(
             exists().where(
@@ -453,6 +459,28 @@ async def record_payment_public(
         notes=f"Self-reported by client via public payment portal. {payload.notes or ''}".strip(),
     )
     db.add(db_payment)
+    
+    # ✅ FIX: Flush first to generate the payment ID needed for the notification payload
+    await db.flush()
+
+    # ✅ FIX: Fire trigger BEFORE commit so it's part of the same atomic transaction.
+    try:
+        # Fetch the tenant owner to notify them
+        tenant = await db.get(Tenant, invoice.tenant_id)
+        target_user_id = tenant.owner_id if tenant else None
+        
+        if target_user_id:
+            await NotificationTriggers.on_payment_submitted(
+                db=db,
+                tenant_id=invoice.tenant_id,
+                target_user_id=target_user_id,
+                amount=float(payload.amount),
+                reference=payload.reference,
+                payment_id=db_payment.id,
+            )
+    except Exception as e:
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception("Failed to trigger payment submission notification")
 
     await db.commit()
     await set_rls_context(db, tenant_id=invoice.tenant_id)
@@ -475,7 +503,8 @@ async def download_invoice_pdf_public(request: Request, token: str, db: AsyncSes
     except (AppException,):
         raise
     except Exception as e:
-        print(f"⚠️ Public PDF generation failed for invoice {invoice.id}: {e}")
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception(f"Public PDF generation failed for invoice {invoice.id}")
         raise ServerError(
             title="PDF Not Available Yet",
             message="We couldn't generate the PDF just now. Please try again in a moment.",

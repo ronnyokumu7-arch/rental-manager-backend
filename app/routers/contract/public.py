@@ -1,4 +1,3 @@
-# app/routers/contract/public.py
 """
 ✅ PUBLIC CONTRACT PAGE — view / pdf / sign (client-facing).
 
@@ -13,6 +12,7 @@
 import base64
 import binascii
 import io
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request, Response, UploadFile
@@ -46,6 +46,9 @@ from app.services.activity_logs.contract import ContractActivityLogger
 from app.services.storage import upload_file
 
 router = APIRouter()
+
+# ✅ Logger for proper production error tracking (replaces bare print())
+logger = logging.getLogger(__name__)
 
 # ✅ Client-facing errors lead home, never to the dashboard
 _PUBLIC_HOME = navigate_action("Go Home", "/")
@@ -178,7 +181,8 @@ async def download_contract_pdf_public(request: Request, token: str, db=Depends(
     except (AppException,):
         raise
     except Exception as e:
-        print(f"⚠️ Public contract PDF failed for {contract.id}: {e}")
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception(f"Public contract PDF failed for {contract.id}")
         raise ServerError(
             title="PDF Not Available Yet",
             message="We couldn't generate the contract PDF just now. Please try again in a moment.",
@@ -224,7 +228,8 @@ async def sign_contract_public(
     except (AppException,):
         raise
     except Exception as e:
-        print(f"⚠️ Signature upload failed for contract {contract.id}: {e}")
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception(f"Signature upload failed for contract {contract.id}")
         raise ServerError(
             title="Signature Upload Failed",
             message="We couldn't save your signature. Please try signing again in a moment.",
@@ -244,7 +249,8 @@ async def sign_contract_public(
     )
     await db.flush()
 
-    # ✅ NEW: Trigger Notification to the Agency (Tenant Owner)
+    # ✅ Trigger Notification to the Agency (Tenant Owner)
+    # Note: This is correctly placed BEFORE the final db.commit()
     try:
         target_user_id = booking.tenant.owner_id
         if target_user_id:
@@ -257,8 +263,8 @@ async def sign_contract_public(
                 booking_id=booking.id,
             )
     except Exception as e:
-        # ✅ Fail silently to protect the core signing transaction
-        print(f"⚠️ Warning: Failed to trigger contract signed notification: {e}")
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception("Failed to trigger contract signed notification")
 
     # ✅ AUTO-START: only when pickup time has arrived (now or past).
     # Future pickups stay pending/confirmed — the scheduler starts them at pickup time.
@@ -270,7 +276,8 @@ async def sign_contract_public(
                 await BookingLifecycleService.start_trip_auto(db, booking)
             except Exception as e:
                 # ✅ Phase B: log instead of silent pass — signing still succeeds
-                print(f"⚠️ Auto-start skipped for booking {booking.id}: {e}")
+                # ✅ FIX: Use logger.exception to capture full traceback in production
+                logger.exception(f"Auto-start skipped for booking {booking.id}")
 
     await db.commit()
     await set_rls_context(db, tenant_id=contract.tenant_id)

@@ -9,6 +9,7 @@
   - Identity engine now covers cross-entity (client ↔ driver) collisions.
   - FIXED RUNTIME BUG: BookingStatus.ongoing doesn't exist (AttributeError → 500).
 """
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -35,9 +36,14 @@ from app.services.client_identity import (
 )
 from app.services.client_tasks import ClientTaskService
 from app.services.storage import delete_file  # ✅ for driver image cleanup
+# ✅ NEW: Import notification triggers at the top level
+from app.services.notification_triggers import NotificationTriggers
 from ._helpers import get_authorized_client_async
 
 router = APIRouter()
+
+# ✅ Logger for proper production error tracking (replaces bare print())
+logger = logging.getLogger(__name__)
 
 # ✅ LIVE STATUSES that block archive/delete (pending counts — quotation in flight)
 ACTIVE_BLOCKING_STATUSES = [
@@ -152,6 +158,20 @@ async def create_client(
 
     db.add(db_client)
 
+    # ✅ FIX: Fire trigger BEFORE commit so it's part of the same atomic transaction.
+    # The trigger's internal db.flush() will also assign the client.id safely.
+    try:
+        await NotificationTriggers.on_client_created(
+            db=db,
+            tenant_id=db_client.tenant_id,
+            target_user_id=current_user.id,
+            client_name=db_client.full_name,
+            client_id=db_client.id,
+        )
+    except Exception as e:
+        # ✅ FIX: Use logger.exception to capture full traceback in production
+        logger.exception("Failed to trigger client creation notification")
+
     try:
         await db.commit()
         await db.refresh(db_client)
@@ -163,21 +183,6 @@ async def create_client(
         )
 
     await ClientTaskService.on_client_created(db, db_client, db_client.tenant_id)
-
-    # ✅ NEW: Safe Notification Trigger for Client Creation
-    try:
-        from app.services.notification_triggers import NotificationTriggers
-        await NotificationTriggers.on_client_created(
-            db=db,
-            tenant_id=db_client.tenant_id,
-            target_user_id=current_user.id,
-            client_name=db_client.full_name,
-            client_id=db_client.id,
-        )
-        # ✅ CRITICAL FIX: Commit the notification! The main commit happened earlier.
-        await db.commit()
-    except Exception as e:
-        print(f"⚠️ Notification failed (non-critical): {e}")
 
     # ✅ Invalidate cache
     await invalidate_client_cache(db_client.tenant_id)

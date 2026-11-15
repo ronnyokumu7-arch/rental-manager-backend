@@ -3,11 +3,9 @@ import logging
 from typing import Optional, List
 
 from app.core.redis_client import get_redis
-from app.services.cache.serialization import deserialize_cache_list, serialize_cache_item
 
 logger = logging.getLogger(__name__)
 
-# Shorter TTL for notifications since they're user-facing and need to feel real-time
 NOTIFICATION_COUNT_TTL = 60  # 1 minute for counts (badge)
 NOTIFICATION_LIST_TTL = 120  # 2 minutes for list (dropdown)
 
@@ -22,7 +20,8 @@ def _build_cache_key(
 ) -> str:
     """
     Build a deterministic cache key for notification data.
-    Ensures different filters get different cache entries.
+    ✅ FIX: Ensures keys match the pattern deleted by _invalidate_user_cache
+    Pattern: notifications:*user_{user_id}*
     """
     parts = [
         f"tenant_{tenant_id}",
@@ -39,10 +38,7 @@ async def get_cached_notification_counts(
     tenant_id: int,
     user_id: int,
 ) -> Optional[dict]:
-    """
-    Retrieve cached unread/total counts for the notification badge.
-    Returns serialized JSON dict or None if cache miss/unavailable.
-    """
+    """Retrieve cached unread/total counts for the notification badge."""
     redis = await get_redis()
     if not redis:
         return None
@@ -55,7 +51,7 @@ async def get_cached_notification_counts(
             return json.loads(cached)
         return None
     except Exception as e:
-        logger.warning(f"⚠️ Failed to read notification count cache: {e}")
+        logger.exception(f"Failed to read notification count cache")
         return None
 
 
@@ -65,10 +61,7 @@ async def set_cached_notification_counts(
     unread_count: int,
     total_count: int,
 ) -> None:
-    """
-    Store notification counts in cache.
-    Uses short TTL to keep badge feeling fresh without hammering DB.
-    """
+    """Store notification counts in cache."""
     redis = await get_redis()
     if not redis:
         return
@@ -85,7 +78,7 @@ async def set_cached_notification_counts(
             json.dumps(data)
         )
     except Exception as e:
-        logger.warning(f"⚠️ Failed to write notification count cache: {e}")
+        logger.exception(f"Failed to write notification count cache")
 
 
 async def get_cached_notification_list(
@@ -95,10 +88,7 @@ async def get_cached_notification_list(
     per_page: int = 20,
     unread_only: bool = False,
 ) -> Optional[List[dict]]:
-    """
-    Retrieve cached notification list for the dropdown.
-    Returns serialized list of notification dicts or None.
-    """
+    """Retrieve cached notification list for the dropdown."""
     redis = await get_redis()
     if not redis:
         return None
@@ -108,9 +98,9 @@ async def get_cached_notification_list(
             tenant_id, user_id, "list", page, per_page, unread_only
         )
         cached = await redis.get(cache_key)
-        return deserialize_cache_list(cached) if cached else None
+        return json.loads(cached) if cached else None
     except Exception as e:
-        logger.warning(f"⚠️ Failed to read notification list cache: {e}")
+        logger.exception(f"Failed to read notification list cache")
         return None
 
 
@@ -122,10 +112,7 @@ async def set_cached_notification_list(
     per_page: int = 20,
     unread_only: bool = False,
 ) -> None:
-    """
-    Store serialized notification list in cache.
-    Accepts either Pydantic models or ORM objects and serializes safely.
-    """
+    """Store serialized notification list in cache."""
     redis = await get_redis()
     if not redis:
         return
@@ -135,21 +122,17 @@ async def set_cached_notification_list(
             tenant_id, user_id, "list", page, per_page, unread_only
         )
 
-        # Serialize safely (strip ORM relationships)
         data = []
         if notifications:
             for notif in notifications:
                 if hasattr(notif, 'model_dump'):
-                    # Pydantic v2
                     try:
                         data.append(notif.model_dump(mode="json"))
                     except TypeError:
                         data.append(notif.model_dump())
                 elif hasattr(notif, 'dict'):
-                    # Pydantic v1
                     data.append(notif.dict())
                 else:
-                    # ORM object: manually extract fields
                     data.append({
                         "id": notif.id,
                         "tenant_id": notif.tenant_id,
@@ -158,7 +141,6 @@ async def set_cached_notification_list(
                         "priority": notif.priority.value if hasattr(notif.priority, 'value') else notif.priority,
                         "title": notif.title,
                         "message": notif.message,
-                        # ✅ FIXED: Renamed from 'metadata' to 'payload'
                         "payload": getattr(notif, 'payload', None) or {},
                         "action_url": notif.action_url,
                         "is_read": notif.is_read,
@@ -169,23 +151,17 @@ async def set_cached_notification_list(
         await redis.setex(
             cache_key,
             NOTIFICATION_LIST_TTL,
-            json.dumps(serialize_cache_item(data))
+            json.dumps(data)
         )
     except Exception as e:
-        logger.warning(f"⚠️ Failed to write notification list cache: {e}")
+        logger.exception(f"Failed to write notification list cache")
 
 
 async def invalidate_notification_cache(
     tenant_id: int,
     user_id: Optional[int] = None,
 ) -> None:
-    """
-    Invalidate notification cache keys.
-    
-    If user_id is provided, only invalidates that user's keys.
-    If user_id is None, invalidates ALL notification keys for the tenant
-    (useful for admin operations or bulk notifications).
-    """
+    """Invalidate notification cache keys."""
     redis = await get_redis()
     if not redis:
         return
@@ -207,30 +183,11 @@ async def invalidate_notification_cache(
                 break
         
         if deleted_count > 0:
-            logger.info(f"✅ Invalidated {deleted_count} notification cache keys for tenant {tenant_id}")
+            logger.info(f"Invalidated {deleted_count} notification cache keys")
     except Exception as e:
-        logger.warning(f"⚠️ Failed to invalidate notification cache: {e}")
+        logger.exception(f"Failed to invalidate notification cache")
 
 
 async def invalidate_user_notification_cache(user_id: int) -> None:
-    """
-    Convenience wrapper to invalidate cache for a specific user.
-    Use this after creating, reading, or marking notifications as read.
-    """
-    # We don't have tenant_id here, so we invalidate by user_id pattern only
-    redis = await get_redis()
-    if not redis:
-        return
-
-    try:
-        pattern = f"notifications:*user_{user_id}*"
-        
-        cursor = 0
-        while True:
-            cursor, keys = await redis.scan(cursor=cursor, match=pattern, count=100)
-            if keys:
-                await redis.delete(*keys)
-            if cursor == 0:
-                break
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to invalidate user notification cache: {e}")
+    """Convenience wrapper to invalidate cache for a specific user."""
+    await invalidate_notification_cache(tenant_id=0, user_id=user_id)
