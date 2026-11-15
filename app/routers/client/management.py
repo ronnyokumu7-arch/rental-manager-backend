@@ -174,6 +174,8 @@ async def create_client(
             client_name=db_client.full_name,
             client_id=db_client.id,
         )
+        # ✅ CRITICAL FIX: Commit the notification! The main commit happened earlier.
+        await db.commit()
     except Exception as e:
         print(f"⚠️ Notification failed (non-critical): {e}")
 
