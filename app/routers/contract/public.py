@@ -80,7 +80,13 @@ async def _load_contract_by_token(db, token: str) -> Contract:
 
 
 async def _load_booking_locked(db, booking_id: int) -> Booking:
-    stmt = select(Booking).where(Booking.id == booking_id).with_for_update()
+    # ✅ FIX: Eagerly load tenant to prevent MissingGreenlet lazy-load errors
+    stmt = (
+        select(Booking)
+        .options(selectinload(Booking.tenant)) 
+        .where(Booking.id == booking_id)
+        .with_for_update()
+    )
     booking = (await db.execute(stmt)).scalars().first()
     if not booking:
         raise NotFoundError(
