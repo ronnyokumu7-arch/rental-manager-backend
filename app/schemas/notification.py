@@ -63,3 +63,14 @@ class NotificationCountResponse(BaseModel):
     """
     unread_count: int
     total_count: int
+
+
+# ============================================================================
+# REQUEST SCHEMAS (Added for Multi-Select UI)
+# ============================================================================
+
+class BulkNotificationAction(BaseModel):
+    """
+    Request body for bulk operations (e.g., mark multiple as read, bulk delete/archive).
+    """
+    ids: List[int]

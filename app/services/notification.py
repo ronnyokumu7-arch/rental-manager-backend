@@ -94,15 +94,18 @@ class NotificationService:
         user_id: int,
         page: int = 1,
         per_page: int = 20,
-        unread_only: bool = False,
+        filter: str = "all",  # ✅ UPDATED: Replaced unread_only with filter ("all", "unread", "read")
     ) -> dict:
-        """Fetches paginated notifications for a user."""
+        """Fetches paginated notifications for a user with filtering."""
         stmt = select(Notification).where(Notification.user_id == user_id)
         count_stmt = select(func.count(Notification.id)).where(Notification.user_id == user_id)
 
-        if unread_only:
+        if filter == "unread":
             stmt = stmt.where(Notification.is_read == False)
             count_stmt = count_stmt.where(Notification.is_read == False)
+        elif filter == "read":
+            stmt = stmt.where(Notification.is_read == True)
+            count_stmt = count_stmt.where(Notification.is_read == True)
 
         total = (await db.execute(count_stmt)).scalar() or 0
 
@@ -181,6 +184,48 @@ class NotificationService:
             
         return result.rowcount
 
+    # ─── BULK ACTIONS (Added for Multi-Select UI) ──────────────────────────
+    @classmethod
+    async def mark_multiple_as_read(cls, db: AsyncSession, user_id: int, notification_ids: List[int]) -> int:
+        """Marks specific notifications as read for the current user."""
+        if not notification_ids:
+            return 0
+            
+        stmt = (
+            update(Notification)
+            .where(
+                Notification.user_id == user_id, 
+                Notification.id.in_(notification_ids),
+                Notification.is_read == False
+            )
+            .values(is_read=True)
+        )
+        result = await db.execute(stmt)
+        await db.flush()
+        
+        if result.rowcount > 0:
+            await cls._invalidate_user_cache(user_id)
+            
+        return result.rowcount
+
+    @classmethod
+    async def delete_multiple(cls, db: AsyncSession, user_id: int, notification_ids: List[int]) -> int:
+        """Hard deletes specific notifications for the current user (used for 'Archive')."""
+        if not notification_ids:
+            return 0
+
+        stmt = delete(Notification).where(
+            Notification.user_id == user_id,
+            Notification.id.in_(notification_ids)
+        )
+        result = await db.execute(stmt)
+        await db.flush()
+        
+        if result.rowcount > 0:
+            await cls._invalidate_user_cache(user_id)
+            
+        return result.rowcount
+
     # ─── CLEANUP & ARCHIVING ───────────────────────────────────────────────
     @classmethod
     async def clear_read_notifications(cls, db: AsyncSession, user_id: int) -> int:
@@ -190,7 +235,7 @@ class NotificationService:
             Notification.is_read == True
         )
         result = await db.execute(stmt)
-        await db.commit()
+        await db.flush()  # ✅ UPDATED: Changed from commit() to flush() for consistency
         
         if result.rowcount > 0:
             await cls._invalidate_user_cache(user_id)
@@ -207,6 +252,6 @@ class NotificationService:
             Notification.created_at < cutoff_date
         )
         result = await db.execute(stmt)
-        await db.commit()
+        await db.flush()  # ✅ UPDATED: Changed from commit() to flush() for consistency
         
         return result.rowcount

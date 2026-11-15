@@ -10,6 +10,7 @@ from app.schemas.notification import (
     NotificationListResponse,
     NotificationCountResponse,
     NotificationOut,
+    BulkNotificationAction,  # ✅ ADDED
 )
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
@@ -34,13 +35,17 @@ async def list_notifications(
     request: Request,
     page: int = 1,
     per_page: int = 20,
-    unread_only: bool = False,
+    filter: str = "all",  # ✅ UPDATED: Replaced unread_only with filter
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Fetch paginated notifications. Use unread_only=true for the 'Unread' tab."""
+    """Fetch paginated notifications. Filter can be 'all', 'unread', or 'read'."""
+    # Basic validation to ensure only expected values hit the service
+    if filter not in ("all", "unread", "read"):
+        filter = "all"
+        
     return await NotificationService.get_list(
-        db, current_user.id, page, per_page, unread_only
+        db, current_user.id, page, per_page, filter
     )
 
 
@@ -66,6 +71,37 @@ async def mark_all_notifications_as_read(
 ):
     """Mark all unread notifications as read. Returns 204 No Content."""
     await NotificationService.mark_all_as_read(db, current_user.id)
+    return None
+
+
+# ─── BULK ACTIONS (For Multi-Select UI) ──────────────────────────────────
+@router.post("/bulk-read", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute")
+async def mark_multiple_as_read(
+    request: Request,
+    payload: BulkNotificationAction,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mark specific notifications as read."""
+    await NotificationService.mark_multiple_as_read(
+        db, current_user.id, payload.ids
+    )
+    return None
+
+
+@router.post("/bulk-delete", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute")
+async def delete_multiple_notifications(
+    request: Request,
+    payload: BulkNotificationAction,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete specific notifications (used for 'Archive' in UI)."""
+    await NotificationService.delete_multiple(
+        db, current_user.id, payload.ids
+    )
     return None
 
 
