@@ -5,6 +5,10 @@
 ✅ COPY RULE: this is client-facing — messages speak to the client and point
    them at the agency ("contact the agency"), never at dashboard concepts.
 ✅ AUDIT (Phase B): PDF failures → typed ServerError (was raw 500).
+✅ AUDIT (Phase C): payment submission no longer blocked by notification wiring.
+   The "payment proof submitted" notification is fired in an ISOLATED background
+   session (system RLS context) AFTER the payment commits, so a notification
+   failure can never poison the payment transaction.
 """
 import logging
 from datetime import datetime, timezone
@@ -27,7 +31,13 @@ from app.core.errors import (
     navigate_action,
 )
 from app.core.limiter import limiter
-from app.db.database import get_db, set_public_rls_context, set_rls_context
+from app.db.database import (
+    get_db,
+    set_public_rls_context,
+    set_rls_context,
+    AsyncSessionLocal,
+    set_system_rls_context,
+)
 from app.models.bookings import Booking, BookingStatus, CancellationReason
 from app.models.drivers import Driver
 from app.models.invoices import Invoice, InvoiceStatus
@@ -46,17 +56,16 @@ from app.services.cache import (
     invalidate_booking_cache, invalidate_contract_cache,
 )
 from app.services.invoice_pdf import generate_invoice_pdf
-from app.services.pricing_selfdrive import quote_selfdrive  # ✅ PHASE 1: pure engine
-# ✅ NEW: Import notification triggers to wire up dead code
+from app.services.pricing_selfdrive import quote_selfdrive
 from app.services.notification_triggers import NotificationTriggers
 
 router = APIRouter()
 
-# ✅ Logger for proper production error tracking (replaces bare print())
 logger = logging.getLogger(__name__)
 
-# ✅ Client-facing errors lead home, never to the dashboard
 _PUBLIC_HOME = navigate_action("Go Home", "/")
+
+MAX_SIGNATURE_BYTES = 1_000_000  # (kept for parity with contract flow; unused here)
 
 
 class ReschedulePayload(BaseModel):
@@ -107,6 +116,38 @@ async def _load_booking_locked(db: AsyncSession, booking_id: int) -> Booking:
             action=_PUBLIC_HOME,
         )
     return booking
+
+
+async def _notify_payment_submitted_bg(
+    payment_id: int,
+    tenant_id: int,
+    target_user_id: int,
+    amount: float,
+    reference: str,
+) -> None:
+    """
+    ✅ Fire the 'payment proof submitted' notification in an ISOLATED session
+    with SYSTEM RLS context (mirrors render_and_store_contract_pdf).
+
+    Runs AFTER the payment commits, so a notification/RLS failure can never
+    poison the payment transaction. Best-effort: failures are logged, not raised.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            await set_system_rls_context(db)
+            await NotificationTriggers.on_payment_submitted(
+                db=db,
+                tenant_id=tenant_id,
+                target_user_id=target_user_id,
+                amount=amount,
+                reference=reference,
+                payment_id=payment_id,
+            )
+            await db.commit()
+    except Exception:
+        logger.exception(
+            f"Failed to notify payment submission for payment {payment_id} (tenant {tenant_id})"
+        )
 
 
 async def _build_public_view(
@@ -244,14 +285,12 @@ async def accept_quotation_public(
             action=_PUBLIC_HOME,
         )
 
-    # Morph + contract + confirm (all flush-only), then ONE commit.
     await morph_quotation_to_invoice(booking, db)
     contract = await ensure_contract_for_booking(booking, db)
     await BookingLifecycleService.confirm_client(db, booking)
 
     await db.commit()
 
-    # Background: render contract PDF + auto-send (wire to notification service).
     background_tasks.add_task(render_and_store_contract_pdf, contract.id)
 
     await invalidate_booking_cache(booking.tenant_id)
@@ -283,7 +322,7 @@ async def cancel_booking_public(
 
     await BookingLifecycleService.cancel_client(db, booking, CancellationReason.client_cancelled)
     if invoice.status != InvoiceStatus.void:
-        invoice.status = InvoiceStatus.void   # void the transaction; payments stay as records
+        invoice.status = InvoiceStatus.void
 
     await db.commit()
     await invalidate_booking_cache(booking.tenant_id)
@@ -330,13 +369,11 @@ async def reschedule_booking_public(
             action=_PUBLIC_HOME,
         )
 
-    # Apply new schedule
     booking.pickup_at = payload.pickup_at
     booking.scheduled_return_at = payload.scheduled_return_at
     booking.start_date = payload.pickup_at
     booking.end_date = payload.scheduled_return_at
 
-    # ✅ PHASE 1: Re-price server-side via the pure self-drive engine
     rate = Decimal(booking.daily_rate or 0)
     if rate <= 0:
         raise ValidationFailedError(
@@ -346,7 +383,6 @@ async def reschedule_booking_public(
         )
 
     try:
-        # Driver fee via explicit query (never lazy-load in async context)
         driver_daily_fee = None
         if booking.driver_id:
             driver = (await db.execute(
@@ -367,14 +403,12 @@ async def reschedule_booking_public(
             message="The dates you chose can't be priced. Adjust the pickup or return time and try again.",
         )
 
-    # New terms → engine truth (operator can re-adjust via invoice afterwards)
     booking.billable_days = quote.billable_days
     booking.computed_total = quote.total
     booking.total_amount = quote.total
     booking.manually_adjusted = False
     booking.price_note = None
 
-    # Back to quotation + pending → client must re-accept the new terms
     invoice.doc_type = "quotation"
     invoice.amount_due = booking.total_amount
     invoice.due_date = payload.pickup_at
@@ -403,7 +437,11 @@ async def view_invoice_public(request: Request, token: str, db: AsyncSession = D
 @router.post("/public/{token}/pay", response_model=PublicInvoiceView)
 @limiter.limit("10/minute")
 async def record_payment_public(
-    request: Request, token: str, payload: PublicPaymentCreate, db: AsyncSession = Depends(get_db)
+    request: Request,
+    token: str,
+    payload: PublicPaymentCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
 ):
     invoice = await _load_invoice_by_token(db, token)
     invoice_stmt = (
@@ -459,33 +497,29 @@ async def record_payment_public(
         notes=f"Self-reported by client via public payment portal. {payload.notes or ''}".strip(),
     )
     db.add(db_payment)
-    
-    # ✅ FIX: Flush first to generate the payment ID needed for the notification payload
-    await db.flush()
+    await db.flush()  # generate payment id
 
-    # ✅ FIX: Fire trigger BEFORE commit so it's part of the same atomic transaction.
-    try:
-        # Fetch the tenant owner to notify them
-        tenant = await db.get(Tenant, invoice.tenant_id)
-        target_user_id = tenant.owner_id if tenant else None
-        
-        if target_user_id:
-            await NotificationTriggers.on_payment_submitted(
-                db=db,
-                tenant_id=invoice.tenant_id,
-                target_user_id=target_user_id,
-                amount=float(payload.amount),
-                reference=payload.reference,
-                payment_id=db_payment.id,
-            )
-    except Exception as e:
-        # ✅ FIX: Use logger.exception to capture full traceback in production
-        logger.exception("Failed to trigger payment submission notification")
+    # ✅ Resolve the tenant owner NOW (cheap read, inside txn) so the background
+    #    notification task has the recipient without re-querying.
+    tenant = await db.get(Tenant, invoice.tenant_id)
+    target_user_id = tenant.owner_id if tenant else None
 
+    # ✅ COMMIT THE PAYMENT FIRST. The notification is decoupled from this txn.
     await db.commit()
-    await set_rls_context(db, tenant_id=invoice.tenant_id)
     await db.refresh(db_payment)
     await invalidate_payment_cache(invoice.tenant_id)
+
+    # ✅ Fire the notification in an ISOLATED background session (system RLS).
+    #    A notification/RLS failure here can NEVER roll back the payment.
+    if target_user_id:
+        background_tasks.add_task(
+            _notify_payment_submitted_bg,
+            payment_id=db_payment.id,
+            tenant_id=invoice.tenant_id,
+            target_user_id=target_user_id,
+            amount=float(payload.amount),
+            reference=payload.reference,
+        )
 
     return await _build_public_view(db, invoice.id, token)
 
@@ -497,13 +531,11 @@ async def download_invoice_pdf_public(request: Request, token: str, db: AsyncSes
     if invoice.status == InvoiceStatus.void:
         raise _voided_doc_error()
 
-    # ✅ Phase B: PDF engine failures → typed, retryable error (was raw 500)
     try:
         pdf_bytes = await generate_invoice_pdf(invoice, db)
     except (AppException,):
         raise
-    except Exception as e:
-        # ✅ FIX: Use logger.exception to capture full traceback in production
+    except Exception:
         logger.exception(f"Public PDF generation failed for invoice {invoice.id}")
         raise ServerError(
             title="PDF Not Available Yet",
