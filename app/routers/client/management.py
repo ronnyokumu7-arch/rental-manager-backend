@@ -157,16 +157,19 @@ async def create_client(
             setattr(db_client, field, value)
 
     db.add(db_client)
+    
+    # ✅ CRITICAL FIX: Flush to generate db_client.id BEFORE firing the notification trigger.
+    # Without this, client_id is None and action_url becomes /dashboard/clients/None.
+    await db.flush()
 
-    # ✅ FIX: Fire trigger BEFORE commit so it's part of the same atomic transaction.
-    # The trigger's internal db.flush() will also assign the client.id safely.
+    # ✅ Fire trigger BEFORE commit so it's part of the same atomic transaction.
     try:
         await NotificationTriggers.on_client_created(
             db=db,
             tenant_id=db_client.tenant_id,
             target_user_id=current_user.id,
             client_name=db_client.full_name,
-            client_id=db_client.id,
+            client_id=db_client.id,  # ✅ Now guaranteed to be an integer
         )
     except Exception as e:
         # ✅ FIX: Use logger.exception to capture full traceback in production

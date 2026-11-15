@@ -102,15 +102,18 @@ async def create_vehicle(
     db_vehicle = Vehicle(**data, tenant_id=scope.tenant_id, owner_id=owner_id)
     db.add(db_vehicle)
 
-    # ✅ FIX: Fire trigger BEFORE commit so it's part of the same atomic transaction.
-    # The trigger's internal db.flush() will also assign the vehicle.id safely.
+    # ✅ CRITICAL FIX: Flush to generate db_vehicle.id BEFORE firing the notification trigger.
+    # Without this, vehicle_id evaluates to None and the CTA redirect breaks.
+    await db.flush()
+
+    # ✅ Fire trigger BEFORE commit so it's part of the same atomic transaction.
     try:
         await NotificationTriggers.on_vehicle_created(
             db=db,
             tenant_id=db_vehicle.tenant_id,
             target_user_id=current_user.id,
             vehicle_plate=db_vehicle.plate_number,
-            vehicle_id=db_vehicle.id,
+            vehicle_id=db_vehicle.id,  # ✅ Now guaranteed to be an integer
         )
     except Exception as e:
         # ✅ FIX: Use logger.exception to capture full traceback in production
