@@ -2,7 +2,7 @@
 Notification Triggers — Domain-specific helpers to fire notifications 
 from business logic services without bloating them.
 """
-from sqlalchemy import select  # ✅ ADDED: Required for on_commission_payment_submitted
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.notification import NotificationService
@@ -86,25 +86,30 @@ class NotificationTriggers:
         booking_number: str,
         client_name: str,
         booking_id: int,
+        contract_number: str,
     ) -> None:
         """Triggered when a client signs a rental contract."""
         await NotificationService.create(
             db=db,
             tenant_id=tenant_id,
             user_ids=target_user_id,
-            type=NotificationType.client,
+            type=NotificationType.contract,
             priority=NotificationPriority.high,
             title="Contract Signed",
             message=f"{client_name} has signed the rental contract for booking {booking_number}.",
-            action_url=f"/dashboard/bookings/{booking_id}",
-            payload={"booking_id": booking_id, "client_name": client_name},
+            action_url=f"/dashboard/financials?tab=contracts&search={contract_number}",
+            payload={
+                "booking_id": booking_id,
+                "client_name": client_name,
+                "contract_number": contract_number,
+            },
         )
 
     @staticmethod
     async def on_commission_accrued(
         db: AsyncSession,
         tenant_id: int,
-        target_user_id: int, # Usually super-admin or finance role
+        target_user_id: int,
         amount: float,
         booking_number: str,
     ) -> None:
@@ -139,7 +144,7 @@ class NotificationTriggers:
         if super_admin_ids:
             await NotificationService.create(
                 db=db,
-                tenant_id=tenant_id, # Use the tenant_id for context, even though it's a platform event
+                tenant_id=tenant_id,
                 user_ids=super_admin_ids,
                 type=NotificationType.payment,
                 priority=NotificationPriority.normal,
@@ -237,10 +242,6 @@ class NotificationTriggers:
             action_url=f"/dashboard/bookings/{booking_id}",
             payload={"booking_id": booking_id, "client_name": client_name, "reason": reason},
         )
-
-    # ========================================================================
-    # ✅ NEW: SAFE TRIGGERS FOR TESTING (Client & Vehicle Creation)
-    # ========================================================================
 
     @staticmethod
     async def on_client_created(

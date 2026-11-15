@@ -23,6 +23,7 @@ class NotificationType(str, enum.Enum):
     vehicle = "vehicle"
     system = "system"
     alert = "alert"
+    contract = "contract"  # ✅ ADDED: For contract signed events
 
 
 class NotificationPriority(str, enum.Enum):

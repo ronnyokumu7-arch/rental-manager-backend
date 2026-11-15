@@ -267,6 +267,7 @@ async def sign_contract_public(
                 booking_number=booking.booking_number,
                 client_name=booking.client.full_name if booking.client else "Client",
                 booking_id=booking.id,
+                contract_number=contract.contract_number,  # ✅ ADDED: Passes contract number for deep linking
             )
     except Exception as e:
         # ✅ FIX: Use logger.exception to capture full traceback in production
