@@ -152,11 +152,20 @@ async def view_contract_public(request: Request, token: str, db=Depends(get_db))
             select(TenantProfile).where(TenantProfile.tenant_id == booking.tenant_id)
         )).scalars().first()
 
-    # ✅ Fetch the merged policy document (defaults + tenant overrides)
+    # ✅ Fetch the merged policy document and FLATTEN {category: [clauses]}
+    #    into a single list, tagging each clause with its category so the
+    #    PublicContractView schema (List[Dict]) validates and the frontend
+    #    PoliciesTab can group by `category`.
     effective_policies = None
     if booking.tenant_id:
         try:
-            effective_policies = await get_effective_policy_document(db, booking.tenant_id)
+            policy_doc = await get_effective_policy_document(db, booking.tenant_id)
+            flat = []
+            for cat, clauses in (policy_doc or {}).items():
+                for c in (clauses or []):
+                    if isinstance(c, dict):
+                        flat.append({**c, "category": cat})
+            effective_policies = flat
         except Exception:
             logger.exception(f"Failed to load effective policies for public contract {contract.id}")
 
