@@ -165,6 +165,7 @@ class NotificationService:
             notif.is_read = True
             await db.flush()
             await db.commit()  # ✅ FIX: Added commit to persist the change
+            await db.refresh(notif)  # ✅ FIX: Reload to prevent MissingGreenlet on response serialization
             await cls._invalidate_user_cache(user_id)
 
         return notif
