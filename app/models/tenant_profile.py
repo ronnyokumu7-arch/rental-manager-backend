@@ -31,6 +31,7 @@ class TenantProfile(Base, AuditMixin):
     # Branding & Contracts
     logo_url = Column(Text, nullable=True)
     contract_prefix = Column(String(10), nullable=False, default="T0000")
+    contract_terms = Column(Text, nullable=True)  # ✅ ADDED: Custom terms for contracts
     contract_footer = Column(Text, nullable=True)
 
     # ✅ NEW: Payment Methods (M-Pesa, Airtel Money & Bank).
