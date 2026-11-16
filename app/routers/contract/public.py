@@ -44,6 +44,8 @@ from app.services.cache import (
 from app.services.contract_pdf import generate_contract_pdf
 from app.services.activity_logs.contract import ContractActivityLogger
 from app.services.storage import upload_file
+# ✅ NEW: Import to fetch the merged policy document (defaults + tenant overrides)
+from app.services.business_policy import get_effective_policy_document
 
 router = APIRouter()
 
@@ -150,6 +152,14 @@ async def view_contract_public(request: Request, token: str, db=Depends(get_db))
             select(TenantProfile).where(TenantProfile.tenant_id == booking.tenant_id)
         )).scalars().first()
 
+    # ✅ Fetch the merged policy document (defaults + tenant overrides)
+    effective_policies = None
+    if booking.tenant_id:
+        try:
+            effective_policies = await get_effective_policy_document(db, booking.tenant_id)
+        except Exception:
+            logger.exception(f"Failed to load effective policies for public contract {contract.id}")
+
     return PublicContractView(
         contract_number=contract.contract_number,
         booking_id=booking.id,
@@ -173,6 +183,10 @@ async def view_contract_public(request: Request, token: str, db=Depends(get_db))
         driver_name=driver.full_name if driver else None,
         driver_phone=driver.phone if driver else None,
         driver_dl_number=driver.dl_number if driver else None,
+        # ✅ NEW: Pass dynamic terms and policies to the frontend
+        contract_terms=tenant_profile.contract_terms if tenant_profile else None,
+        contract_footer=tenant_profile.contract_footer if tenant_profile else None,
+        effective_policies=effective_policies,
     )
 
 

@@ -23,26 +23,23 @@ from app.services.browser_pool import browser_pool
 from app.services.storage import get_backend
 from app.services.business_policy import get_effective_policy_document
 
+# ✅ NEW: Import the markdown converter (we will create this file next)
+from app.services.markdown_lite import markdown_to_html
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 template_env = Environment(
     loader=FileSystemLoader(BASE_DIR / "templates"),
     autoescape=select_autoescape(['html', 'xml'])
 )
 
+# ✅ NEW: Register the markdown converter as a Jinja2 filter
+template_env.filters['markdown_to_html'] = markdown_to_html
+
 
 async def resolve_signature_data_uri(contract: Contract) -> Optional[str]:
     """
     ✅ BULLETPROOF SIGNATURE RESOLVER (backend-aware)
-    The sign endpoint stores whatever upload_file() returns, i.e. an
-    authenticated API URL: {api_base}/api/v1/files/tenant_{id}/{category}/{uuid}.png
-
-    Resolution order:
-      1. API files URL → Cloudinary: backend.signed_url() then fetch bytes
-                         Local disk: read uploads_dir/{relative_path} directly
-      2. Direct http(s) URL (raw Cloudinary secure_url) → fetch bytes
-      3. Data URI stored directly → return as-is
-      4. Legacy local file path   → read from disk if it still exists
-    Returns None if nothing is available (template falls back to typed /s/ name).
+    ... (rest of this function remains exactly the same) ...
     """
     ref = getattr(contract, "signature_image_path", None)
     if not ref:
@@ -150,15 +147,9 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         signature_data_uri = await resolve_signature_data_uri(contract)
 
     # ✅ POLICY DOCUMENT: 3-category merged doc (defaults + overrides + custom clauses)
-    # The merge service returns {category_key: [clause_list]} where each clause has
-    # {title, content, is_custom, ...}. Missing override → default inherited.
     policy_doc = await get_effective_policy_document(db, contract.tenant_id)
 
     # ✅ PHASE 1: Booking snapshot is the source of truth.
-    # Priority:
-    # 1. booking.daily_rate = effective booking-specific rate
-    # 2. vehicle.daily_rate = legacy fallback
-    # 3. derive from booking.total_amount / billable_days as last resort
     daily_rate = Decimal("0.00")
     rental_days = 1
 
@@ -178,8 +169,6 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
             daily_rate = Decimal(str(booking.total_amount)) / Decimal(rental_days)
 
     # ✅ PHASE 1: Driver fees from snapshot, no config lookup.
-    # Driver portion = booking total - vehicle subtotal.
-    # This preserves what the user actually charged, including manual adjustments.
     driver_total = Decimal("0.00")
     if booking and booking.total_amount and daily_rate:
         vehicle_subtotal = daily_rate * Decimal(rental_days)
@@ -205,7 +194,7 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "tenant": tenant,
         "tenant_profile": tenant_profile,
         "signature_data_uri": signature_data_uri,
-        "policy_doc": policy_doc,  # ✅ 3-category merged document
+        "policy_doc": policy_doc,
         "daily_rate": daily_rate,
         "driver_fees": driver_fees_breakdown,
     }

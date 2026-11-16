@@ -650,7 +650,8 @@
                 {% for clause in policy_doc.agency_policies %}
                     <div class="policy-section">
                         <p class="policy-title">{{ clause.title }}</p>
-                        <p class="policy-content">{{ clause.content }}</p>
+                        <!-- ✅ MARKDOWN RENDERED: **bold**, lists, and paragraph spacing now work perfectly -->
+                        <div class="policy-content">{{ clause.content | markdown_to_html | safe }}</div>
                     </div>
                 {% endfor %}
             {% endif %}
@@ -676,13 +677,14 @@
             <p class="legal-text">By signing this agreement, I, <strong>{{ client.full_name }}</strong>, confirm the following:</p>
             
             <!-- ✅ DATA-DRIVEN: merged defaults + tenant overrides + custom clauses (statutory_declaration category) -->
-            <ul class="policy-list">
+            <div class="policy-list">
                 {% if policy_doc and policy_doc.statutory_declaration %}
                     {% for clause in policy_doc.statutory_declaration %}
-                        <li>{{ clause.content }}</li>
+                        <!-- ✅ MARKDOWN RENDERED: generates its own <ul>/<ol> or <p> tags natively -->
+                        {{ clause.content | markdown_to_html | safe }}
                     {% endfor %}
                 {% endif %}
-            </ul>
+            </div>
             
             <p class="legal-text" style="margin-top: 6pt;">
                 <strong>Further Declarations:</strong> I will not use this vehicle for paid passenger transport, will not exceed authorized passenger limits, and understand that only drivers listed in this agreement are permitted to operate the vehicle. I acknowledge that exceeding the agreed rental period or approved destination without written consent constitutes unauthorized use.
@@ -695,12 +697,17 @@
             
             <!-- ✅ DATA-DRIVEN: merged defaults + tenant overrides + custom clauses (general_conditions category).
                  Article numbering is positional (loop.index) — tenants can reorder/delete/add freely. -->
-            <div class="info-grid" style="grid-template-columns: 1fr; gap: 5pt 0; margin-bottom: 8pt;">
+            <div style="margin-bottom: 8pt;">
                 {% if policy_doc and policy_doc.general_conditions %}
                     {% for clause in policy_doc.general_conditions %}
-                        <div class="col-span-2">
-                            <span class="info-label">Article {{ loop.index }}: {{ clause.title }}</span><br>
-                            <span class="info-value">{{ clause.content }}</span>
+                        <div style="margin-bottom: 6pt;">
+                            <p style="font-size: 9pt; font-weight: 700; color: #0f172a; margin-bottom: 2pt; text-transform: uppercase; letter-spacing: 0.02em;">
+                                Article {{ loop.index }}: {{ clause.title }}
+                            </p>
+                            <!-- ✅ MARKDOWN RENDERED: replaces white-space: pre-line with proper HTML tags -->
+                            <div style="font-size: 9pt; color: #475569; font-weight: 500; line-height: 1.45;">
+                                {{ clause.content | markdown_to_html | safe }}
+                            </div>
                         </div>
                     {% endfor %}
                 {% endif %}
@@ -709,9 +716,26 @@
         
         <section class="contract-section">
             <h2 class="section-title">5. Master Legal Terms & Digital Execution Seal</h2>
-            <p class="legal-text">
-                This agreement constitutes the complete and legally binding vehicle rental contract between Lessor ({{ tenant.name if tenant else 'Lessor' }}) and Lessee ({{ client.full_name if client else 'Lessee' }}). By affixing digital signatures below, both parties certify acceptance of all terms, schedule rates, and conditions across this document.
-            </p>
+            
+            <!-- ✅ DATA-DRIVEN: Render custom contract terms from the settings page -->
+            {% if tenant_profile and tenant_profile.contract_terms %}
+                <div style="margin-bottom: 10pt;">
+                    {{ tenant_profile.contract_terms | markdown_to_html | safe }}
+                </div>
+            {% else %}
+                <!-- Fallback: Only shows if the agency hasn't customized their terms yet -->
+                <p class="legal-text">
+                    This agreement constitutes the complete and legally binding vehicle rental contract between Lessor ({{ tenant.name if tenant else 'Lessor' }}) and Lessee ({{ client.full_name if client else 'Lessee' }}). By affixing digital signatures below, both parties certify acceptance of all terms, schedule rates, and conditions across this document.
+                </p>
+            {% endif %}
+
+            <!-- ✅ DATA-DRIVEN: Render custom contract footer from the settings page -->
+            {% if tenant_profile and tenant_profile.contract_footer %}
+                <div style="margin-top: 10pt; margin-bottom: 10pt; padding: 8pt; background: #f8fafc; border: 1pt solid #e2e8f0; border-radius: 3pt;">
+                    <p style="font-size: 8.5pt; font-weight: bold; color: #0f172a; margin-bottom: 4pt;">Additional Notes:</p>
+                    {{ tenant_profile.contract_footer | markdown_to_html | safe }}
+                </div>
+            {% endif %}
 
             <div class="execution-grid">
                 <!-- Company Representative -->

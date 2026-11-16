@@ -149,6 +149,10 @@ class PublicInvoiceView(BaseModel):
     amount_due: Decimal
     amount_paid: Decimal
     remaining_balance: Decimal
+    
+    # ✅ NEW: The exact amount of the pending payment awaiting confirmation
+    pending_amount: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
+    
     payment_reported: bool
     currency_code: str
     due_date: datetime

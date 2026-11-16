@@ -3,7 +3,7 @@
 import base64
 from datetime import datetime
 from collections.abc import Mapping
-from typing import Any, Optional
+from typing import Any, Optional, List, Dict
 
 from pydantic import BaseModel, computed_field, Field, field_validator
 
@@ -101,6 +101,12 @@ class PublicContractView(BaseModel):
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
     driver_dl_number: Optional[str] = None
+
+    # ✅ TERMS & POLICIES: Dynamic content for the public signing page
+    contract_terms: Optional[str] = None
+    contract_footer: Optional[str] = None
+    effective_policies: Optional[List[Dict[str, Any]]] = None
+
 
 class ContractSignPayload(BaseModel):
     """

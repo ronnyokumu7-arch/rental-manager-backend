@@ -177,15 +177,15 @@ async def _build_public_view(
     result = await db.execute(stmt)
     invoice = result.scalars().unique().first()
 
-    payment_reported = await db.scalar(
-        select(
-            exists().where(
-                Payment.invoice_id == invoice.id,
-                Payment.tenant_id == invoice.tenant_id,
-                Payment.status == PaymentStatus.pending,
-            )
+    # ✅ NEW: Fetch the actual pending payment amount (there's at most 1 due to the strict lock)
+    pending_payment_amount = await db.scalar(
+        select(Payment.amount).where(
+            Payment.invoice_id == invoice.id,
+            Payment.tenant_id == invoice.tenant_id,
+            Payment.status == PaymentStatus.pending,
         )
     )
+    pending_amount = pending_payment_amount or Decimal("0")
 
     booking = invoice.booking
     client = booking.client if booking else None
@@ -211,8 +211,8 @@ async def _build_public_view(
             account_name=mpesa_config.account_name if mpesa_config else None,
             airtel_number=airtel_config.phone_number if airtel_config else None,
             bank_name=bank_config.bank_name if bank_config else None,
-            bank_account_number=bank_config.account_number if bank_config else None,
-            bank_account_name=bank_config.account_name if bank_config else None,
+            bank_account_number=bank_config.bank_account_number if bank_config else None,
+            bank_account_name=bank_config.bank_account_name if bank_config else None,
             branch_code=bank_config.branch_code if bank_config else None,
             swift_code=bank_config.swift_code if bank_config else None,
             currency=bank_config.currency if bank_config else None,
@@ -226,8 +226,9 @@ async def _build_public_view(
         doc_type=invoice.doc_type,
         amount_due=invoice.amount_due,
         amount_paid=invoice.amount_paid or 0,
-        remaining_balance=max(0, (invoice.amount_due or 0) - (invoice.amount_paid or 0)),
-        payment_reported=bool(payment_reported),
+        remaining_balance=max(Decimal("0"), (invoice.amount_due or 0) - (invoice.amount_paid or 0)),
+        pending_amount=pending_amount,  # ✅ NEW FIELD
+        payment_reported=pending_amount > 0,  # ✅ UPDATED: derived from actual amount
         currency_code=invoice.currency_code,
         due_date=invoice.due_date,
         paid_at=invoice.paid_at,
