@@ -5,7 +5,7 @@ M_PARA = "0 0 5px 0"
 M_HEAD = "9px 0 4px 0"
 M_LIST = "4px 0 6px 0"
 M_ITEM = "0 0 4px 0"
-M_SUBHEAD = "8px 0 4px 0" # ✅ Spacing for sub-headings
+M_SUBHEAD = "8px 0 4px 0"
 
 INK = "#0f172a"
 MUTED = "#475569"
@@ -13,7 +13,9 @@ ACCENT = "#B45309"
 
 NUM_LEAD_BOLD = re.compile(r"^\*\*(\d+[.)])\s+([^*]+?:)\*\*\s+([\s\S]+)$")
 NUM_LEAD_PLAIN = re.compile(r"^(\d+[.)])\s+\*\*([^*]+?:)\*\*\s+([\s\S]+)$")
-# ✅ UPDATED: Numbered sub-heading (no body). Matches **3. Text** or **3. Text:**
+# ✅ Plain numbered line with NO bold lead label → closing note/advisory.
+NUM_PLAIN = re.compile(r"^(\d+[.)])\s+([\s\S]+)$")
+# Numbered sub-heading (no body)
 NUM_SUBHEAD = re.compile(r"^\*\*\d+[.)]\s+([^*]+?)\*\*:?\s*$")
 FULL_HEAD_RE = re.compile(r"^\*\*([^*]+)\*\*$")
 LEAD_RE = re.compile(r"^\*\*([^*]+?:)\*\*\s+([\s\S]+)$")
@@ -86,8 +88,8 @@ def markdown_to_html(text: str) -> str:
     cur = []
     curtype = None
 
-    # ✅ Indent amount for sub-headings (aligns with text of main list items)
-    subhead_indent = "1.5rem"
+    # ✅ Sub-headings align with list text: 1.1em (marker) + 6px (gap) ≈ 1.25rem
+    subhead_indent = "1.25rem"
 
     def flush():
         nonlocal cur, curtype
@@ -116,8 +118,15 @@ def markdown_to_html(text: str) -> str:
                 out.append(_hang_row(m.group(1), inner, margin=M_PARA))
                 continue
 
-            # ✅ NEW: Numbered sub-heading (e.g. **3. What is normal**)
-            # Renders as bold text, indented to align with list content, no number marker.
+            # ✅ Numbered line WITHOUT a bold lead label → closing note/advisory.
+            #    Full-width paragraph, number stripped, no hanging indent.
+            npl = NUM_PLAIN.match(s)
+            if npl:
+                inner = render_rich(npl.group(2))
+                out.append(f'<p style="margin:{M_PARA};line-height:1.5;">{inner}</p>')
+                continue
+
+            # Numbered sub-heading (e.g. **3. What is normal**)
             ns = NUM_SUBHEAD.match(s)
             if ns:
                 inner = render_inline(ns.group(1))
