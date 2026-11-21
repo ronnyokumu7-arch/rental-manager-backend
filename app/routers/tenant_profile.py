@@ -47,7 +47,7 @@ def _clean_string(value: str | None) -> str | None:
     if isinstance(value, str):
         cleaned = value.strip()
         return cleaned if cleaned else None
-    return value
+    return None
 
 
 @router.get("/", response_model=TenantProfileOut)
@@ -106,7 +106,9 @@ async def create_profile(
         tax_number=payload.kra_pin.upper() if payload.kra_pin else None, # Maps wizard.kra_pin -> DB.tax_number
         logo_url=_clean_string(payload.logo_url),
         contract_prefix=contract_prefix,
-        contract_footer=_clean_string(payload.contract_terms), # Maps wizard.contract_terms -> DB.contract_footer
+        contract_terms=_clean_string(payload.contract_terms), # ✅ FIXED: was incorrectly mapped to contract_footer
+        contract_footer=_clean_string(payload.contract_footer), # ✅ FIXED: was missing
+        company_signature_path=_clean_string(payload.company_signature_path), # ✅ NEW: Agency default signature
     )
     
     db.add(profile)
@@ -165,9 +167,11 @@ async def update_profile(
         elif field == "kra_pin":
             setattr(profile, "tax_number", value.upper() if value else None)
         elif field == "contract_terms":
-            setattr(profile, "contract_footer", _clean_string(value))
+            setattr(profile, "contract_terms", _clean_string(value)) # ✅ FIXED: was mapping to contract_footer
+        elif field == "contract_footer":
+            setattr(profile, "contract_footer", _clean_string(value)) # ✅ FIXED: added missing mapping
         else:
-            # Direct mapping for standard fields
+            # Direct mapping for standard fields (including company_signature_path)
             if isinstance(value, str):
                 setattr(profile, field, _clean_string(value))
             else:

@@ -31,8 +31,11 @@ class TenantProfile(Base, AuditMixin):
     # Branding & Contracts
     logo_url = Column(Text, nullable=True)
     contract_prefix = Column(String(10), nullable=False, default="T0000")
-    contract_terms = Column(Text, nullable=True)  # ✅ ADDED: Custom terms for contracts
+    contract_terms = Column(Text, nullable=True)
     contract_footer = Column(Text, nullable=True)
+    
+    # ✅ NEW: Agency Default Signature for Contracts
+    company_signature_path = Column(Text, nullable=True)
 
     # ✅ NEW: Payment Methods (M-Pesa, Airtel Money & Bank).
     # All nullable — the public invoice renders ONLY configured channels
@@ -46,8 +49,6 @@ class TenantProfile(Base, AuditMixin):
     bank_name = Column(String(100), nullable=True)             # EFT/RTGS bank
     bank_account = Column(String(34), nullable=True)           # Bank account number
     bank_account_name = Column(String(150), nullable=True)     # Falls back to company_name
-
-    # ✅ Timestamps removed: created_at and updated_at are now provided by AuditMixin
 
     # Relationships
     tenant = relationship("Tenant", back_populates="profile", foreign_keys=[tenant_id])

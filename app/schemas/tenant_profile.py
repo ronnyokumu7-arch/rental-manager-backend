@@ -1,4 +1,3 @@
-# app/schemas/tenant_profile.py
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
@@ -21,6 +20,9 @@ class TenantProfileBase(BaseModel):
     contract_prefix: Optional[str] = Field(None, max_length=10, description="Auto-generated prefix e.g. T0001")
     contract_terms: Optional[str] = Field(None, description="Default boilerplate terms for rental agreements")
     contract_footer: Optional[str] = Field(None, description="Additional notes or footer for contracts")
+    
+    # ✅ NEW: Agency Default Signature for Contracts
+    company_signature_path: Optional[str] = Field(None, max_length=1_000_000, description="URL of the agency's default signature for contracts")
 
     # ✅ NEW: Payment Methods (M-Pesa, Airtel Money & Bank).
     mpesa_paybill: Optional[str] = Field(None, max_length=10, alias="paybill_number", description="M-Pesa PayBill business number")
@@ -62,6 +64,9 @@ class TenantProfileUpdate(BaseModel):
     contract_prefix: Optional[str] = Field(None, max_length=10)
     contract_terms: Optional[str] = Field(None)
     contract_footer: Optional[str] = Field(None)
+    
+    # ✅ NEW: Agency Default Signature for Contracts
+    company_signature_path: Optional[str] = Field(None, max_length=1_000_000)
 
     # ✅ NEW: Payment Methods with aliases
     mpesa_paybill: Optional[str] = Field(None, max_length=10, alias="paybill_number")
