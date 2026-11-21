@@ -1,18 +1,17 @@
-# app/services/browser_pool.py
-
 import asyncio
 import os
+import logging
 
 from pyppeteer import launch
 
+logger = logging.getLogger(__name__)
+
 # ✅ Prefer the system Chromium installed by the Dockerfile.
-# Pyppeteer's bundled download lacks the shared libraries on slim images.
 SYSTEM_CHROMIUM_PATHS = [
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
     "/usr/bin/google-chrome",
 ]
-
 
 def _find_system_chromium():
     for path in SYSTEM_CHROMIUM_PATHS:
@@ -20,26 +19,28 @@ def _find_system_chromium():
             return path
     return None
 
-
 class BrowserPool:
     def __init__(self):
         self.browser = None
         self.lock = asyncio.Lock()
 
-    async def get_browser(self):
+    async def get_browser(self, force_restart: bool = False):
         async with self.lock:
-            # If browser exists, test if it's still alive
-            if self.browser is not None:
-                try:
-                    # This is a safe way to check if the CDP connection is still active
-                    await self.browser.pages()
-                except Exception:
-                    print("⚠️ Browser connection lost, restarting...")
-                    self.browser = None
+            # 1. Check if existing browser is actually connected
+            if self.browser is not None and not force_restart:
+                # Pyppeteer stores connection state in _connection._connected
+                is_connected = getattr(
+                    getattr(self.browser, '_connection', None), 
+                    '_connected', 
+                    False
+                )
+                if not is_connected:
+                    logger.warning("⚠️ Browser CDP connection lost, restarting...")
+                    await self._close_browser()
 
-            # If it's None (or just died), launch a fresh one
-            if self.browser is None:
-                print("🚀 Launching Headless Chrome (Singleton)...")
+            # 2. Launch fresh browser if needed
+            if self.browser is None or force_restart:
+                logger.info("🚀 Launching Headless Chrome (Singleton)...")
 
                 launch_kwargs = {
                     "headless": True,
@@ -51,29 +52,35 @@ class BrowserPool:
                         "--no-first-run",
                         "--no-zygote",
                         "--disable-gpu",
-                        "--single-process",
+                        # ❌ REMOVED: "--single-process" (causes CDP drops on Render)
                     ],
                 }
 
-                # ✅ FIXED: Use system Chromium when present — fixes
-                # "Browser closed unexpectedly" on Render's slim image.
                 executable = _find_system_chromium()
                 if executable:
-                    print(f"✅ Using system Chromium at {executable}")
+                    logger.info(f"✅ Using system Chromium at {executable}")
                     launch_kwargs["executablePath"] = executable
 
-                self.browser = await launch(**launch_kwargs)
+                try:
+                    self.browser = await launch(**launch_kwargs)
+                except Exception as e:
+                    logger.error(f"❌ Failed to launch browser: {e}")
+                    self.browser = None
+                    raise
+
             return self.browser
 
-    async def close(self):
+    async def _close_browser(self):
         if self.browser:
             try:
                 await self.browser.close()
             except Exception:
                 pass
             self.browser = None
-            print("✅ Headless Chrome closed gracefully.")
 
+    async def close(self):
+        await self._close_browser()
+        logger.info("✅ Headless Chrome closed gracefully.")
 
 # Global instance
 browser_pool = BrowserPool()

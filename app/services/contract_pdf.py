@@ -205,7 +205,7 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
     template = template_env.get_template("contract_premium.html")
     html_content = template.render(**context)
 
-    # 5. OPTIMIZED PDF GENERATION WITH BROWSER POOL
+    # 5. OPTIMIZED PDF GENERATION WITH BROWSER POOL & AUTO-RETRY
     try:
         browser = await browser_pool.get_browser()
         page = await browser.newPage()
@@ -227,6 +227,30 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         return pdf_bytes
 
     except Exception as e:
+        error_msg = str(e)
+        # ✅ AUTO-RETRY: If the browser died mid-request, force a restart and try once more.
+        if "Connection is closed" in error_msg or "Connection closed" in error_msg:
+            print("⚠️ Browser died mid-render. Forcing restart and retrying...")
+            try:
+                browser = await browser_pool.get_browser(force_restart=True)
+                page = await browser.newPage()
+                await page.setContent(html_content)
+                await asyncio.sleep(0.3)
+
+                pdf_bytes = await page.pdf(
+                    format='A4',
+                    printBackground=True,
+                    margin={'top': '0mm', 'right': '0mm', 'bottom': '0mm', 'left': '0mm'}
+                )
+                await page.close()
+                return pdf_bytes
+            except Exception as retry_err:
+                print(f"❌ PDF retry failed: {retry_err}")
+                import traceback
+                traceback.print_exc()
+                raise retry_err
+        
+        # If it's not a connection error, log and raise normally
         print(f"❌ PUPPETEER ERROR: {e}")
         import traceback
         traceback.print_exc()
