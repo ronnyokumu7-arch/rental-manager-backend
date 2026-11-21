@@ -106,7 +106,7 @@
         .signature-label { font-size: 8.5pt; font-weight: bold; color: #0f172a; }
         .signature-name { font-family: Georgia, serif; font-style: italic; font-weight: bold; color: #1e293b; font-size: 11pt; margin: 0; }
         .signature-date { font-size: 8pt; color: #94a3b8; font-family: monospace; margin: 1pt 0 0 0; }
-        .signature-image { max-height: 40pt; max-width: 140pt; margin: 0 auto 2pt auto; display: block; }
+        .signature-image { max-height: 40pt; max-width: 140pt; margin: 0 0 2pt 0; display: block; }
 
         /* ═══════════════════════════════════════════════════════════
            UNIFIED SIGNATURE PANELS (Section 2 & Section 4)
@@ -206,8 +206,8 @@
 
         /* ═══════════════════════════════════════════════════════════
            EXECUTION & AUDIT STAMP
-           ✅ Redesigned: no lines, symmetric signature slots,
-           perfect vertical alignment between Company and Renter.
+           ✅ Redesigned: Left-aligned to match the rest of the document,
+           symmetric signature slots, perfect vertical alignment.
            ═══════════════════════════════════════════════════════════ */
         .legal-text { color: #475569; font-weight: 500; font-size: 9.5pt; margin-bottom: 10pt; line-height: 1.45; }
 
@@ -223,8 +223,8 @@
         .execution-block {
             display: flex;
             flex-direction: column;
-            align-items: center;
-            text-align: center;
+            align-items: flex-start; /* ✅ Left aligned */
+            text-align: left;        /* ✅ Left aligned */
         }
 
         .execution-title {
@@ -236,13 +236,12 @@
             letter-spacing: 0.03em;
         }
 
-        /* Fixed-height slot so both blocks match regardless of signature presence */
         .execution-sig-slot {
             width: 100%;
             min-height: 38pt;
             display: flex;
-            align-items: center;
-            justify-content: center;
+            align-items: flex-end;      /* ✅ Bottom aligned so Name/Date lines match perfectly */
+            justify-content: flex-start; /* ✅ Left aligned */
             margin-bottom: 4pt;
         }
 
@@ -562,7 +561,7 @@
                 </div>
             {% endif %}
 
-            <!-- ✅ REDESIGNED: Symmetric execution grid, no lines, aligned signature slots -->
+            <!-- ✅ REDESIGNED: Left-aligned to match document, symmetric signature slots -->
             <div class="execution-grid">
                 <!-- Company Representative -->
                 <div class="execution-block">
