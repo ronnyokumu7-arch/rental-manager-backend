@@ -1,33 +1,21 @@
-# app/services/markdown_lite.py
-"""
-✅ Markdown-lite → HTML converter for the contract PDF.
-Mirrors src/lib/markdownLite.tsx exactly: numbered run-in leads, block
-sub-headings, run-in leads, and bullet/numbered lists — all rendered with a
-flex hanging-indent row so wrapped detail aligns under the first letter of the
-text, never under the marker. Inline styles (no classes) because the PDF
-template has no stylesheet for these tokens.
-"""
 import html
 import re
 
-# Unified rhythm constants (parity with the React component).
 M_PARA = "0 0 5px 0"
 M_HEAD = "9px 0 4px 0"
 M_LIST = "4px 0 6px 0"
 M_ITEM = "0 0 4px 0"
+M_SUBHEAD = "8px 0 4px 0" # ✅ Spacing for sub-headings
 
-# Theme constants.
 INK = "#0f172a"
 MUTED = "#475569"
 ACCENT = "#B45309"
 
-# Numbered run-in lead: number inside the bold label, e.g. **1. Provided Clean:** body
 NUM_LEAD_BOLD = re.compile(r"^\*\*(\d+[.)])\s+([^*]+?:)\*\*\s+([\s\S]+)$")
-# Numbered run-in lead: plain number then bold label, e.g. 1. **Provided Clean:** body
 NUM_LEAD_PLAIN = re.compile(r"^(\d+[.)])\s+\*\*([^*]+?:)\*\*\s+([\s\S]+)$")
-# Fully-bold line → block sub-heading.
+# ✅ UPDATED: Numbered sub-heading (no body). Matches **3. Text** or **3. Text:**
+NUM_SUBHEAD = re.compile(r"^\*\*\d+[.)]\s+([^*]+?)\*\*:?\s*$")
 FULL_HEAD_RE = re.compile(r"^\*\*([^*]+)\*\*$")
-# Run-in lead: bold label ending in a colon, then body.
 LEAD_RE = re.compile(r"^\*\*([^*]+?:)\*\*\s+([\s\S]+)$")
 
 
@@ -36,7 +24,6 @@ def _esc(s: str) -> str:
 
 
 def render_inline(text: str) -> str:
-    """Render **bold** inline markers into <strong>, escaping everything else."""
     parts = re.split(r"(\*\*[^*]+\*\*)", text)
     out = []
     for p in parts:
@@ -59,17 +46,17 @@ def _lead_label(text: str) -> str:
 
 
 def render_rich(text: str) -> str:
-    """Body for a list item / lead paragraph: promote a leading **Label:** to a lead."""
     m = LEAD_RE.match(text)
     if m:
         return f"{_lead_label(m.group(1))} {render_inline(m.group(2))}"
     return render_inline(text)
 
 
-def _hang_row(marker: str, inner: str, bullet: bool = False, margin: str = M_ITEM) -> str:
+def _hang_row(marker: str, inner: str, bullet: bool = False, margin: str = M_ITEM, indent: bool = False) -> str:
     weight = "400" if bullet else "800"
+    padding = "padding-left:12px;" if indent else ""
     return (
-        f'<div style="display:flex;gap:6px;margin:{margin};">'
+        f'<div style="display:flex;gap:6px;margin:{margin};{padding}">'
         f'<span style="flex:0 0 auto;min-width:1.1em;font-weight:{weight};color:{INK};">'
         f"{_esc(marker)}</span>"
         f'<span style="flex:1 1 auto;line-height:1.5;">{inner}</span>'
@@ -78,13 +65,6 @@ def _hang_row(marker: str, inner: str, bullet: bool = False, margin: str = M_ITE
 
 
 def markdown_to_html(text: str) -> str:
-    """
-    Lightweight markdown → HTML, matching MarkdownLitePreview(variant="contract").
-    Supports: **bold**, - bullet lists, 1. numbered lists, \n paragraph breaks,
-    numbered run-in leads (**1. Label:** body), run-in leads (**Label:** body),
-    and fully-bold block sub-headings. All list/numbered rows use a flex
-    hanging indent so wrapped detail aligns under the text, not the marker.
-    """
     if not text or not text.strip():
         return ""
 
@@ -106,6 +86,9 @@ def markdown_to_html(text: str) -> str:
     cur = []
     curtype = None
 
+    # ✅ Indent amount for sub-headings (aligns with text of main list items)
+    subhead_indent = "1.5rem"
+
     def flush():
         nonlocal cur, curtype
         if not cur:
@@ -113,7 +96,7 @@ def markdown_to_html(text: str) -> str:
         rows = []
         for idx, (_, t) in enumerate(cur):
             marker = "•" if curtype == "bullet" else f"{idx + 1}."
-            rows.append(_hang_row(marker, render_rich(t), bullet=(curtype == "bullet")))
+            rows.append(_hang_row(marker, render_rich(t), bullet=(curtype == "bullet"), indent=(curtype == "bullet")))
         out.append(f'<div style="margin:{M_LIST};">{"".join(rows)}</div>')
         cur = []
         curtype = None
@@ -131,6 +114,18 @@ def markdown_to_html(text: str) -> str:
                 m = nb or np
                 inner = f"{_lead_label(m.group(2))} {render_inline(m.group(3))}"
                 out.append(_hang_row(m.group(1), inner, margin=M_PARA))
+                continue
+
+            # ✅ NEW: Numbered sub-heading (e.g. **3. What is normal**)
+            # Renders as bold text, indented to align with list content, no number marker.
+            ns = NUM_SUBHEAD.match(s)
+            if ns:
+                inner = render_inline(ns.group(1))
+                out.append(
+                    f'<div style="margin:{M_SUBHEAD};padding-left:{subhead_indent};'
+                    f'font-weight:800;color:{INK};font-size:9.5pt;letter-spacing:0.01em;">'
+                    f"{inner}</div>"
+                )
                 continue
 
             fh = FULL_HEAD_RE.match(s)
