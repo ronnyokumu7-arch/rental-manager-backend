@@ -13,9 +13,7 @@ ACCENT = "#B45309"
 
 NUM_LEAD_BOLD = re.compile(r"^\*\*(\d+[.)])\s+([^*]+?:)\*\*\s+([\s\S]+)$")
 NUM_LEAD_PLAIN = re.compile(r"^(\d+[.)])\s+\*\*([^*]+?:)\*\*\s+([\s\S]+)$")
-# ✅ Plain numbered line with NO bold lead label → closing note/advisory.
 NUM_PLAIN = re.compile(r"^(\d+[.)])\s+([\s\S]+)$")
-# Numbered sub-heading (no body)
 NUM_SUBHEAD = re.compile(r"^\*\*\d+[.)]\s+([^*]+?)\*\*:?\s*$")
 FULL_HEAD_RE = re.compile(r"^\*\*([^*]+)\*\*$")
 LEAD_RE = re.compile(r"^\*\*([^*]+?:)\*\*\s+([\s\S]+)$")
@@ -56,7 +54,8 @@ def render_rich(text: str) -> str:
 
 def _hang_row(marker: str, inner: str, bullet: bool = False, margin: str = M_ITEM, indent: bool = False) -> str:
     weight = "400" if bullet else "800"
-    padding = "padding-left:12px;" if indent else ""
+    # ✅ FIX: Bullets get pushed right (1.5rem) to align with the TEXT of the parent number.
+    padding = "padding-left:1.5rem;" if indent else ""
     return (
         f'<div style="display:flex;gap:6px;margin:{margin};{padding}">'
         f'<span style="flex:0 0 auto;min-width:1.1em;font-weight:{weight};color:{INK};">'
@@ -78,17 +77,24 @@ def markdown_to_html(text: str) -> str:
         if bm:
             blocks.append(("bullet", bm.group(1)))
             continue
-        nm = re.match(r"^\d+[.)]\s+(.*)$", t)
+        
+        nm = re.match(r"^(\d+[.)])\s+(.*)$", t)
         if nm:
-            blocks.append(("numbered", nm.group(1)))
+            # ✅ FIX: Check if text after number has bold label.
+            # If yes -> list item. If no -> paragraph (like item 7).
+            has_bold_label = re.search(r"\*\*[^*]+:\*\*", nm.group(2))
+            if has_bold_label:
+                blocks.append(("numbered", nm.group(2)))
+            else:
+                blocks.append(("paragraph", t))
             continue
+            
         blocks.append(("paragraph", t))
 
     out = []
     cur = []
     curtype = None
 
-    # ✅ Sub-headings align with list text: 1.1em (marker) + 6px (gap) ≈ 1.25rem
     subhead_indent = "1.25rem"
 
     def flush():
@@ -118,15 +124,13 @@ def markdown_to_html(text: str) -> str:
                 out.append(_hang_row(m.group(1), inner, margin=M_PARA))
                 continue
 
-            # ✅ Numbered line WITHOUT a bold lead label → closing note/advisory.
-            #    Full-width paragraph, number stripped, no hanging indent.
+            # ✅ FIX: Catches "7. Please do not..." -> strips number, renders as paragraph.
             npl = NUM_PLAIN.match(s)
             if npl:
                 inner = render_rich(npl.group(2))
                 out.append(f'<p style="margin:{M_PARA};line-height:1.5;">{inner}</p>')
                 continue
 
-            # Numbered sub-heading (e.g. **3. What is normal**)
             ns = NUM_SUBHEAD.match(s)
             if ns:
                 inner = render_inline(ns.group(1))
