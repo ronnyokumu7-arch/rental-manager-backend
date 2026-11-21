@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.contracts import Contract, ContractStatus
 from app.models.bookings import Booking
+from app.models.vehicles import Vehicle  # ✅ NEW: for the handover snapshot
 from app.services.number_generator import generate_contract_number
 
 CONTRACTS_DIR = "storage/contracts"
@@ -23,6 +24,19 @@ CONTRACTS_DIR = "storage/contracts"
 
 def _ensure_dir():
     os.makedirs(CONTRACTS_DIR, exist_ok=True)
+
+
+async def _snapshot_handover_items(db: AsyncSession, booking: Booking) -> list:
+    """
+    ✅ Freeze the vehicle's CURRENT feature list into the contract at creation.
+    Uses an explicit SELECT (not booking.vehicle) so it works regardless of what
+    the caller eager-loaded — no lazy-load / MissingGreenlet risk in async.
+    Returns [] when the vehicle has no features configured.
+    """
+    vehicle = (await db.execute(
+        select(Vehicle).where(Vehicle.id == booking.vehicle_id)
+    )).scalars().first()
+    return list(vehicle.features) if vehicle and vehicle.features else []
 
 
 # =============================================================================
@@ -56,6 +70,7 @@ async def ensure_contract_for_booking(booking: Booking, db: AsyncSession) -> Con
         tenant_id=booking.tenant_id,
         contract_number=contract_number,
         status=ContractStatus.draft,
+        handover_items=await _snapshot_handover_items(db, booking),  # ✅ snapshot features
     )
     db.add(contract)
     await db.flush()      # caller commits
@@ -76,6 +91,7 @@ async def create_contract_for_booking(booking: Booking, db: AsyncSession) -> Con
         tenant_id=booking.tenant_id,
         contract_number=contract_number,
         status=ContractStatus.draft,
+        handover_items=await _snapshot_handover_items(db, booking),  # ✅ snapshot features
     )
     db.add(contract)
     await db.commit()

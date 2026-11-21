@@ -1,5 +1,3 @@
-# app/services/contract_pdf.py
-
 import os
 import base64
 import asyncio
@@ -22,8 +20,6 @@ from app.models.tenant_profile import TenantProfile
 from app.services.browser_pool import browser_pool
 from app.services.storage import get_backend
 from app.services.business_policy import get_effective_policy_document
-
-# ✅ NEW: Import the markdown converter (we will create this file next)
 from app.services.markdown_lite import markdown_to_html
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -32,16 +28,16 @@ template_env = Environment(
     autoescape=select_autoescape(['html', 'xml'])
 )
 
-# ✅ NEW: Register the markdown converter as a Jinja2 filter
 template_env.filters['markdown_to_html'] = markdown_to_html
 
 
-async def resolve_signature_data_uri(contract: Contract) -> Optional[str]:
+async def resolve_signature_data_uri(contract: Contract, attr_name: str = "signature_image_path") -> Optional[str]:
     """
     ✅ BULLETPROOF SIGNATURE RESOLVER (backend-aware)
-    ... (rest of this function remains exactly the same) ...
+    Resolves a signature image column (signature_image_path, handover_signature_image_path, etc.)
+    into an embedded data: URI that survives PDF generation across storage backends.
     """
-    ref = getattr(contract, "signature_image_path", None)
+    ref = getattr(contract, attr_name, None)
     if not ref:
         return None
 
@@ -52,7 +48,7 @@ async def resolve_signature_data_uri(contract: Contract) -> Optional[str]:
             with urllib.request.urlopen(url, timeout=15) as resp:
                 return resp.read()
         except Exception as e:
-            print(f"❌ Failed to fetch signature bytes: {e}")
+            print(f"❌ Failed to fetch signature bytes ({attr_name}): {e}")
             return None
 
     def _to_data_uri(data: bytes) -> str:
@@ -83,7 +79,7 @@ async def resolve_signature_data_uri(contract: Contract) -> Optional[str]:
         except ValueError:
             pass
 
-        print(f"⚠️ Could not resolve signature via storage backend: {ref}")
+        print(f"⚠️ Could not resolve signature via storage backend ({attr_name}): {ref}")
         return None
 
     # 2. Direct Cloudinary / public http(s) URL
@@ -103,10 +99,10 @@ async def resolve_signature_data_uri(contract: Contract) -> Optional[str]:
             with open(ref, "rb") as img_file:
                 return _to_data_uri(img_file.read())
         except Exception as e:
-            print(f"❌ Error encoding local signature: {e}")
+            print(f"❌ Error encoding local signature ({attr_name}): {e}")
             return None
 
-    print(f"⚠️ Signature reference unusable: {ref}")
+    print(f"⚠️ Signature reference unusable ({attr_name}): {ref}")
     return None
 
 
@@ -141,10 +137,15 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         profile_stmt = select(TenantProfile).where(TenantProfile.tenant_id == tenant.id)
         tenant_profile = (await db.execute(profile_stmt)).scalars().first()
 
-    # 2. ✅ SIGNATURE: resolve via storage service (survives deploys)
+    # 2. ✅ SIGNATURES: resolve both terms and handover signatures
     signature_data_uri = None
     if contract.signed_by_client:
-        signature_data_uri = await resolve_signature_data_uri(contract)
+        signature_data_uri = await resolve_signature_data_uri(contract, "signature_image_path")
+
+    # ✅ NEW: Handover signature (separate image, may not exist yet)
+    handover_signature_data_uri = None
+    if contract.handover_signed_at:
+        handover_signature_data_uri = await resolve_signature_data_uri(contract, "handover_signature_image_path")
 
     # ✅ POLICY DOCUMENT: 3-category merged doc (defaults + overrides + custom clauses)
     policy_doc = await get_effective_policy_document(db, contract.tenant_id)
@@ -194,6 +195,7 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "tenant": tenant,
         "tenant_profile": tenant_profile,
         "signature_data_uri": signature_data_uri,
+        "handover_signature_data_uri": handover_signature_data_uri,  # ✅ NEW: passed to template
         "policy_doc": policy_doc,
         "daily_rate": daily_rate,
         "driver_fees": driver_fees_breakdown,

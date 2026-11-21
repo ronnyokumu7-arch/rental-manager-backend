@@ -324,6 +324,76 @@
     display: block;
 }
 
+        /* ═══════════════════════════════════════════════════════════
+           ✅ HANDOVER CHECKLIST — 2-column (checklist left, signature right)
+           Grows gracefully with content; signature column stays narrow.
+           ═══════════════════════════════════════════════════════════ */
+        .handover-grid {
+            display: grid;
+            grid-template-columns: 1fr 140pt;
+            gap: 8pt;
+            margin-top: 8pt;
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+
+        .handover-checklist {
+            background: #f8fafc;
+            border: 1pt solid #e2e8f0;
+            border-radius: 3pt;
+            padding: 8pt;
+        }
+
+        .handover-checklist-title {
+            font-size: 8pt;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #0f172a;
+            margin-bottom: 5pt;
+        }
+
+        .handover-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 5pt;
+            margin-bottom: 3pt;
+            font-size: 8.5pt;
+            color: #334155;
+            font-weight: 500;
+        }
+
+        .handover-check {
+            flex-shrink: 0;
+            width: 9pt;
+            height: 9pt;
+            border-radius: 2pt;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 1pt;
+        }
+
+        .handover-check.checked {
+            background: #065f46;
+            color: #ffffff;
+        }
+
+        .handover-check.unchecked {
+            background: #ffffff;
+            border: 1pt solid #cbd5e1;
+        }
+
+        .handover-signature {
+            background: #f8fafc;
+            border: 1pt solid #e2e8f0;
+            border-radius: 3pt;
+            padding: 8pt;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
         /* ✅ NEW: Structured policy sections (title + paragraph) */
         .policy-section {
             margin-bottom: 6pt;
@@ -550,19 +620,44 @@
                 <div><span class="info-label">Fuel Level:</span> <span class="info-value">As seen on photo evidence</span></div>
             </div>
 
-<div class="signature-box">
-    <p class="signature-quote">"I confirm that I have inspected the vehicle identified above and accept its handover condition and initial mileage reading as accurate."</p>
-    <div class="signature-row">
-        <span class="signature-label">Handover Acceptance</span>
-        <div class="signature-text">
-            {% if contract.signed_by_client and signature_data_uri %}
-                <img src="{{ signature_data_uri }}" class="signature-image" alt="Signature" />
-            {% endif %}
-            <p class="signature-name">/s/ {{ client.full_name if client else 'Client' }}</p>
-            <p class="signature-date">{{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
-        </div>
-    </div>
-</div>
+            <!-- ✅ NEW: 2-column handover — checklist (left, flexible) + signature (right, narrow).
+                 Grows gracefully with the number of features; no wasted vertical space. -->
+            <div class="handover-grid no-break">
+                <!-- LEFT: equipment checklist + confirmation message -->
+                <div class="handover-checklist">
+                    <p class="handover-checklist-title">Vehicle Equipment & Condition Checklist</p>
+                    {% if contract.handover_items %}
+                        {% for item in contract.handover_items %}
+                            {% set is_checked = contract.handover_checklist and contract.handover_checklist.get(item, false) %}
+                            <div class="handover-item">
+                                <span class="handover-check {{ 'checked' if is_checked else 'unchecked' }}">
+                                    {% if is_checked %}
+                                    <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                                    {% endif %}
+                                </span>
+                                <span>{{ item }}</span>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <p style="font-size:8.5pt;color:#64748b;font-style:italic;margin-bottom:4pt;">No equipment checklist recorded for this vehicle.</p>
+                    {% endif %}
+                    <p class="signature-quote" style="margin:6pt 0 0 0;">"I confirm that I have inspected the vehicle identified above, verified the equipment listed, and accept its handover condition and initial mileage reading as accurate."</p>
+                </div>
+
+                <!-- RIGHT: signature (narrow fixed column) -->
+                <div class="handover-signature">
+                    <span class="signature-label">Handover Acceptance</span>
+                    <div style="text-align:center; margin-top:6pt;">
+                        {% if contract.handover_signed_at and handover_signature_data_uri %}
+                            <img src="{{ handover_signature_data_uri }}" class="signature-image" style="margin:0 auto 2pt auto;" alt="Handover Signature" />
+                        {% else %}
+                            <div style="height:28pt; border-bottom:1pt solid #0f172a; margin-bottom:2pt;"></div>
+                        {% endif %}
+                        <p class="signature-name" style="text-align:center;">/s/ {{ client.full_name if client else 'Client' }}</p>
+                        <p class="signature-date" style="text-align:center;">{{ contract.handover_signed_at.strftime('%d, %b, %Y') if contract.handover_signed_at else '—' }}</p>
+                    </div>
+                </div>
+            </div>
         </section>
 
         <!-- ✅ MILESTONE 2: DRIVER ASSIGNMENT (only when driver assigned) -->

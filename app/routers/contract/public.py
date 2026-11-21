@@ -35,7 +35,7 @@ from app.db.database import get_db, set_public_rls_context, set_rls_context
 from app.models.bookings import Booking
 from app.models.contracts import Contract, ContractStatus
 from app.models.tenant_profile import TenantProfile
-from app.schemas.contract import ContractSignPayload, PublicContractView
+from app.schemas.contract import ContractSignPayload, ContractHandoverPayload, PublicContractView
 from app.services.booking_lifecycle import BookingLifecycleService
 from app.services.notification_triggers import NotificationTriggers
 from app.services.cache import (
@@ -99,7 +99,7 @@ async def _load_booking_locked(db, booking_id: int) -> Booking:
     return booking
 
 
-def _decode_signature(payload: ContractSignPayload) -> bytes:
+def _decode_signature(payload) -> bytes:
     """✅ Phase B: validate + cap client-supplied signature data (was raw 500)."""
     data_url = payload.signature
     if "," in data_url:
@@ -196,6 +196,10 @@ async def view_contract_public(request: Request, token: str, db=Depends(get_db))
         contract_terms=tenant_profile.contract_terms if tenant_profile else None,
         contract_footer=tenant_profile.contract_footer if tenant_profile else None,
         effective_policies=effective_policies,
+        # ✅ NEW: Handover checklist data for the public signing page
+        handover_items=contract.handover_items or [],
+        handover_checklist=contract.handover_checklist,
+        handover_signed_at=contract.handover_signed_at,
     )
 
 
@@ -324,4 +328,73 @@ async def sign_contract_public(
         "message": "Thank you — your rental agreement is confirmed. The agency has been notified.",
         "contract_number": contract.contract_number,
         "signed_at": now.isoformat(),
+    }
+
+
+# =============================================================================
+# ✅ NEW: HANDOVER CHECKLIST (Step 2 of signing)
+# =============================================================================
+@router.post("/public/{token}/handover", response_model=dict)
+@limiter.limit("10/minute")
+async def submit_handover_public(
+    request: Request, token: str, payload: ContractHandoverPayload, db=Depends(get_db),
+):
+    """
+    ✅ Client submits the handover checklist (ticked features) + a second
+    signature acknowledging the vehicle's condition and equipment.
+    Independent of the terms signature — can happen at pickup.
+    """
+    contract = await _load_contract_by_token(db, token)
+
+    if contract.status == ContractStatus.void:
+        raise BadRequestError(
+            title="Contract Voided",
+            message="This contract was cancelled by the agency. Contact them for help.",
+            action=_PUBLIC_HOME,
+        )
+    if contract.handover_signed_at:
+        raise BadRequestError(
+            title="Handover Already Signed",
+            message="The handover checklist for this contract has already been signed and recorded.",
+        )
+
+    now = datetime.now(timezone.utc)
+
+    # ✅ Signature upload (Cloudinary via storage service) — validated + capped
+    signature_bytes = _decode_signature(payload)
+    signature_file = UploadFile(
+        filename=f"handover_{contract.id}_{int(now.timestamp())}.png",
+        file=io.BytesIO(signature_bytes),
+        headers={"content-type": "image/png"},
+    )
+    try:
+        signature_url = await upload_file(file=signature_file, tenant_id=contract.tenant_id, category="compliance")
+    except (AppException,):
+        raise
+    except Exception:
+        logger.exception(f"Handover signature upload failed for contract {contract.id}")
+        raise ServerError(
+            title="Signature Upload Failed",
+            message="We couldn't save your signature. Please try signing again in a moment.",
+        )
+
+    # ✅ Persist the checklist + second signature + timestamp
+    contract.handover_checklist = payload.checklist
+    contract.handover_signature_image_path = signature_url
+    contract.handover_signed_at = now
+    contract.pdf_path = None   # force fresh PDF render so the checklist + handover signature appear
+
+    await db.commit()
+    await set_rls_context(db, tenant_id=contract.tenant_id)
+    await db.refresh(contract)
+
+    # ✅ Invalidate contract cache so the dashboard reflects the handover instantly
+    await invalidate_contract_cache(contract.tenant_id)
+
+    return {
+        "type": "success",
+        "title": "Handover Confirmed",
+        "message": "Thank you — the vehicle handover checklist has been recorded and signed.",
+        "contract_number": contract.contract_number,
+        "handover_signed_at": now.isoformat(),
     }
