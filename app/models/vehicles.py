@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, Index
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, Index, JSON
 from sqlalchemy.orm import relationship
 from app.db.database import Base, AuditMixin
 
@@ -62,6 +62,10 @@ class Vehicle(Base, AuditMixin):
     insurance_doc = Column(String(500), nullable=True)
     registration_doc = Column(String(500), nullable=True)
     inspection_doc = Column(String(500), nullable=True)
+    
+    # ✅ NEW: Vehicle Features/Equipment List (JSON array of strings)
+    # e.g., ["Spare Wheel", "Car Jack", "First Aid Kit", "Radio/Infotainment"]
+    features = Column(JSON, nullable=True, default=list, server_default="[]")
     
     # Lifecycle & Metadata
     notes = Column(Text, nullable=True)

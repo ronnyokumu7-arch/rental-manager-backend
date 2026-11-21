@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 from app.models.vehicles import VehicleStatus
 
@@ -17,7 +17,6 @@ class VehicleBase(BaseModel):
     vin: Optional[str] = Field(default=None, max_length=50)
     
     # ✅ AGENCY PRICING: What the end-client pays per day.
-    # Changed to ge=0 to allow pending investor vehicles to have a 0.00 rate temporarily.
     daily_rate: Decimal = Field(..., ge=0, decimal_places=2)
     
     current_mileage: int = Field(default=0, ge=0)
@@ -37,6 +36,9 @@ class VehicleBase(BaseModel):
     # ✅ MILESTONE 3: Wedding Car Hire Support
     supports_wedding_service: bool = Field(default=False)
     wedding_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
+
+    # ✅ NEW: Vehicle Features/Equipment List
+    features: Optional[List[str]] = Field(default=None, description="List of available features/equipment")
 
     @field_validator("plate_number")
     @classmethod
@@ -78,6 +80,9 @@ class InvestorVehicleCreate(BaseModel):
     
     notes: Optional[str] = None
 
+    # ✅ NEW: Investors can list physical features of the car
+    features: Optional[List[str]] = Field(default=None, description="List of available features/equipment")
+
     @field_validator("plate_number")
     @classmethod
     def normalize_plate_number(cls, v: str) -> str:
@@ -113,6 +118,9 @@ class VehicleUpdate(BaseModel):
     airport_transfer_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     supports_wedding_service: Optional[bool] = None
     wedding_base_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
+
+    # ✅ NEW: Agency can update features
+    features: Optional[List[str]] = None
 
     @field_validator("plate_number")
     @classmethod
@@ -152,6 +160,9 @@ class InvestorVehicleAgencyUpdate(BaseModel):
     investor_lease_rate: Optional[Decimal] = Field(default=None, ge=0, decimal_places=2)
     lease_rate_type: Optional[str] = Field(default=None, max_length=20)  # 'daily' or 'monthly'
     lease_rate_locked: Optional[bool] = Field(default=None)
+
+    # ✅ ALLOWED: Agency can update features on investor cars too
+    features: Optional[List[str]] = None
 
 
 class VehicleOut(VehicleBase):

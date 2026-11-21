@@ -26,6 +26,12 @@ class ContractOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # ✅ NEW: Handover Checklist & Second Signature
+    handover_items: Optional[List[str]] = None
+    handover_checklist: Optional[Dict[str, bool]] = None
+    handover_signature_image_path: Optional[str] = None
+    handover_signed_at: Optional[datetime] = None
+
     # ✅ FIXED: Was Optional["BookingOut"]. Typing it as BookingOut forced deep
     # nested validation, which read booking.vehicle (not eager-loaded) and
     # crashed with MissingGreenlet on async sessions. The field is exclude=True
@@ -77,7 +83,7 @@ class PublicContractView(BaseModel):
     booking_number: Optional[str] = None
     tenant_name: str
     
-    # ✅ NEW: Owning tenant's branding (auto-resolved from the contract's tenant,
+    # ✅ Owning tenant's branding (auto-resolved from the contract's tenant,
     # NOT from the logged-in session). Powers the public signing page header.
     tenant_logo_url: Optional[str] = None
     tenant_address: Optional[str] = None
@@ -107,10 +113,15 @@ class PublicContractView(BaseModel):
     contract_footer: Optional[str] = None
     effective_policies: Optional[List[Dict[str, Any]]] = None
 
+    # ✅ NEW: Handover Checklist for the public signing page
+    handover_items: Optional[List[str]] = None
+    handover_checklist: Optional[Dict[str, bool]] = None
+    handover_signed_at: Optional[datetime] = None
+
 
 class ContractSignPayload(BaseModel):
     """
-    Payload for client signature submission.
+    Payload for client signature submission (Terms & Conditions).
     Signature must be a valid base64-encoded image (PNG/JPEG).
     """
     signature: str = Field(
@@ -145,6 +156,48 @@ class ContractSignPayload(BaseModel):
             raise ValueError("Signature image too large. Maximum size is 2MB")
 
         # Check magic bytes for PNG or JPEG
+        if not (decoded.startswith(b"\x89PNG") or decoded.startswith(b"\xff\xd8\xff")):
+            raise ValueError("Signature must be a PNG or JPEG image")
+
+        return v
+
+
+class ContractHandoverPayload(BaseModel):
+    """
+    Payload for client handover checklist submission.
+    Includes the ticked checklist items and the second signature.
+    """
+    checklist: Dict[str, bool] = Field(
+        ...,
+        description="Dictionary of feature names to boolean check state"
+    )
+    signature: str = Field(
+        ...,
+        description="Base64-encoded signature image (PNG or JPEG, max 2MB)"
+    )
+
+    @field_validator("signature")
+    @classmethod
+    def validate_signature(cls, v: str) -> str:
+        """Validate that signature is valid base64 and within size limits."""
+        if not v:
+            raise ValueError("Signature cannot be empty")
+
+        if v.startswith("data:"):
+            parts = v.split(",", 1)
+            if len(parts) != 2:
+                raise ValueError("Invalid data URL format")
+            v = parts[1]
+
+        try:
+            decoded = base64.b64decode(v, validate=True)
+        except Exception:
+            raise ValueError("Invalid base64 encoding")
+
+        max_size = 2 * 1024 * 1024  # 2MB
+        if len(decoded) > max_size:
+            raise ValueError("Signature image too large. Maximum size is 2MB")
+
         if not (decoded.startswith(b"\x89PNG") or decoded.startswith(b"\xff\xd8\xff")):
             raise ValueError("Signature must be a PNG or JPEG image")
 
