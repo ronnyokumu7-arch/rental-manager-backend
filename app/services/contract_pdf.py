@@ -3,7 +3,7 @@ import base64
 import asyncio
 import urllib.request
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Any
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import select
@@ -31,13 +31,13 @@ template_env = Environment(
 template_env.filters['markdown_to_html'] = markdown_to_html
 
 
-async def resolve_signature_data_uri(contract: Contract, attr_name: str = "signature_image_path") -> Optional[str]:
+async def resolve_signature_data_uri(obj: Any, attr_name: str = "signature_image_path") -> Optional[str]:
     """
     ✅ BULLETPROOF SIGNATURE RESOLVER (backend-aware)
-    Resolves a signature image column (signature_image_path, handover_signature_image_path, etc.)
+    Resolves a signature image column (signature_image_path, handover_signature_image_path, company_signature_path, etc.)
     into an embedded data: URI that survives PDF generation across storage backends.
     """
-    ref = getattr(contract, attr_name, None)
+    ref = getattr(obj, attr_name, None)
     if not ref:
         return None
 
@@ -137,15 +137,19 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         profile_stmt = select(TenantProfile).where(TenantProfile.tenant_id == tenant.id)
         tenant_profile = (await db.execute(profile_stmt)).scalars().first()
 
-    # 2. ✅ SIGNATURES: resolve both terms and handover signatures
+    # 2. ✅ SIGNATURES: resolve terms, handover, and company signatures
     signature_data_uri = None
     if contract.signed_by_client:
         signature_data_uri = await resolve_signature_data_uri(contract, "signature_image_path")
 
-    # ✅ NEW: Handover signature (separate image, may not exist yet)
     handover_signature_data_uri = None
     if contract.handover_signed_at:
         handover_signature_data_uri = await resolve_signature_data_uri(contract, "handover_signature_image_path")
+
+    # ✅ NEW: Company/Agency default signature
+    company_signature_data_uri = None
+    if tenant_profile and getattr(tenant_profile, "company_signature_path", None):
+        company_signature_data_uri = await resolve_signature_data_uri(tenant_profile, "company_signature_path")
 
     # ✅ POLICY DOCUMENT: 3-category merged doc (defaults + overrides + custom clauses)
     policy_doc = await get_effective_policy_document(db, contract.tenant_id)
@@ -195,7 +199,8 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "tenant": tenant,
         "tenant_profile": tenant_profile,
         "signature_data_uri": signature_data_uri,
-        "handover_signature_data_uri": handover_signature_data_uri,  # ✅ NEW: passed to template
+        "handover_signature_data_uri": handover_signature_data_uri,
+        "company_signature_data_uri": company_signature_data_uri,  # ✅ NEW: passed to template
         "policy_doc": policy_doc,
         "daily_rate": daily_rate,
         "driver_fees": driver_fees_breakdown,

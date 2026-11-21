@@ -109,9 +109,7 @@
         .signature-image { max-height: 40pt; max-width: 140pt; margin: 0 auto 2pt auto; display: block; }
 
         /* ═══════════════════════════════════════════════════════════
-           ✅ UNIFIED SIGNATURE PANELS (used by BOTH Section 2 & Section 4)
-           Left panel = flexible content; right panel = narrow signature.
-           Identical styling so the document reads as one intentional system.
+           UNIFIED SIGNATURE PANELS (Section 2 & Section 4)
            ═══════════════════════════════════════════════════════════ */
         .sig-grid {
             display: grid;
@@ -152,9 +150,7 @@
         }
 
         /* ═══════════════════════════════════════════════════════════
-           ✅ MULTI-COLUMN CHECKLIST
-           column-count is computed in Jinja (ipc knob). Block container
-           so multicol works; items are flex rows that never split.
+           MULTI-COLUMN CHECKLIST
            ═══════════════════════════════════════════════════════════ */
         .checklist-cols {
             column-fill: balance;
@@ -210,12 +206,67 @@
 
         /* ═══════════════════════════════════════════════════════════
            EXECUTION & AUDIT STAMP
+           ✅ Redesigned: no lines, symmetric signature slots,
+           perfect vertical alignment between Company and Renter.
            ═══════════════════════════════════════════════════════════ */
         .legal-text { color: #475569; font-weight: 500; font-size: 9.5pt; margin-bottom: 10pt; line-height: 1.45; }
-        .execution-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20pt; padding-top: 6pt; }
-        .execution-block { border-top: 1pt solid #cbd5e1; padding-top: 6pt; }
-        .execution-title { font-weight: bold; text-transform: uppercase; color: #0f172a; margin: 0 0 5pt 0; font-size: 8.5pt; }
-        .execution-detail { color: #475569; font-weight: 500; margin: 2pt 0; font-size: 8.5pt; }
+
+        .execution-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20pt;
+            margin-top: 10pt;
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+
+        .execution-block {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        .execution-title {
+            font-weight: bold;
+            text-transform: uppercase;
+            color: #0f172a;
+            margin: 0 0 6pt 0;
+            font-size: 8.5pt;
+            letter-spacing: 0.03em;
+        }
+
+        /* Fixed-height slot so both blocks match regardless of signature presence */
+        .execution-sig-slot {
+            width: 100%;
+            min-height: 38pt;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 4pt;
+        }
+
+        .execution-sig-img {
+            max-height: 36pt;
+            max-width: 140pt;
+            display: block;
+        }
+
+        .execution-sig-empty {
+            font-size: 7.5pt;
+            color: #94a3b8;
+            font-style: italic;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .execution-detail {
+            color: #475569;
+            font-weight: 500;
+            margin: 2pt 0;
+            font-size: 8.5pt;
+        }
+
         .audit-stamp { margin-top: 14pt; padding: 10pt; background: #0f172a; color: #f1f5f9; border-radius: 3pt; }
         .audit-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1pt solid #1e293b; padding-bottom: 5pt; margin-bottom: 5pt; }
         .audit-title { display: flex; align-items: center; gap: 5pt; font-size: 8pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.04em; color: #34d399; }
@@ -308,7 +359,6 @@
                 <div><span class="info-label">Fuel Level:</span> <span class="info-value">As seen on photo evidence</span></div>
             </div>
 
-            <!-- ✅ UNIFIED 2-column panel + MULTI-COLUMN checklist -->
             {# ipc = items per column. cols = ceil(n/ipc), capped at 3. Tweak ipc to change density. #}
             {% set ipc = 3 %}
             {% set n = (contract.handover_items or [])|length %}
@@ -357,7 +407,7 @@
             </div>
         </section>
 
-        <!-- ✅ MILESTONE 2: DRIVER ASSIGNMENT -->
+        <!-- MILESTONE 2: DRIVER ASSIGNMENT -->
         {% if driver %}
         <section class="contract-section">
             <h2 class="section-title">Authorized Driver Assignment</h2>
@@ -441,7 +491,6 @@
                 {% endfor %}
             {% endif %}
 
-            <!-- ✅ UPDATED: identical unified panel as Section 2 (styled left + right) -->
             <div class="sig-grid no-break">
                 <div class="sig-panel sig-panel-left">
                     <p class="signature-quote">"I acknowledge and agree to the specific fuel, mileage, and late return liabilities detailed in Section 4 above."</p>
@@ -513,23 +562,34 @@
                 </div>
             {% endif %}
 
+            <!-- ✅ REDESIGNED: Symmetric execution grid, no lines, aligned signature slots -->
             <div class="execution-grid">
+                <!-- Company Representative -->
                 <div class="execution-block">
                     <p class="execution-title">Company Representative</p>
+                    <div class="execution-sig-slot">
+                        {% if company_signature_data_uri %}
+                            <img src="{{ company_signature_data_uri }}" class="execution-sig-img" alt="Company Signature" />
+                        {% else %}
+                            <span class="execution-sig-empty">Signature pending</span>
+                        {% endif %}
+                    </div>
                     <p class="execution-detail">Name: {{ tenant.name if tenant else 'Agency Operations' }}</p>
                     <p class="execution-detail">Date: {{ contract.created_at.strftime('%d, %b, %Y') if contract.created_at else '—' }}</p>
-                    <div style="margin-top: 12pt; border-bottom: 1pt solid #0f172a; height: 40pt;"></div>
                 </div>
+
+                <!-- Renter / Client -->
                 <div class="execution-block">
                     <p class="execution-title">Renter / Client</p>
+                    <div class="execution-sig-slot">
+                        {% if contract.signed_by_client and signature_data_uri %}
+                            <img src="{{ signature_data_uri }}" class="execution-sig-img" alt="Client Signature" />
+                        {% else %}
+                            <span class="execution-sig-empty">Signature pending</span>
+                        {% endif %}
+                    </div>
                     <p class="execution-detail">Name: {{ client.full_name if client else '—' }}</p>
                     <p class="execution-detail">Date: {{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
-                    <div style="margin-top: 12pt; height: 45pt; position: relative;">
-                        {% if contract.signed_by_client and signature_data_uri %}
-                            <img src="{{ signature_data_uri }}" style="display: block; max-height: 40pt; max-width: 140pt; margin-bottom: 2pt;" alt="Client Signature" />
-                        {% endif %}
-                        <div style="border-bottom: 1pt solid #0f172a; position: absolute; bottom: 0; left: 0; width: 100%;"></div>
-                    </div>
                 </div>
             </div>
 
