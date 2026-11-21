@@ -751,16 +751,24 @@
                 {% endfor %}
             {% endif %}
 
+            <!-- ✅ UPDATED: 2-column layout matching the Handover section -->
             <div class="signature-box no-break">
-                <p class="signature-quote">"I acknowledge and agree to the specific fuel, mileage, and late return liabilities detailed in Section 4 above."</p>
-                <div class="signature-row">
-                    <span class="signature-label">Policy Acknowledgment</span>
-                    <div class="signature-text">
-                        {% if contract.signed_by_client and signature_data_uri %}
-                            <img src="{{ signature_data_uri }}" class="signature-image" alt="Signature" />
-                        {% endif %}
-                        <p class="signature-name">/s/ {{ client.full_name if client else 'Client' }}</p>
-                        <p class="signature-date">{{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
+                <div class="handover-grid">
+                    <!-- LEFT: Acknowledgment Quote -->
+                    <div class="handover-left">
+                        <p class="signature-quote" style="margin-bottom: 0;">"I acknowledge and agree to the specific fuel, mileage, and late return liabilities detailed in Section 4 above."</p>
+                    </div>
+
+                    <!-- RIGHT: Signature Rail -->
+                    <div class="handover-right">
+                        <span class="signature-label">Policy Acknowledgment</span>
+                        <div class="signature-text">
+                            {% if contract.signed_by_client and signature_data_uri %}
+                                <img src="{{ signature_data_uri }}" class="signature-image" alt="Signature" />
+                            {% endif %}
+                            <p class="signature-name">/s/ {{ client.full_name if client else 'Client' }}</p>
+                            <p class="signature-date">{{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
+                        </div>
                     </div>
                 </div>
             </div>
