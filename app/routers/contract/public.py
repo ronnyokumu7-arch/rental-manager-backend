@@ -352,6 +352,21 @@ async def submit_handover_public(
             message="This contract was cancelled by the agency. Contact them for help.",
             action=_PUBLIC_HOME,
         )
+
+    # ✅ GUARD: handover is the FINAL signature step. Terms must be signed first.
+    if not contract.signed_by_client:
+        raise BadRequestError(
+            title="Sign the Contract First",
+            message="Please review and sign the terms and conditions before confirming the vehicle handover.",
+        )
+
+    # ✅ GUARD: only allow handover when the vehicle actually has a checklist.
+    if not contract.handover_items:
+        raise BadRequestError(
+            title="No Handover Required",
+            message="This vehicle has no handover checklist, so there is nothing to sign here.",
+        )
+
     if contract.handover_signed_at:
         raise BadRequestError(
             title="Handover Already Signed",
