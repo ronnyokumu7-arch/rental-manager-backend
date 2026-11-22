@@ -69,19 +69,20 @@
         .header-top { 
             display: flex; 
             justify-content: space-between; 
-            align-items: flex-start; 
+            align-items: center; /* Aligns badge and logo vertically */
             gap: 16pt; 
         }
+        
+        /* ✅ FIXED: Tighter logo grouping and alignment */
         .logo-section { 
             display: flex; 
-            align-items: flex-start; 
+            align-items: center; 
             gap: 12pt; 
         }
         
-        /* ✅ PREMIUM LOGO: No border, perfect containment, generous padding */
         .logo-box {
-            width: 100pt;
-            height: 50pt;
+            width: 90pt;
+            height: 45pt;
             background: transparent;
             display: flex;
             align-items: center;
@@ -90,10 +91,9 @@
             overflow: hidden;
         }
         .logo-box img { 
-            width: 100%; 
-            height: 100%; 
+            max-width: 100%; 
+            max-height: 100%; 
             object-fit: contain; 
-            /* 💡 PRO TIP: If using Cloudinary, append /g_auto,c_pad/ to the URL for AI smart-cropping */
         }
         .logo-fallback {
             display: flex;
@@ -113,11 +113,11 @@
             font-weight: 800; 
             text-transform: uppercase; 
             letter-spacing: -0.01em; 
-            margin: 0 0 3pt 0; 
+            margin: 0 0 2pt 0; 
             color: #020617; 
         }
         .agency-info p { 
-            margin: 1.5pt 0; 
+            margin: 1pt 0; 
             color: #64748b; 
             font-weight: 500; 
             font-size: 8pt; 
@@ -125,7 +125,6 @@
         
         .header-status {
             text-align: right;
-            padding-top: 2pt;
         }
 
         .status-badge { 
@@ -269,8 +268,6 @@
 
         /* ═══════════════════════════════════════════════════════════
            EXECUTION & AUDIT STAMP
-           ✅ Redesigned: Left-aligned to match the rest of the document,
-           symmetric signature slots, perfect vertical alignment.
            ═══════════════════════════════════════════════════════════ */
         .legal-text { color: #475569; font-weight: 500; font-size: 9.5pt; margin-bottom: 10pt; line-height: 1.45; }
 
@@ -336,7 +333,7 @@
         .audit-label { color: #64748b; }
 
         /* ═══════════════════════════════════════════════════════════
-           PREMIUM FOOTER (Replaces noisy top meta-grid)
+           PREMIUM FOOTER
            ═══════════════════════════════════════════════════════════ */
         .document-footer { 
             margin-top: 24pt; 
@@ -384,7 +381,6 @@
                 <div class="logo-section">
                     <div class="logo-box">
                         {% if tenant_profile and tenant_profile.logo_url %}
-                            <!-- 💡 PRO TIP: If using Cloudinary, append /g_auto,c_pad/ to the URL for AI smart-cropping -->
                             <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
                         {% else %}
                             <div class="logo-fallback">{{ (tenant.name[:12] if tenant else 'AGENCY') | upper }}</div>
@@ -446,14 +442,12 @@
                 <div><span class="info-label">Fuel Level:</span> <span class="info-value">As seen on photo evidence</span></div>
             </div>
 
-            {# ipc = items per column. cols = ceil(n/ipc), capped at 3. Tweak ipc to change density. #}
             {% set ipc = 3 %}
             {% set n = (contract.handover_items or [])|length %}
             {% set cols = ((n + ipc - 1) // ipc) %}
             {% if cols > 3 %}{% set cols = 3 %}{% endif %}
 
             <div class="sig-grid no-break">
-                <!-- LEFT: checklist (multi-column) + confirmation message -->
                 <div class="sig-panel sig-panel-left">
                     <div>
                         <p class="policy-title" style="margin-bottom:5pt;">Vehicle Equipment &amp; Condition Checklist</p>
@@ -478,7 +472,6 @@
                     <p class="signature-quote">"I confirm that I have inspected the vehicle identified above, verified the equipment listed, and accept its handover condition and initial mileage reading as accurate."</p>
                 </div>
 
-                <!-- RIGHT: signature -->
                 <div class="sig-panel sig-panel-right">
                     <span class="signature-label">Handover Acceptance</span>
                     <div class="sig-block">
@@ -529,7 +522,6 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {# ✅ Calculate extras to ensure the base rental total is mathematically correct #}
                     {% set delivery = booking.delivery_fee | float if booking and booking.delivery_fee else 0 %}
                     {% set tolls = booking.toll_fees | float if booking and booking.toll_fees else 0 %}
                     {% set parking = booking.parking_fees | float if booking and booking.parking_fees else 0 %}
@@ -544,7 +536,6 @@
                         <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(base_total) }}</td>
                     </tr>
 
-                    {# ✅ ADDITIONAL CHARGES #}
                     {% if delivery > 0 %}
                     <tr>
                         <td>Delivery Fee</td>
@@ -569,7 +560,6 @@
                     </tr>
                     {% endif %}
 
-                    {# ✅ DRIVER FEES (Milestone 2) #}
                     {% if driver and driver_total > 0 %}
                         {% if driver_fees.driver_daily > 0 %}
                         <tr>
@@ -686,66 +676,4 @@
                 </div>
             {% endif %}
 
-            <!-- ✅ REDESIGNED: Left-aligned to match document, symmetric signature slots -->
-            <div class="execution-grid">
-                <!-- Company Representative -->
-                <div class="execution-block">
-                    <p class="execution-title">Company Representative</p>
-                    <div class="execution-sig-slot">
-                        {% if company_signature_data_uri %}
-                            <img src="{{ company_signature_data_uri }}" class="execution-sig-img" alt="Company Signature" />
-                        {% else %}
-                            <span class="execution-sig-empty">Signature pending</span>
-                        {% endif %}
-                    </div>
-                    <p class="execution-detail">Name: {{ tenant.name if tenant else 'Agency Operations' }}</p>
-                    <p class="execution-detail">Date: {{ contract.created_at.strftime('%d, %b, %Y') if contract.created_at else '—' }}</p>
-                </div>
-
-                <!-- Renter / Client -->
-                <div class="execution-block">
-                    <p class="execution-title">Renter / Client</p>
-                    <div class="execution-sig-slot">
-                        {% if contract.signed_by_client and signature_data_uri %}
-                            <img src="{{ signature_data_uri }}" class="execution-sig-img" alt="Client Signature" />
-                        {% else %}
-                            <span class="execution-sig-empty">Signature pending</span>
-                        {% endif %}
-                    </div>
-                    <p class="execution-detail">Name: {{ client.full_name if client else '—' }}</p>
-                    <p class="execution-detail">Date: {{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
-                </div>
-            </div>
-
-            {% if contract.signed_by_client %}
-            <div class="audit-stamp no-break">
-                <div class="audit-header">
-                    <div class="audit-title">CRYPTOGRAPHIC NON-REPUDIATION AUDIT STAMP</div>
-                    <div style="font-size: 7.5pt; font-family: monospace; color: #94a3b8;">SEALED</div>
-                </div>
-                <div class="audit-grid">
-                    <div><span class="audit-label">Signed by:</span> {{ client.full_name if client else 'N/A' }}</div>
-                    <div><span class="audit-label">IP Address:</span> {{ contract.signer_ip or '102.217.64.12 (KE)' }}</div>
-                    <div><span class="audit-label">Token:</span> {{ contract.share_token or 'N/A' }}</div>
-                    <div><span class="audit-label">Timestamp:</span> {{ contract.client_signed_at.isoformat() if contract.client_signed_at else contract.created_at.isoformat() }}</div>
-                    <div style="grid-column: 1 / -1;"><span class="audit-label">User Agent:</span> {{ contract.signer_user_agent or 'Verified Web Session' }}</div>
-                </div>
-            </div>
-            {% endif %}
-        </section>
-
-        <!-- [COMPONENT: FOOTER] -->
-        <footer class="document-footer">
-            <div class="footer-meta">
-                <div>Contract: <span>{{ contract.contract_number }}</span></div>
-                <div class="footer-divider">•</div>
-                <div>Booking: <span>{{ booking.booking_number if booking else 'N/A' }}</span></div>
-            </div>
-            <div class="footer-powered">
-                POWERED BY RENTAL GARAGE
-            </div>
-        </footer>
-
-    </div>
-</body>
-</html>
+            <div class="execution-grid
