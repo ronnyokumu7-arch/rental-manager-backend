@@ -55,11 +55,13 @@ async def resolve_signature_data_uri(obj: Any, attr_name: str = "signature_image
     def _to_data_uri(data: bytes) -> str:
         return "data:image/png;base64," + base64.b64encode(data).decode("utf-8")
 
+    # 1. ✅ Authenticated API URL produced by upload_file()
     api_base = get_settings().public_url_base.rstrip("/")
     files_prefix = f"{api_base}/api/v1/files/"
-    
     if ref.startswith(files_prefix):
         relative_path = ref[len(files_prefix):].lstrip("/")
+
+        # a) Cloudinary backend → short-lived signed URL → fetch bytes
         backend = get_backend()
         signed = backend.signed_url(relative_path, ttl_seconds=300)
         if signed:
@@ -67,33 +69,41 @@ async def resolve_signature_data_uri(obj: Any, attr_name: str = "signature_image
             if data:
                 return _to_data_uri(data)
 
+        # b) Local backend (or signed_url failure) → read from disk
         upload_dir = Path(get_settings().uploads_dir).resolve()
         local_path = (upload_dir / relative_path).resolve()
         try:
-            local_path.relative_to(upload_dir)
+            local_path.relative_to(upload_dir)  # safety: no path traversal
             if local_path.exists() and local_path.is_file():
                 with open(local_path, "rb") as f:
                     return _to_data_uri(f.read())
         except ValueError:
             pass
+
+        print(f"⚠️ Could not resolve signature via storage backend ({attr_name}): {ref}")
         return None
 
+    # 2. Direct Cloudinary / public http(s) URL
     if ref.startswith("http://") or ref.startswith("https://"):
         data = await loop.run_in_executor(None, _fetch, ref)
         if data:
             return _to_data_uri(data)
         return None
 
+    # 3. Data URI stored directly in the column
     if ref.startswith("data:"):
         return ref
 
+    # 4. Legacy local file path (ephemeral — does not survive Render deploys)
     if os.path.exists(ref):
         try:
             with open(ref, "rb") as img_file:
                 return _to_data_uri(img_file.read())
-        except Exception:
+        except Exception as e:
+            print(f"❌ Error encoding local signature ({attr_name}): {e}")
             return None
 
+    print(f"⚠️ Signature reference unusable ({attr_name}): {ref}")
     return None
 
 
@@ -135,9 +145,10 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
     if tenant_profile and getattr(tenant_profile, "company_signature_path", None):
         company_signature_data_uri = await resolve_signature_data_uri(tenant_profile, "company_signature_path")
 
+    # ✅ POLICY DOCUMENT: 3-category merged doc (defaults + overrides + custom clauses)
     policy_doc = await get_effective_policy_document(db, loaded_contract.tenant_id)
 
-    # 3. PREPARE CONTEXT FOR JINJA2 TEMPLATE
+    # ✅ PHASE 1: Booking snapshot is the source of truth.
     daily_rate = Decimal("0.00")
     rental_days = 1
 
@@ -156,10 +167,14 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         elif booking.total_amount:
             daily_rate = Decimal(str(booking.total_amount)) / Decimal(rental_days)
 
+    # ✅ PHASE 1: Driver fees from snapshot, no config lookup.
     driver_total = Decimal("0.00")
     if booking and booking.total_amount and daily_rate:
         vehicle_subtotal = daily_rate * Decimal(rental_days)
-        driver_total = max(Decimal("0.00"), Decimal(str(booking.total_amount)) - vehicle_subtotal)
+        driver_total = max(
+            Decimal("0.00"),
+            Decimal(str(booking.total_amount)) - vehicle_subtotal,
+        )
 
     driver_fees_breakdown = {
         "driver_daily": driver_total,
@@ -168,6 +183,7 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "driver_total": driver_total,
     }
 
+    # 3. PREPARE CONTEXT FOR JINJA2 TEMPLATE
     context = {
         "contract": loaded_contract,
         "booking": booking,
@@ -188,13 +204,15 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
     template = template_env.get_template("contract_premium.html")
     html_content = template.render(**context)
 
-    # 5. ✅ OPTIMIZED PDF GENERATION (No unnecessary sleep, preferCSSPageSize)
+    # 5. ✅ OPTIMIZED PDF GENERATION WITH BROWSER POOL & AUTO-RETRY
+    #    ✅ setContent() in pyppeteer takes ONLY the html string (no options dict).
+    #    The 0.3s settle is kept (proven-correct); the real speed wins are the
+    #    single eager-load query, the 3s signature timeout, and preferCSSPageSize.
     try:
         browser = await browser_pool.get_browser()
         page = await browser.newPage()
-        
-        # ✅ OPTIMIZATION: preferCSSPageSize lets the @page rule handle sizing instantly
-        await page.setContent(html_content, {"waitUntil": "networkidle0", "timeout": 5000})
+        await page.setContent(html_content)
+        await asyncio.sleep(0.3)
 
         pdf_bytes = await page.pdf(
             format='A4',
@@ -208,12 +226,14 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
 
     except Exception as e:
         error_msg = str(e)
+        # ✅ AUTO-RETRY: If the browser died mid-request, force a restart and try once more.
         if "Connection is closed" in error_msg or "Connection closed" in error_msg:
             print("⚠️ Browser died mid-render. Forcing restart and retrying...")
             try:
                 browser = await browser_pool.get_browser(force_restart=True)
                 page = await browser.newPage()
-                await page.setContent(html_content, {"waitUntil": "networkidle0", "timeout": 5000})
+                await page.setContent(html_content)
+                await asyncio.sleep(0.3)
 
                 pdf_bytes = await page.pdf(
                     format='A4',
@@ -229,6 +249,7 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
                 traceback.print_exc()
                 raise retry_err
         
+        # If it's not a connection error, log and raise normally
         print(f"❌ PUPPETEER ERROR: {e}")
         import traceback
         traceback.print_exc()
