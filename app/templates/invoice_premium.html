@@ -5,7 +5,7 @@
     <title>Invoice - {{ invoice.invoice_number }}</title>
     <style>
         /* ═══════════════════════════════════════════════════════════
-           PREMIUM INVOICE - SCREEN VS PRINT
+           PREMIUM INVOICE - CLEAN & SPACIOUS (SINGLE PAGE)
            ═══════════════════════════════════════════════════════════ */
         @page { 
             size: A4; 
@@ -32,78 +32,95 @@
         }
 
         .page-wrapper {
-            padding: 15mm 18mm;
+            padding: 12mm 16mm; /* Tightened to prevent page overflow */
             width: 100%;
             min-height: 297mm;
             display: flex;
             flex-direction: column;
         }
 
-        /* ── HEADER ───────────────────────────────────────────────── */
-        .header-section {
-            background-color: #FDFCFA; 
-            padding: 15pt 18pt;
-            border-radius: 6pt;
-            /* ✅ Reduced gap between header and title */
-            margin-bottom: 10pt; 
-            border-bottom: 2pt solid #7C3AED; 
+        /* ── HEADER (Clean, No Borders) ───────────────────────────── */
+        .header { 
             display: flex; 
             justify-content: space-between; 
-            align-items: center; /* Changed to center for tighter grouping */
+            align-items: flex-start; 
+            margin-bottom: 20pt;
         }
         
-        .logo-box { 
-            width: 120pt; 
-            height: 50pt; 
-            display: flex; 
-            align-items: center; 
-            justify-content: flex-start; 
-            overflow: hidden;
-        }
-        .logo-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
-        .logo-fallback { font-weight: 900; font-size: 16pt; color: #1C1917; letter-spacing: -0.03em; }
-        .logo-fallback span { color: #7C3AED; } 
-
-        .qr-code {
-            width: 60pt; height: 60pt;
-            background: #FFFFFF; border: 1pt solid #E8E4DE;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 7pt; color: #A8A39E; text-align: center;
-            padding: 5pt; border-radius: 4pt;
+        /* Left side: Title & Meta */
+        .header-left {
+            display: flex;
+            flex-direction: column;
+            gap: 4pt;
         }
 
-        /* ── TITLES & META ────────────────────────────────────────── */
         .invoice-title { 
-            font-size: 28pt; font-weight: 900; color: #1C1917; 
-            letter-spacing: -0.04em; margin-bottom: 4pt; 
+            font-size: 28pt; 
+            font-weight: 900; 
+            color: #1C1917; 
+            letter-spacing: -0.04em; 
+            margin-bottom: 2pt; 
         }
         
-        .meta-row { display: flex; gap: 20pt; font-size: 8.5pt; color: #57534E; margin-bottom: 2pt; }
+        .meta-row { display: flex; gap: 20pt; font-size: 8.5pt; color: #57534E; }
         .meta-label { font-weight: 700; color: #1C1917; }
         .text-brand { color: #7C3AED; font-weight: 700; }
-        
-        .header-meta-grid {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 10pt;
-            margin-bottom: 16pt; padding-bottom: 12pt; border-bottom: 1pt solid #E8E4DE;
+
+        /* Right side: Logo */
+        .header-right {
+            display: flex;
+            justify-content: flex-end;
+            align-items: flex-start;
+            width: 140pt; /* Constrain width so it doesn't push too far */
         }
 
-        /* ── ADDRESS BLOCKS ───────────────────────────────────────── */
+        .logo-box { 
+            max-width: 140pt; 
+            max-height: 60pt; 
+            display: flex; 
+            align-items: flex-start; 
+            justify-content: flex-end; 
+        }
+        .logo-box img { 
+            max-width: 100%; 
+            max-height: 100%; 
+            object-fit: contain; 
+        }
+        .logo-fallback { 
+            font-weight: 900; 
+            font-size: 18pt; 
+            color: #1C1917; 
+            letter-spacing: -0.03em;
+            text-align: right;
+        }
+        .logo-fallback span { color: #7C3AED; } 
+
+        /* ── DIVIDER ──────────────────────────────────────────────── */
+        .divider {
+            border-top: 1pt solid #E8E4DE;
+            margin-bottom: 20pt;
+        }
+
+        /* ── ADDRESS BLOCKS (No Boxes, Clean) ─────────────────────── */
         .address-grid {
-            display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16pt; margin-bottom: 20pt;
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20pt;
+            margin-bottom: 24pt;
         }
         
-        .address-box { 
-            display: flex; flex-direction: column; 
-            background: #FDFCFA; padding: 10pt 12pt; border-radius: 4pt; border: 1pt solid #E8E4DE;
-        }
+        .address-box { display: flex; flex-direction: column; }
         
         .address-label { 
-            display: inline-block; background: #1C1917; color: #FFFFFF; 
-            font-size: 7.5pt; font-weight: 700; padding: 3pt 6pt; 
-            border-radius: 2pt; margin-bottom: 6pt; width: max-content;
+            font-size: 8pt; 
+            font-weight: 700; 
+            text-transform: uppercase;
+            color: #A8A39E; 
+            letter-spacing: 0.05em;
+            margin-bottom: 4pt;
         }
         
-        .address-name { font-size: 11pt; font-weight: 800; color: #1C1917; margin-bottom: 3pt; }
+        .address-name { font-size: 11pt; font-weight: 800; color: #1C1917; margin-bottom: 2pt; }
         .address-detail { font-size: 8.5pt; color: #57534E; margin-bottom: 1pt; }
 
         /* ── TABLES ───────────────────────────────────────────────── */
@@ -112,13 +129,23 @@
         .data-table { width: 100%; border-collapse: collapse; margin-bottom: 10pt; text-align: left; }
         
         .data-table th { 
-            background: #FDFCFA; color: #1C1917; font-size: 8pt; font-weight: 700; 
-            padding: 8pt 10pt; border-top: 1pt solid #E8E4DE; border-bottom: 1pt solid #E8E4DE;
+            background: #FDFCFA; 
+            color: #1C1917; 
+            font-size: 8pt; 
+            font-weight: 700; 
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            padding: 8pt 10pt; 
+            border-top: 1pt solid #E8E4DE;
+            border-bottom: 1pt solid #E8E4DE;
         }
         
         .data-table td { 
-            padding: 10pt; border-bottom: 1pt solid #E8E4DE; 
-            color: #292524; font-size: 9pt; vertical-align: top;
+            padding: 10pt; 
+            border-bottom: 1pt solid #E8E4DE; 
+            color: #292524; 
+            font-size: 9pt; 
+            vertical-align: top;
         }
         
         .text-right { text-align: right; }
@@ -126,8 +153,11 @@
 
         /* ── BOTTOM SPLIT ─────────────────────────────────────────── */
         .bottom-split { 
-            display: grid; grid-template-columns: 1fr 1fr; gap: 20pt; 
-            margin-top: 10pt; break-inside: avoid;
+            display: grid; 
+            grid-template-columns: 1fr 1fr; 
+            gap: 20pt; 
+            margin-top: 10pt; 
+            break-inside: avoid;
         }
         
         .payment-info { display: flex; flex-direction: column; gap: 12pt; }
@@ -136,97 +166,74 @@
 
         .totals-table { width: 100%; border-collapse: collapse; }
         .totals-table th {
-            background: #FDFCFA; color: #1C1917; font-size: 8pt; font-weight: 700;
-            padding: 6pt 10pt; text-align: right; border-bottom: 1pt solid #E8E4DE;
+            background: #FDFCFA;
+            color: #1C1917;
+            font-size: 8pt;
+            font-weight: 700;
+            padding: 6pt 10pt;
+            text-align: right;
+            border-bottom: 1pt solid #E8E4DE;
         }
         .totals-table th:first-child { text-align: left; }
         
         .totals-table td { padding: 8pt 10pt; font-size: 9pt; color: #57534E; border-bottom: 1pt solid #E8E4DE; }
         .totals-table .grand-total-label { font-size: 10pt; font-weight: 800; color: #1C1917; }
         
-        /* Premium Total Row (Screen) */
-        .total-row td { background: #1C1917; color: #FFFFFF !important; border-bottom: none; }
+        /* Premium Total Row */
+        .total-row td {
+            background: #1C1917;
+            color: #FFFFFF !important;
+            border-bottom: none;
+        }
         .total-row .grand-total-label { color: #FFFFFF; }
         .total-row .grand-total-value { font-size: 14pt; font-weight: 900; color: #FFFFFF; text-align: right; }
 
         /* ── FOOTER ───────────────────────────────────────────────── */
         .footer { 
-            margin-top: auto; padding-top: 20pt; text-align: center;
-            font-size: 7.5pt; color: #A8A39E; text-transform: uppercase;
-            letter-spacing: 0.05em; border-top: 1pt solid #E8E4DE;
-        }
-
-        /* ═══════════════════════════════════════════════════════════
-           🖨️ PRINT OVERRIDES (Ink Efficient, High Contrast)
-           ═══════════════════════════════════════════════════════════ */
-        @media print {
-            body { background: #FFFFFF; }
-            .page-wrapper { padding: 0; } /* Margins handled by @page */
-            
-            /* Strip heavy backgrounds */
-            .header-section { background: transparent; border-bottom: 1pt solid #000000; padding: 0 0 10pt 0; margin-bottom: 20pt; }
-            .address-box { background: transparent; border: 1pt solid #CCCCCC; }
-            .data-table th, .totals-table th { background: transparent; border-bottom: 1pt solid #000000; }
-            .currency-note { display: none; } /* Optional: hide meta text to save space */
-            
-            /* Strip the dark Total Row */
-            .total-row td { 
-                background: transparent !important; 
-                color: #000000 !important; 
-                border-top: 2pt solid #000000; 
-                border-bottom: 2pt solid #000000; 
-            }
-            .total-row .grand-total-label { color: #000000 !important; }
-            .total-row .grand-total-value { color: #000000 !important; }
-
-            /* Ensure links are black */
-            .text-brand { color: #000000 !important; font-weight: 700; }
-            
-            /* Footer adjustment */
-            .footer { border-top: 1pt solid #CCCCCC; margin-top: 40pt; }
+            margin-top: auto; 
+            padding-top: 15pt;
+            text-align: center;
+            font-size: 7.5pt; 
+            color: #A8A39E; 
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-top: 1pt solid #E8E4DE;
         }
     </style>
 </head>
 <body>
     <div class="page-wrapper">
         
-        <!-- HEADER -->
-        <header class="header-section">
-            <div class="logo-box">
-                {% if tenant_profile and tenant_profile.logo_url %}
-                    <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
-                {% else %}
-                    <div class="logo-fallback">
-                        Rental<span>Garage</span>
-                    </div>
-                {% endif %}
+        <!-- HEADER (Title left, Logo right) -->
+        <header class="header">
+            <div class="header-left">
+                <h1 class="invoice-title">Invoice</h1>
+                <div class="meta-row">
+                    <div><span class="meta-label">Invoice No:</span> <span class="text-brand">{{ invoice.invoice_number }}</span></div>
+                    <div><span class="meta-label">Date:</span> {{ invoice.created_at.strftime('%Y-%m-%d') if invoice.created_at else '—' }}</div>
+                    <div><span class="meta-label">Due:</span> {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date else '—' }}</div>
+                </div>
             </div>
             
-            <div class="qr-code">
-                QR CODE
+            <div class="header-right">
+                <div class="logo-box">
+                    {% if tenant_profile and tenant_profile.logo_url %}
+                        <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
+                    {% else %}
+                        <div class="logo-fallback">
+                            Rental<span>Garage</span>
+                        </div>
+                    {% endif %}
+                </div>
             </div>
         </header>
 
-        <!-- TITLE & META -->
-        <h1 class="invoice-title">Invoice</h1>
-        <div class="meta-row">
-            <div><span class="meta-label">Date Created:</span> {{ invoice.created_at.strftime('%Y-%m-%d %H:%M:%S') if invoice.created_at else '—' }}</div>
-        </div>
-        
-        <div class="header-meta-grid">
-            <div class="meta-row">
-                <div><span class="meta-label">Invoice No:</span> <span class="text-brand">{{ invoice.invoice_number }}</span></div>
-                <div><span class="meta-label">Status:</span> {{ invoice.status.value | title if invoice.status else '—' }}</div> 
-            </div>
-            <div class="meta-row">
-                <div><span class="meta-label">Due Date:</span> {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date else '—' }}</div> 
-            </div>
-        </div>
+        <div class="divider"></div>
 
-        <!-- ADDRESSES -->
+        <!-- ADDRESSES (No Boxes) -->
         <div class="address-grid">
             <div class="address-box">
-                <span class="address-label">Sale From:</span>
+                <span class="address-label">Sale From</span>
                 <div class="address-name">{{ tenant.name if tenant else 'Rental Agency' }}</div>
                 {% if tenant_profile and tenant_profile.tax_pin %}
                 <div class="address-detail">PIN: {{ tenant_profile.tax_pin }}</div>
@@ -243,7 +250,7 @@
             </div>
 
             <div class="address-box">
-                <span class="address-label">Sale To:</span>
+                <span class="address-label">Sale To</span>
                 <div class="address-name">{{ client.full_name if client else 'Client Name' }}</div>
                 {% if client and client.tax_pin %}
                 <div class="address-detail">PIN: {{ client.tax_pin }}</div>
@@ -257,11 +264,12 @@
             </div>
 
             <div class="address-box">
-                <span class="address-label">Invoice Reference:</span>
+                <span class="address-label">Invoice Reference</span>
                 <div class="address-name">{{ invoice.invoice_number }}</div>
                 {% if booking and booking.booking_number %}
                 <div class="address-detail">Booking: {{ booking.booking_number }}</div>
                 {% endif %}
+                <div class="address-detail">Status: {{ invoice.status.value | title if invoice.status else '—' }}</div>
             </div>
         </div>
 
@@ -271,10 +279,9 @@
         <table class="data-table">
             <thead>
                 <tr>
-                    <th style="width: 35%;">Item</th>
+                    <th style="width: 45%;">Item</th>
                     <th class="text-right">Rental Duration</th>
                     <th class="text-right">Daily Rate</th>
-                    <th class="text-right">Tax Type</th>
                     <th class="text-right">Tax</th>
                     <th class="text-right">Discount</th>
                     <th class="text-right">Total</th>
@@ -291,7 +298,6 @@
                     </td>
                     <td class="text-right">{{ rental_days }} Days</td>
                     <td class="text-right">{{ '%.2f'|format(daily_rate) }}</td>
-                    <td class="text-right">NON VAT</td>
                     <td class="text-right">0.00</td>
                     <td class="text-right">{{ '%.2f'|format(invoice.discount_amount) if invoice.discount_amount else '0.00' }}</td>
                     <td class="text-right font-bold">{{ '%.2f'|format(invoice.amount_due) }}</td>
@@ -321,33 +327,11 @@
                     <div class="info-block-text">{{ invoice.notes }}</div>
                 </div>
                 {% endif %}
-                
-                <!-- RentalGarage Branding -->
-                <div style="margin-top: 30pt; font-size: 18pt; font-weight: 900; color: #1C1917; letter-spacing: -0.03em;">
-                    Rental<span style="color: #7C3AED;">Garage</span>
-                </div>
             </div>
 
             <!-- Right Side: Totals Table -->
             <div>
                 <table class="totals-table">
-                    <thead>
-                        <tr>
-                            <th style="width: 40%;">Rate</th>
-                            <th style="width: 40%;">Taxable Amount</th>
-                            <th style="width: 20%;">VAT</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td>NON VAT</td>
-                            <td class="text-right">{{ '%.2f'|format(invoice.amount_due) }}</td>
-                            <td class="text-right">0.00</td>
-                        </tr>
-                    </tbody>
-                </table>
-                
-                <table class="totals-table" style="margin-top: 10pt;">
                     <tbody>
                         <tr>
                             <td class="grand-total-label">Subtotal</td>
@@ -361,7 +345,7 @@
                             <td class="grand-total-label">Total Discount</td>
                             <td class="text-right" style="font-weight: 700; color: #1C1917;">{{ '%.2f'|format(invoice.discount_amount) if invoice.discount_amount else '0.00' }}</td>
                         </tr>
-                        <!-- ✅ Premium Dark Total Row -->
+                        <!-- Premium Dark Total Row -->
                         <tr class="total-row">
                             <td class="grand-total-label" style="border-top-left-radius: 4pt; border-bottom-left-radius: 4pt;">Total Amount</td>
                             <td class="grand-total-value" style="border-top-right-radius: 4pt; border-bottom-right-radius: 4pt;">{{ invoice.currency_code }} {{ '%.2f'|format(invoice.amount_due) }}</td>
