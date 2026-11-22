@@ -5,7 +5,7 @@
     <title>Invoice - {{ invoice.invoice_number }}</title>
     <style>
         /* ═══════════════════════════════════════════════════════════
-           PREMIUM INVOICE - FINAL POLISH
+           PREMIUM INVOICE - FIXED ALIGNMENT & LOGO
            ═══════════════════════════════════════════════════════════ */
         @page { 
             size: A4; 
@@ -39,11 +39,11 @@
             flex-direction: column;
         }
 
-        /* ── HEADER (Aligned Center) ──────────────────────────────── */
+        /* ── HEADER ───────────────────────────────────────────────── */
         .header { 
             display: flex; 
             justify-content: space-between; 
-            align-items: center; /* ✅ Fixes logo alignment */
+            align-items: center; 
             margin-bottom: 20pt;
         }
         
@@ -65,16 +65,17 @@
         .meta-label { font-weight: 700; color: #1C1917; }
         .text-brand { color: #7C3AED; font-weight: 700; }
 
+        /* ✅ Reduced Logo Size */
         .header-right {
             display: flex;
             justify-content: flex-end;
             align-items: center;
-            width: 160pt; 
+            width: 120pt; 
         }
 
         .logo-box { 
-            max-width: 160pt; 
-            max-height: 60pt; 
+            max-width: 120pt; 
+            max-height: 45pt; /* Reduced from 60pt */
             display: flex; 
             align-items: center; 
             justify-content: flex-end; 
@@ -86,7 +87,7 @@
         }
         .logo-fallback { 
             font-weight: 900; 
-            font-size: 18pt; 
+            font-size: 16pt; /* Slightly reduced */
             color: #1C1917; 
             letter-spacing: -0.03em;
             text-align: right;
@@ -99,7 +100,7 @@
             margin-bottom: 20pt;
         }
 
-        /* ── ADDRESS BLOCKS (Black Pills Restored) ────────────────── */
+        /* ── ADDRESS BLOCKS ───────────────────────────────────────── */
         .address-grid {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -126,7 +127,7 @@
         .address-name { font-size: 11pt; font-weight: 800; color: #1C1917; margin-bottom: 2pt; }
         .address-detail { font-size: 8.5pt; color: #57534E; margin-bottom: 1pt; }
 
-        /* ── TABLES (Discount Removed) ────────────────────────────── */
+        /* ── TABLES ───────────────────────────────────────────────── */
         .currency-note { font-size: 8pt; color: #57534E; font-weight: 700; margin-bottom: 6pt; }
 
         .data-table { width: 100%; border-collapse: collapse; margin-bottom: 10pt; text-align: left; }
@@ -154,38 +155,47 @@
         .text-right { text-align: right; }
         .font-bold { font-weight: 700; color: #1C1917; }
 
-        /* ── BOTTOM SPLIT ─────────────────────────────────────────── */
+        /* ── BOTTOM SPLIT (Fixed Alignment) ───────────────────────── */
         .bottom-split { 
             display: grid; 
             grid-template-columns: 1fr 1fr; 
             gap: 20pt; 
             margin-top: 10pt; 
             break-inside: avoid;
+            align-items: start; /* ✅ Ensures top alignment */
         }
         
-        .payment-info { display: flex; flex-direction: column; gap: 12pt; }
+        .payment-info { display: flex; flex-direction: column; gap: 12pt; margin-top: 0; }
         .info-block-title { font-size: 9pt; font-weight: 700; color: #1C1917; margin-bottom: 2pt; }
         .info-block-text { font-size: 8.5pt; color: #57534E; }
 
-        /* ✅ Colored Totals Section (No Borders) */
-        .totals-wrapper {
-            background: #FDFCFA;
-            padding: 12pt;
-            border-radius: 6pt;
-        }
-
+        /* ✅ Totals Table (No background wrapper, only row background) */
         .totals-table { width: 100%; border-collapse: collapse; }
         .totals-table td { 
-            padding: 6pt 0; 
+            padding: 8pt 10pt; 
             font-size: 9pt; 
             color: #57534E; 
         }
-        .totals-table .grand-total-label { font-size: 9pt; font-weight: 700; color: #1C1917; }
         
+        /* Subtotal Row with Background */
+        .subtotal-row td {
+            background: #FDFCFA;
+            font-weight: 700;
+            color: #1C1917;
+        }
+        .subtotal-row td:first-child { border-top-left-radius: 4pt; border-bottom-left-radius: 4pt; }
+        .subtotal-row td:last-child { border-top-right-radius: 4pt; border-bottom-right-radius: 4pt; }
+
+        /* VAT Row */
+        .vat-row td {
+            font-weight: 700;
+            color: #1C1917;
+        }
+
         /* Clean Total Row (No Black Background) */
         .total-row td {
-            border-top: 1pt solid #E8E4DE;
-            padding-top: 10pt;
+            border-top: 1.5pt solid #1C1917;
+            padding-top: 12pt;
             background: transparent;
         }
         .total-row .grand-total-label { font-size: 11pt; font-weight: 900; color: #1C1917; }
@@ -310,9 +320,9 @@
             Number of items: 1
         </div>
 
-        <!-- BOTTOM SPLIT -->
+        <!-- BOTTOM SPLIT (Aligned Top) -->
         <div class="bottom-split">
-            <!-- Left Side: Payment Details & Terms -->
+            <!-- Left Side: Payment Details -->
             <div class="payment-info">
                 <div>
                     <div class="info-block-title">Payment Method:</div>
@@ -330,17 +340,18 @@
                 {% endif %}
             </div>
 
-            <!-- Right Side: Colored Totals Section -->
-            <div class="totals-wrapper">
+            <!-- Right Side: Clean Totals Table -->
+            <div>
                 <table class="totals-table">
                     <tbody>
-                        <tr>
-                            <td class="grand-total-label">Subtotal</td>
-                            <td class="text-right" style="font-weight: 700; color: #1C1917;">{{ '%.2f'|format(invoice.amount_due) }}</td>
+                        <!-- ✅ Background only on Subtotal Row -->
+                        <tr class="subtotal-row">
+                            <td>Subtotal</td>
+                            <td class="text-right">{{ '%.2f'|format(invoice.amount_due) }}</td>
                         </tr>
-                        <tr>
-                            <td class="grand-total-label">Total VAT</td>
-                            <td class="text-right" style="font-weight: 700; color: #1C1917;">0.00</td>
+                        <tr class="vat-row">
+                            <td>Total VAT</td>
+                            <td class="text-right">0.00</td>
                         </tr>
                         <!-- Clean Total Row -->
                         <tr class="total-row">
