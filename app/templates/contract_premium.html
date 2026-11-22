@@ -10,12 +10,11 @@
         @page {
             size: A4;
             margin: 12mm 15mm;
-            @bottom-center {
+            @bottom-right {
                 content: "Page " counter(page) " of " counter(pages);
                 font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-                font-size: 8pt;
-                color: #64748b;
-                margin-top: 8mm;
+                font-size: 7.5pt;
+                color: #94a3b8;
             }
         }
 
@@ -60,32 +59,96 @@
         .divider { border-top: 1pt dashed #e2e8f0; margin: 6pt 0; padding-top: 6pt; }
 
         /* ═══════════════════════════════════════════════════════════
-           HEADER & METADATA
+           HEADER (Premium Minimalist)
            ═══════════════════════════════════════════════════════════ */
-        .header { margin-bottom: 14pt; padding-bottom: 10pt; border-bottom: 1.5pt solid #e2e8f0; }
-        .header-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16pt; }
-        .logo-section { display: flex; align-items: flex-start; gap: 10pt; }
+        .header { 
+            margin-bottom: 16pt; 
+            padding-bottom: 12pt; 
+            border-bottom: 1pt solid #e2e8f0; 
+        }
+        .header-top { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: flex-start; 
+            gap: 16pt; 
+        }
+        .logo-section { 
+            display: flex; 
+            align-items: flex-start; 
+            gap: 12pt; 
+        }
+        
+        /* ✅ PREMIUM LOGO: No border, perfect containment, generous padding */
         .logo-box {
-            width: 90pt; height: 45pt; background: transparent; display: flex; align-items: center;
-            justify-content: center; border-radius: 3pt; flex-shrink: 0; overflow: hidden; border: 1pt solid #e2e8f0;
+            width: 100pt;
+            height: 50pt;
+            background: transparent;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            overflow: hidden;
         }
-        .logo-box img { width: 100%; height: 100%; object-fit: contain; padding: 4pt; }
+        .logo-box img { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: contain; 
+            /* 💡 PRO TIP: If using Cloudinary, append /g_auto,c_pad/ to the URL for AI smart-cropping */
+        }
         .logo-fallback {
-            display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
-            background: #f8fafc; color: #0f172a; font-weight: bold; font-size: 9pt; letter-spacing: 0.04em;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            color: #0f172a;
+            font-weight: 800;
+            font-size: 10pt;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
         }
-        .agency-info h1 { font-size: 12pt; font-weight: 800; text-transform: uppercase; letter-spacing: -0.02em; margin: 0 0 2pt 0; color: #020617; }
-        .agency-info p { margin: 1pt 0; color: #475569; font-weight: 500; font-size: 8.5pt; }
-        .status-badge { display: inline-flex; align-items: center; gap: 4pt; font-size: 8pt; font-weight: bold; text-transform: uppercase; letter-spacing: 0.04em; }
-        .status-signed { color: #065f46; }
-        .status-pending { color: #92400e; }
-        .secured-text { font-size: 7.5pt; color: #94a3b8; font-family: monospace; margin-top: 2pt; text-align: right; }
-        .meta-grid {
-            display: grid; grid-template-columns: repeat(4, 1fr); gap: 10pt; margin-top: 12pt;
-            border-top: 1pt solid #e2e8f0; background: #f8fafc; padding: 6pt 8pt; border-radius: 3pt;
+        
+        .agency-info h1 { 
+            font-size: 13pt; 
+            font-weight: 800; 
+            text-transform: uppercase; 
+            letter-spacing: -0.01em; 
+            margin: 0 0 3pt 0; 
+            color: #020617; 
         }
-        .meta-item p:first-child { font-size: 7.5pt; font-weight: bold; text-transform: uppercase; color: #0f172a; margin: 0 0 2pt 0; }
-        .meta-item p:last-child { font-weight: 600; color: #334155; margin: 0; font-size: 9pt; }
+        .agency-info p { 
+            margin: 1.5pt 0; 
+            color: #64748b; 
+            font-weight: 500; 
+            font-size: 8pt; 
+        }
+        
+        .header-status {
+            text-align: right;
+            padding-top: 2pt;
+        }
+
+        .status-badge { 
+            display: inline-flex; 
+            align-items: center; 
+            gap: 4pt; 
+            font-size: 7.5pt; 
+            font-weight: 700; 
+            text-transform: uppercase; 
+            letter-spacing: 0.05em; 
+            padding: 3pt 6pt;
+            border-radius: 3pt;
+        }
+        .status-signed { 
+            color: #065f46; 
+            background: #ecfdf5;
+            border: 1pt solid #a7f3d0;
+        }
+        .status-pending { 
+            color: #92400e; 
+            background: #fffbeb;
+            border: 1pt solid #fde68a;
+        }
 
         /* ══════════════════════════════════════════════════════════
            TABLES & FINANCIALS
@@ -223,8 +286,8 @@
         .execution-block {
             display: flex;
             flex-direction: column;
-            align-items: flex-start; /* ✅ Left aligned */
-            text-align: left;        /* ✅ Left aligned */
+            align-items: flex-start;
+            text-align: left;
         }
 
         .execution-title {
@@ -240,8 +303,8 @@
             width: 100%;
             min-height: 38pt;
             display: flex;
-            align-items: flex-end;      /* ✅ Bottom aligned so Name/Date lines match perfectly */
-            justify-content: flex-start; /* ✅ Left aligned */
+            align-items: flex-end;
+            justify-content: flex-start;
             margin-bottom: 4pt;
         }
 
@@ -272,7 +335,44 @@
         .audit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3pt 14pt; font-family: monospace; font-size: 7.5pt; color: #cbd5e1; }
         .audit-label { color: #64748b; }
 
-        .document-footer { margin-top: 16pt; padding-top: 6pt; border-top: 1pt solid #e2e8f0; display: flex; justify-content: space-between; font-size: 7.5pt; color: #94a3b8; font-family: monospace; }
+        /* ═══════════════════════════════════════════════════════════
+           PREMIUM FOOTER (Replaces noisy top meta-grid)
+           ═══════════════════════════════════════════════════════════ */
+        .document-footer { 
+            margin-top: 24pt; 
+            padding-top: 8pt; 
+            border-top: 1pt solid #e2e8f0; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            font-size: 7.5pt; 
+            color: #94a3b8; 
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            letter-spacing: 0.02em;
+        }
+        .footer-meta {
+            display: flex;
+            align-items: center;
+            gap: 10pt;
+        }
+        .footer-meta div {
+            color: #64748b;
+            font-weight: 600;
+        }
+        .footer-meta span {
+            color: #334155;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+        .footer-divider {
+            color: #cbd5e1;
+            font-weight: 400;
+        }
+        .footer-powered {
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            color: #cbd5e1;
+        }
     </style>
 </head>
 <body>
@@ -284,47 +384,35 @@
                 <div class="logo-section">
                     <div class="logo-box">
                         {% if tenant_profile and tenant_profile.logo_url %}
+                            <!-- 💡 PRO TIP: If using Cloudinary, append /g_auto,c_pad/ to the URL for AI smart-cropping -->
                             <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
                         {% else %}
-                            <div class="logo-fallback">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4pt;">
-                                    <path d="M3 21h18M5 21V7l8-4 8 4v14M8 21v-9a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v9"/>
-                                </svg>
-                                <span>{{ (tenant.name[:8] if tenant else 'AGENCY') | upper }}</span>
-                            </div>
+                            <div class="logo-fallback">{{ (tenant.name[:12] if tenant else 'AGENCY') | upper }}</div>
                         {% endif %}
                     </div>
                     <div class="agency-info">
                         <h1>{{ tenant.name if tenant else 'Rental Agency' }}</h1>
                         <p>{{ tenant_profile.address if tenant_profile else '—' }}</p>
-                        <p>Tel: {{ tenant_profile.phone if tenant_profile and tenant_profile.phone else '—' }}</p>
-                        <p>Email: {{ tenant_profile.email if tenant_profile and tenant_profile.email else '—' }}</p>
+                        <p>{{ tenant_profile.phone if tenant_profile and tenant_profile.phone else '—' }} &nbsp;•&nbsp; {{ tenant_profile.email if tenant_profile and tenant_profile.email else '—' }}</p>
                     </div>
                 </div>
-                <div style="text-align: right;">
+                <div class="header-status">
                     <span class="status-badge {% if contract.signed_by_client %}status-signed{% else %}status-pending{% endif %}">
                         {% if contract.signed_by_client %}
                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
                                 <polyline points="9 12 11 14 15 10"></polyline>
                             </svg>
+                            FULLY EXECUTED
                         {% else %}
                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                                 <circle cx="12" cy="12" r="10"></circle>
                                 <path d="M12 6v6l4 2"></path>
                             </svg>
+                            PENDING SIGNATURE
                         {% endif %}
-                        {% if contract.signed_by_client %}SIGNED{% else %}PENDING{% endif %}
                     </span>
-                    <p class="secured-text">SECURED BY Rental Garage</p>
                 </div>
-            </div>
-
-            <div class="meta-grid">
-                <div class="meta-item"><p>Contract No</p><p>{{ contract.contract_number }}</p></div>
-                <div class="meta-item"><p>Issue Date</p><p>{{ contract.created_at.strftime('%d, %b, %Y') if contract.created_at else '—' }}</p></div>
-                <div class="meta-item"><p>Booking Ref</p><p>{{ booking.booking_number if booking and booking.booking_number else '—' }}</p></div>
-                <div class="meta-item"><p>Currency</p><p>{{ booking.currency_code if booking else 'KES' }}</p></div>
             </div>
         </header>
 
@@ -441,12 +529,48 @@
                     </tr>
                 </thead>
                 <tbody>
+                    {# ✅ Calculate extras to ensure the base rental total is mathematically correct #}
+                    {% set delivery = booking.delivery_fee | float if booking and booking.delivery_fee else 0 %}
+                    {% set tolls = booking.toll_fees | float if booking and booking.toll_fees else 0 %}
+                    {% set parking = booking.parking_fees | float if booking and booking.parking_fees else 0 %}
+                    {% set driver_total = driver_fees.driver_total | float if driver_fees and driver_fees.driver_total else 0 %}
+                    {% set extras = delivery + tolls + parking + driver_total %}
+                    {% set total_amt = booking.total_amount | float if booking and booking.total_amount else 0 %}
+                    {% set base_total = total_amt - extras %}
+
                     <tr>
                         <td>Vehicle Rental Charge</td>
                         <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(daily_rate|float) }}</td>
-                        <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(booking.total_amount|float) if booking and booking.total_amount else '0.00' }}</td>
+                        <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(base_total) }}</td>
                     </tr>
-                    {% if driver and driver_fees.driver_total > 0 %}
+
+                    {# ✅ ADDITIONAL CHARGES #}
+                    {% if delivery > 0 %}
+                    <tr>
+                        <td>Delivery Fee</td>
+                        <td class="text-right">—</td>
+                        <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(delivery) }}</td>
+                    </tr>
+                    {% endif %}
+
+                    {% if tolls > 0 %}
+                    <tr>
+                        <td>Toll Fees</td>
+                        <td class="text-right">—</td>
+                        <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(tolls) }}</td>
+                    </tr>
+                    {% endif %}
+
+                    {% if parking > 0 %}
+                    <tr>
+                        <td>Parking Fees</td>
+                        <td class="text-right">—</td>
+                        <td class="text-right">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(parking) }}</td>
+                    </tr>
+                    {% endif %}
+
+                    {# ✅ DRIVER FEES (Milestone 2) #}
+                    {% if driver and driver_total > 0 %}
                         {% if driver_fees.driver_daily > 0 %}
                         <tr>
                             <td>Driver Daily Fee</td>
@@ -469,9 +593,10 @@
                         </tr>
                         {% endif %}
                     {% endif %}
+                    
                     <tr class="total-row">
                         <td colspan="2" class="text-right" style="border-top: 2pt solid #e2e8f0;">Total Contract Value Due</td>
-                        <td class="text-right" style="border-top: 2pt solid #e2e8f0;">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(booking.total_amount|float) if booking and booking.total_amount else '0.00' }}</td>
+                        <td class="text-right" style="border-top: 2pt solid #e2e8f0;">{{ booking.currency_code if booking else 'KES' }} {{ '%.2f'|format(total_amt) }}</td>
                     </tr>
                 </tbody>
             </table>
@@ -609,9 +734,16 @@
             {% endif %}
         </section>
 
+        <!-- [COMPONENT: FOOTER] -->
         <footer class="document-footer">
-            <div>CONTRACT #{{ contract.contract_number }}</div>
-            <div>POWERED BY Rental Garage PLATFORM</div>
+            <div class="footer-meta">
+                <div>Contract: <span>{{ contract.contract_number }}</span></div>
+                <div class="footer-divider">•</div>
+                <div>Booking: <span>{{ booking.booking_number if booking else 'N/A' }}</span></div>
+            </div>
+            <div class="footer-powered">
+                POWERED BY RENTAL GARAGE
+            </div>
         </footer>
 
     </div>

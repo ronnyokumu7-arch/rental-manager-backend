@@ -3,7 +3,7 @@ import base64
 import asyncio
 import urllib.request
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Any
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -26,12 +26,16 @@ template_env = Environment(
 )
 
 
-async def resolve_signature_data_uri(signature_ref: Optional[str]) -> Optional[str]:
+async def resolve_signature_data_uri(obj: Any, attr_name: str = "signature_image_path") -> Optional[str]:
     """
     ✅ BULLETPROOF SIGNATURE RESOLVER (backend-aware)
-    Adapted for investor contracts.
+    Standardized to match contract_pdf.py: takes the ORM object + attribute name
+    so it works identically for investor_signature_path / agency_signature_path
+    and any future signature column. Resolves to an embedded data: URI that
+    survives PDF generation across storage backends.
     """
-    if not signature_ref:
+    ref = getattr(obj, attr_name, None) if not isinstance(obj, str) else obj
+    if not ref:
         return None
 
     loop = asyncio.get_running_loop()
@@ -41,7 +45,7 @@ async def resolve_signature_data_uri(signature_ref: Optional[str]) -> Optional[s
             with urllib.request.urlopen(url, timeout=15) as resp:
                 return resp.read()
         except Exception as e:
-            print(f"❌ Failed to fetch signature bytes: {e}")
+            print(f"❌ Failed to fetch signature bytes ({attr_name}): {e}")
             return None
 
     def _to_data_uri(data: bytes) -> str:
@@ -50,8 +54,8 @@ async def resolve_signature_data_uri(signature_ref: Optional[str]) -> Optional[s
     # 1. ✅ Authenticated API URL produced by upload_file()
     api_base = get_settings().public_url_base.rstrip("/")
     files_prefix = f"{api_base}/api/v1/files/"
-    if signature_ref.startswith(files_prefix):
-        relative_path = signature_ref[len(files_prefix):].lstrip("/")
+    if ref.startswith(files_prefix):
+        relative_path = ref[len(files_prefix):].lstrip("/")
 
         # a) Cloudinary backend → short-lived signed URL → fetch bytes
         backend = get_backend()
@@ -61,7 +65,7 @@ async def resolve_signature_data_uri(signature_ref: Optional[str]) -> Optional[s
             if data:
                 return _to_data_uri(data)
 
-        # b) Local backend → read from disk
+        # b) Local backend (or signed_url failure) → read from disk
         upload_dir = Path(get_settings().uploads_dir).resolve()
         local_path = (upload_dir / relative_path).resolve()
         try:
@@ -72,30 +76,30 @@ async def resolve_signature_data_uri(signature_ref: Optional[str]) -> Optional[s
         except ValueError:
             pass
 
-        print(f"⚠️ Could not resolve signature via storage backend: {signature_ref}")
+        print(f"⚠️ Could not resolve signature via storage backend ({attr_name}): {ref}")
         return None
 
     # 2. Direct Cloudinary / public http(s) URL
-    if signature_ref.startswith("http://") or signature_ref.startswith("https://"):
-        data = await loop.run_in_executor(None, _fetch, signature_ref)
+    if ref.startswith("http://") or ref.startswith("https://"):
+        data = await loop.run_in_executor(None, _fetch, ref)
         if data:
             return _to_data_uri(data)
         return None
 
     # 3. Data URI stored directly in the column
-    if signature_ref.startswith("data:"):
-        return signature_ref
+    if ref.startswith("data:"):
+        return ref
 
-    # 4. Legacy local file path
-    if os.path.exists(signature_ref):
+    # 4. Legacy local file path (ephemeral — does not survive Render deploys)
+    if os.path.exists(ref):
         try:
-            with open(signature_ref, "rb") as img_file:
+            with open(ref, "rb") as img_file:
                 return _to_data_uri(img_file.read())
         except Exception as e:
-            print(f"❌ Error encoding local signature: {e}")
+            print(f"❌ Error encoding local signature ({attr_name}): {e}")
             return None
 
-    print(f"⚠️ Signature reference unusable: {signature_ref}")
+    print(f"⚠️ Signature reference unusable ({attr_name}): {ref}")
     return None
 
 
@@ -118,13 +122,14 @@ async def generate_investor_contract_pdf(contract: InvestorContract, db: AsyncSe
         tenant_profile = (await db.execute(profile_stmt)).scalars().first()
 
     # 2. ✅ SIGNATURES: resolve via storage service (survives deploys)
+    #    Standardized call pattern (obj, attr_name) — identical to contract_pdf.py.
     investor_signature_uri = None
     agency_signature_uri = None
-    
+
     if getattr(contract, "signed_by_investor", False):
-        investor_signature_uri = await resolve_signature_data_uri(getattr(contract, "investor_signature_path", None))
+        investor_signature_uri = await resolve_signature_data_uri(contract, "investor_signature_path")
     if getattr(contract, "signed_by_agency", False):
-        agency_signature_uri = await resolve_signature_data_uri(getattr(contract, "agency_signature_path", None))
+        agency_signature_uri = await resolve_signature_data_uri(contract, "agency_signature_path")
 
     # 3. PREPARE CONTEXT FOR JINJA2 TEMPLATE
     context = {
@@ -135,7 +140,7 @@ async def generate_investor_contract_pdf(contract: InvestorContract, db: AsyncSe
         "tenant_profile": tenant_profile,
         "investor_signature_uri": investor_signature_uri,
         "agency_signature_uri": agency_signature_uri,
-        "total_value": (Decimal(str(contract.lease_rate)) * Decimal(contract.duration_months)) 
+        "total_value": (Decimal(str(contract.lease_rate)) * Decimal(contract.duration_months))
                        if contract.duration_months and contract.lease_rate_type == 'monthly' else None,
     }
 
@@ -143,28 +148,50 @@ async def generate_investor_contract_pdf(contract: InvestorContract, db: AsyncSe
     template = template_env.get_template("investor_contract_premium.html")
     html_content = template.render(**context)
 
-    # 5. OPTIMIZED PDF GENERATION WITH BROWSER POOL
+    # 5. OPTIMIZED PDF GENERATION WITH BROWSER POOL & AUTO-RETRY
+    #    ✅ Margins set to 0mm: the template's @page rule (12mm 15mm) owns the
+    #    margins. Passing 15mm here too double-margins the page and misaligns
+    #    it vs the rental contract. This matches contract_pdf.py exactly.
     try:
         browser = await browser_pool.get_browser()
         page = await browser.newPage()
         await page.setContent(html_content)
-        await asyncio.sleep(0.3) # Allow fonts/styles to settle
+        await asyncio.sleep(0.3)  # Allow fonts/styles to settle
 
         pdf_bytes = await page.pdf(
             format='A4',
             printBackground=True,
-            margin={
-                'top': '15mm',
-                'right': '15mm',
-                'bottom': '15mm',
-                'left': '15mm'
-            }
+            margin={'top': '0mm', 'right': '0mm', 'bottom': '0mm', 'left': '0mm'}
         )
 
-        await page.close() # ✅ FIXED: Was closeDP()
+        await page.close()
         return pdf_bytes
 
     except Exception as e:
+        error_msg = str(e)
+        # ✅ AUTO-RETRY: If the browser died mid-request, force a restart and try once more.
+        if "Connection is closed" in error_msg or "Connection closed" in error_msg:
+            print("⚠️ Browser died mid-render (investor). Forcing restart and retrying...")
+            try:
+                browser = await browser_pool.get_browser(force_restart=True)
+                page = await browser.newPage()
+                await page.setContent(html_content)
+                await asyncio.sleep(0.3)
+
+                pdf_bytes = await page.pdf(
+                    format='A4',
+                    printBackground=True,
+                    margin={'top': '0mm', 'right': '0mm', 'bottom': '0mm', 'left': '0mm'}
+                )
+                await page.close()
+                return pdf_bytes
+            except Exception as retry_err:
+                print(f"❌ Investor PDF retry failed: {retry_err}")
+                import traceback
+                traceback.print_exc()
+                raise retry_err
+
+        # If it's not a connection error, log and raise normally
         print(f"❌ PUPPETEER ERROR (Investor Contract): {e}")
         import traceback
         traceback.print_exc()

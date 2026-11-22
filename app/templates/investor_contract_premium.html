@@ -39,7 +39,6 @@
         .no-break { break-inside: avoid; page-break-inside: avoid; }
         .header { break-inside: avoid; page-break-inside: avoid; }
         .charges-table { break-inside: avoid; page-break-inside: avoid; }
-        .signature-box { break-inside: avoid; page-break-inside: avoid; }
         .audit-stamp { break-inside: avoid; page-break-inside: avoid; }
 
         .section-title {
@@ -155,39 +154,68 @@
         .charges-table .text-right { text-align: right; }
         .charges-table .total-row { background: #f8fafc; font-weight: bold; color: #020617; }
 
-        .signature-box {
-            margin-top: 10pt; padding: 8pt; background: #f8fafc;
-            border: 1pt solid #e2e8f0; border-radius: 3pt;
-            break-inside: avoid; page-break-inside: avoid;
-        }
-        .signature-quote {
-            font-size: 8.5pt; color: #475569; font-family: Georgia, serif;
-            font-style: italic; margin: 0 0 6pt 0; line-height: 1.4;
-        }
-        .signature-row {
-            display: flex; justify-content: space-between;
-            align-items: flex-end; padding-top: 2pt;
-        }
-        .signature-label { font-size: 8.5pt; font-weight: bold; color: #0f172a; }
-        .signature-text { text-align: right; max-width: 45%; }
-        .signature-name {
-            font-family: Georgia, serif; font-style: italic; font-weight: bold;
-            color: #1e293b; font-size: 11pt; margin: 0;
-        }
-        .signature-date { font-size: 8pt; color: #94a3b8; font-family: monospace; margin: 1pt 0 0 0; }
-        .signature-image { max-height: 40pt; max-width: 150pt; margin-bottom: 2pt; display: block; }
-
         .legal-text { color: #475569; font-weight: 500; font-size: 9.5pt; margin-bottom: 10pt; line-height: 1.45; }
-        
+        .policy-list { list-style-type: disc; padding-left: 14pt; margin: 0 0 8pt 0; color: #475569; font-weight: 500; font-size: 9pt; }
+        .policy-list li { margin-bottom: 2pt; white-space: pre-line; }
+
+        /* ═══════════════════════════════════════════════════════════
+           ✅ STANDARDIZED EXECUTION SECTION
+           Matches the main rental contract design system.
+           ═══════════════════════════════════════════════════════════ */
         .execution-grid {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 20pt; padding-top: 6pt;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20pt;
+            margin-top: 10pt;
+            break-inside: avoid;
+            page-break-inside: avoid;
         }
-        .execution-block { border-top: 1pt solid #cbd5e1; padding-top: 6pt; }
+
+        .execution-block {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            text-align: left;
+        }
+
         .execution-title {
-            font-weight: bold; text-transform: uppercase; color: #0f172a;
-            margin: 0 0 5pt 0; font-size: 8.5pt;
+            font-weight: bold;
+            text-transform: uppercase;
+            color: #0f172a;
+            margin: 0 0 6pt 0;
+            font-size: 8.5pt;
+            letter-spacing: 0.03em;
         }
-        .execution-detail { color: #475569; font-weight: 500; margin: 2pt 0; font-size: 8.5pt; }
+
+        .execution-sig-slot {
+            width: 100%;
+            min-height: 38pt;
+            display: flex;
+            align-items: flex-end;
+            justify-content: flex-start;
+            margin-bottom: 4pt;
+        }
+
+        .execution-sig-img {
+            max-height: 36pt;
+            max-width: 140pt;
+            display: block;
+        }
+
+        .execution-sig-empty {
+            font-size: 7.5pt;
+            color: #94a3b8;
+            font-style: italic;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .execution-detail {
+            color: #475569;
+            font-weight: 500;
+            margin: 2pt 0;
+            font-size: 8.5pt;
+        }
 
         .audit-stamp {
             margin-top: 14pt; padding: 10pt; background: #0f172a;
@@ -356,7 +384,7 @@
             <p class="legal-text">
                 This agreement constitutes the complete and legally binding vehicle lease contract between the Investor (Lessor) and the Agency (Lessee). By affixing digital signatures below, both parties certify acceptance of all terms, schedule rates, and conditions across this document.
             </p>
-            <ul class="policy-list" style="list-style-type: disc; padding-left: 14pt; margin: 0 0 8pt 0; color: #475569; font-weight: 500; font-size: 9pt;">
+            <ul class="policy-list">
                 <li>The Agency agrees to pay the Investor the agreed lease rate as specified in Section 4.</li>
                 <li>The Agency shall maintain comprehensive insurance coverage on the vehicle during the lease period.</li>
                 <li>The Agency is responsible for routine maintenance and servicing of the vehicle.</li>
@@ -368,33 +396,34 @@
         <section class="contract-section">
             <h2 class="section-title">6. Digital Execution & Signatures</h2>
 
+            <!-- ✅ STANDARDIZED: Matches main contract design system -->
             <div class="execution-grid">
                 <!-- Investor Signature -->
                 <div class="execution-block">
                     <p class="execution-title">Investor (Lessor)</p>
+                    <div class="execution-sig-slot">
+                        {% if contract.signed_by_investor and investor_signature_uri %}
+                            <img src="{{ investor_signature_uri }}" class="execution-sig-img" alt="Investor Signature" />
+                        {% else %}
+                            <span class="execution-sig-empty">Signature pending</span>
+                        {% endif %}
+                    </div>
                     <p class="execution-detail">Name: {{ investor.full_name if investor else '—' }}</p>
                     <p class="execution-detail">Date: {{ contract.investor_signed_at.strftime('%d, %b, %Y') if contract.investor_signed_at else '—' }}</p>
-                    
-                    <div style="margin-top: 12pt; height: 45pt; position: relative;">
-                        {% if contract.signed_by_investor and investor_signature_uri %}
-                            <img src="{{ investor_signature_uri }}" style="display: block; max-height: 40pt; max-width: 140pt; margin-bottom: 2pt;" alt="Investor Signature" />
-                        {% endif %}
-                        <div style="border-bottom: 1pt solid #0f172a; position: absolute; bottom: 0; left: 0; width: 100%;"></div>
-                    </div>
                 </div>
 
                 <!-- Agency Signature -->
                 <div class="execution-block">
                     <p class="execution-title">Agency Representative (Lessee)</p>
+                    <div class="execution-sig-slot">
+                        {% if contract.signed_by_agency and agency_signature_uri %}
+                            <img src="{{ agency_signature_uri }}" class="execution-sig-img" alt="Agency Signature" />
+                        {% else %}
+                            <span class="execution-sig-empty">Signature pending</span>
+                        {% endif %}
+                    </div>
                     <p class="execution-detail">Name: {{ tenant.name if tenant else 'Agency Operations' }}</p>
                     <p class="execution-detail">Date: {{ contract.agency_signed_at.strftime('%d, %b, %Y') if contract.agency_signed_at else '—' }}</p>
-                    
-                    <div style="margin-top: 12pt; height: 45pt; position: relative;">
-                        {% if contract.signed_by_agency and agency_signature_uri %}
-                            <img src="{{ agency_signature_uri }}" style="display: block; max-height: 40pt; max-width: 140pt; margin-bottom: 2pt;" alt="Agency Signature" />
-                        {% endif %}
-                        <div style="border-bottom: 1pt solid #0f172a; position: absolute; bottom: 0; left: 0; width: 100%;"></div>
-                    </div>
                 </div>
             </div>
 
