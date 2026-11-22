@@ -129,7 +129,8 @@
         /* ── TABLES ───────────────────────────────────────────────── */
         .currency-note { font-size: 8pt; color: #57534E; font-weight: 700; margin-bottom: 6pt; }
 
-        .data-table { width: 100%; border-collapse: collapse; margin-bottom: 10pt; text-align: left; }
+        /* ✅ Table alignment fix: padding-left is now 0 to align with headers */
+        .data-table { width: 100%; border-collapse: collapse; margin-bottom: 20pt; text-align: left; }
         
         .data-table th { 
             background: #FDFCFA; 
@@ -141,6 +142,12 @@
             padding: 8pt 10pt; 
             border-top: 1pt solid #E8E4DE;
             border-bottom: 1pt solid #E8E4DE;
+        }
+        
+        /* First column padding reset for alignment */
+        .data-table th:first-child,
+        .data-table td:first-child {
+            padding-left: 0;
         }
         
         .data-table td { 
@@ -159,9 +166,9 @@
             display: grid; 
             grid-template-columns: 1fr 1fr; 
             gap: 20pt; 
-            margin-top: 10pt; 
+            margin-top: 0; 
             break-inside: avoid;
-            align-items: start; /* ✅ Aligns top of left and right columns */
+            align-items: start; 
         }
         
         .payment-info { display: flex; flex-direction: column; gap: 12pt; }
@@ -176,21 +183,18 @@
             color: #57534E; 
         }
         
-        /* Subtotal Row with Background */
+        /* Subtotal Row with Background - REMOVED BOLD */
         .subtotal-row td {
             background: #FDFCFA;
-            font-weight: 700;
             color: #1C1917;
-            /* ✅ No top padding, ensuring perfect alignment with left column */
             padding-top: 4pt; 
             padding-bottom: 4pt;
         }
         .subtotal-row td:first-child { border-top-left-radius: 4pt; border-bottom-left-radius: 4pt; }
         .subtotal-row td:last-child { border-top-right-radius: 4pt; border-bottom-right-radius: 4pt; }
 
-        /* VAT Row */
+        /* VAT Row - REMOVED BOLD */
         .vat-row td {
-            font-weight: 700;
             color: #1C1917;
             padding-top: 4pt;
             padding-bottom: 4pt;
@@ -198,7 +202,7 @@
 
         /* ✅ Clean Total Row - Thin Divider */
         .total-row td {
-            border-top: 1pt solid #E8E4DE; /* ✅ Thin line */
+            border-top: 1pt solid #E8E4DE; 
             padding-top: 10pt;
             background: transparent;
         }
@@ -227,8 +231,8 @@
                 <h1 class="invoice-title">Invoice</h1>
                 <div class="meta-row">
                     <div><span class="meta-label">Invoice No:</span> <span class="text-brand">{{ invoice.invoice_number }}</span></div>
-                    <div><span class="meta-label">Date:</span> {{ invoice.created_at.strftime('%Y-%m-%d') if invoice.created_at else '—' }}</div>
-                    <div><span class="meta-label">Due:</span> {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date else '—' }}</div>
+                    <!-- ✅ Replaced 2 dates with only Due Date -->
+                    <div><span class="meta-label">Due Date:</span> {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date else '—' }}</div>
                 </div>
             </div>
             
@@ -324,9 +328,7 @@
             </tbody>
         </table>
         
-        <div style="font-size: 8.5pt; color: #57534E; margin-bottom: 20pt;">
-            Number of items: 1
-        </div>
+        <!-- ✅ Removed "Number of items" text block entirely -->
 
         <!-- BOTTOM SPLIT -->
         <div class="bottom-split">
@@ -352,7 +354,7 @@
             <div>
                 <table class="totals-table">
                     <tbody>
-                        <!-- ✅ Background only on Subtotal Row, zero top padding for alignment -->
+                        <!-- ✅ Background only on Subtotal Row, bold removed -->
                         <tr class="subtotal-row">
                             <td>Subtotal</td>
                             <td class="text-right">{{ '%.2f'|format(invoice.amount_due) }}</td>
