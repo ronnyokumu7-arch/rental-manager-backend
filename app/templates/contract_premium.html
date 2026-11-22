@@ -59,7 +59,7 @@
         .divider { border-top: 1pt dashed #e2e8f0; margin: 6pt 0; padding-top: 6pt; }
 
         /* ═══════════════════════════════════════════════════════════
-           HEADER (Premium Minimalist)
+           HEADER (Premium Invoice-Style Symmetry)
            ═══════════════════════════════════════════════════════════ */
         .header { 
             margin-bottom: 16pt; 
@@ -69,24 +69,39 @@
         .header-top { 
             display: flex; 
             justify-content: space-between; 
-            align-items: center; /* Aligns badge and logo vertically */
+            align-items: center; /* Perfect vertical centering */
             gap: 16pt; 
         }
         
-        /* ✅ FIXED: Tighter logo grouping and alignment */
-        .logo-section { 
-            display: flex; 
-            align-items: center; 
-            gap: 12pt; 
+        /* Left: Company Details */
+        .agency-info { 
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .agency-info h1 { 
+            font-size: 13pt; 
+            font-weight: 800; 
+            text-transform: uppercase; 
+            letter-spacing: -0.01em; 
+            margin: 0 0 2pt 0; 
+            color: #020617; 
+        }
+        .agency-info p { 
+            margin: 1pt 0; 
+            color: #64748b; 
+            font-weight: 500; 
+            font-size: 8pt; 
         }
         
+        /* Right: Logo (Moved & Sized like Invoice) */
         .logo-box {
-            width: 90pt;
+            width: 120pt;
             height: 45pt;
             background: transparent;
             display: flex;
             align-items: center;
-            justify-content: center;
+            justify-content: flex-end;
             flex-shrink: 0;
             overflow: hidden;
         }
@@ -103,50 +118,9 @@
             height: 100%;
             color: #0f172a;
             font-weight: 800;
-            font-size: 10pt;
+            font-size: 11pt;
             letter-spacing: 0.05em;
             text-transform: uppercase;
-        }
-        
-        .agency-info h1 { 
-            font-size: 13pt; 
-            font-weight: 800; 
-            text-transform: uppercase; 
-            letter-spacing: -0.01em; 
-            margin: 0 0 2pt 0; 
-            color: #020617; 
-        }
-        .agency-info p { 
-            margin: 1pt 0; 
-            color: #64748b; 
-            font-weight: 500; 
-            font-size: 8pt; 
-        }
-        
-        .header-status {
-            text-align: right;
-        }
-
-        .status-badge { 
-            display: inline-flex; 
-            align-items: center; 
-            gap: 4pt; 
-            font-size: 7.5pt; 
-            font-weight: 700; 
-            text-transform: uppercase; 
-            letter-spacing: 0.05em; 
-            padding: 3pt 6pt;
-            border-radius: 3pt;
-        }
-        .status-signed { 
-            color: #065f46; 
-            background: #ecfdf5;
-            border: 1pt solid #a7f3d0;
-        }
-        .status-pending { 
-            color: #92400e; 
-            background: #fffbeb;
-            border: 1pt solid #fde68a;
         }
 
         /* ══════════════════════════════════════════════════════════
@@ -378,36 +352,20 @@
         <!-- [COMPONENT: HEADER] -->
         <header class="header">
             <div class="header-top">
-                <div class="logo-section">
-                    <div class="logo-box">
-                        {% if tenant_profile and tenant_profile.logo_url %}
-                            <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
-                        {% else %}
-                            <div class="logo-fallback">{{ (tenant.name[:12] if tenant else 'AGENCY') | upper }}</div>
-                        {% endif %}
-                    </div>
-                    <div class="agency-info">
-                        <h1>{{ tenant.name if tenant else 'Rental Agency' }}</h1>
-                        <p>{{ tenant_profile.address if tenant_profile else '—' }}</p>
-                        <p>{{ tenant_profile.phone if tenant_profile and tenant_profile.phone else '—' }} &nbsp;•&nbsp; {{ tenant_profile.email if tenant_profile and tenant_profile.email else '—' }}</p>
-                    </div>
+                <!-- Left: Company Details -->
+                <div class="agency-info">
+                    <h1>{{ tenant.name if tenant else 'Rental Agency' }}</h1>
+                    <p>{{ tenant_profile.address if tenant_profile else '—' }}</p>
+                    <p>{{ tenant_profile.phone if tenant_profile and tenant_profile.phone else '—' }} &nbsp;•&nbsp; {{ tenant_profile.email if tenant_profile and tenant_profile.email else '—' }}</p>
                 </div>
-                <div class="header-status">
-                    <span class="status-badge {% if contract.signed_by_client %}status-signed{% else %}status-pending{% endif %}">
-                        {% if contract.signed_by_client %}
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-                                <polyline points="9 12 11 14 15 10"></polyline>
-                            </svg>
-                            FULLY EXECUTED
-                        {% else %}
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                <circle cx="12" cy="12" r="10"></circle>
-                                <path d="M12 6v6l4 2"></path>
-                            </svg>
-                            PENDING SIGNATURE
-                        {% endif %}
-                    </span>
+                
+                <!-- Right: Logo -->
+                <div class="logo-box">
+                    {% if tenant_profile and tenant_profile.logo_url %}
+                        <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
+                    {% else %}
+                        <div class="logo-fallback">{{ (tenant.name[:12] if tenant else 'AGENCY') | upper }}</div>
+                    {% endif %}
                 </div>
             </div>
         </header>
@@ -676,4 +634,35 @@
                 </div>
             {% endif %}
 
-            <div class="execution-grid
+            <div class="execution-grid">
+                <div class="execution-block">
+                    <p class="execution-title">Company Representative</p>
+                    <div class="execution-sig-slot">
+                        {% if company_signature_data_uri %}
+                            <img src="{{ company_signature_data_uri }}" class="execution-sig-img" alt="Company Signature" />
+                        {% else %}
+                            <span class="execution-sig-empty">Signature pending</span>
+                        {% endif %}
+                    </div>
+                    <p class="execution-detail">Name: {{ tenant.name if tenant else 'Agency Operations' }}</p>
+                    <p class="execution-detail">Date: {{ contract.created_at.strftime('%d, %b, %Y') if contract.created_at else '—' }}</p>
+                </div>
+
+                <div class="execution-block">
+                    <p class="execution-title">Renter / Client</p>
+                    <div class="execution-sig-slot">
+                        {% if contract.signed_by_client and signature_data_uri %}
+                            <img src="{{ signature_data_uri }}" class="execution-sig-img" alt="Client Signature" />
+                        {% else %}
+                            <span class="execution-sig-empty">Signature pending</span>
+                        {% endif %}
+                    </div>
+                    <p class="execution-detail">Name: {{ client.full_name if client else '—' }}</p>
+                    <p class="execution-detail">Date: {{ contract.client_signed_at.strftime('%d, %b, %Y') if contract.client_signed_at else contract.created_at.strftime('%d, %b, %Y') }}</p>
+                </div>
+            </div>
+
+            {% if contract.signed_by_client %}
+            <div class="audit-stamp no-break">
+                <div class="audit-header">
+                    <div class
