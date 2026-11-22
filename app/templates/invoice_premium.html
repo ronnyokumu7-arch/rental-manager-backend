@@ -5,7 +5,7 @@
     <title>Invoice - {{ invoice.invoice_number }}</title>
     <style>
         /* ═══════════════════════════════════════════════════════════
-           PREMIUM INVOICE - BRAND ALIGNED
+           PREMIUM INVOICE - BRAND ALIGNED & COMPLIANT
            ═══════════════════════════════════════════════════════════ */
         @page { 
             size: A4; 
@@ -25,7 +25,7 @@
             font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; 
             font-size: 9.5pt; 
             line-height: 1.5; 
-            color: #1C1917; /* --color-ink-primary */
+            color: #1C1917; 
             background: #FFFFFF; 
             -webkit-print-color-adjust: exact; 
             print-color-adjust: exact; 
@@ -42,8 +42,8 @@
         }
         
         .logo-box { 
-            width: 100pt; 
-            height: 50pt; 
+            width: 120pt; 
+            height: 55pt; 
             display: flex; 
             align-items: flex-start; 
             justify-content: flex-start; 
@@ -56,16 +56,16 @@
         }
         .logo-fallback { 
             font-weight: 900; 
-            font-size: 14pt; 
+            font-size: 16pt; 
             color: #1C1917; 
-            letter-spacing: -0.02em;
+            letter-spacing: -0.03em;
         }
         .logo-fallback span { color: #7C3AED; } /* Brand Purple */
 
         .qr-code {
             width: 70pt;
             height: 70pt;
-            background: #FDFCFA; /* --color-surface-warm */
+            background: #FDFCFA; 
             border: 1pt solid #E8E4DE;
             display: flex;
             align-items: center;
@@ -111,7 +111,7 @@
         
         .address-label { 
             display: inline-block;
-            background: #1C1917; /* Dark Ink */
+            background: #1C1917; 
             color: #FFFFFF; 
             font-size: 8pt; 
             font-weight: 700; 
@@ -130,7 +130,7 @@
         .data-table { width: 100%; border-collapse: collapse; margin-bottom: 10pt; text-align: left; }
         
         .data-table th { 
-            background: #FDFCFA; /* --color-surface-warm */
+            background: #FDFCFA; 
             color: #1C1917; 
             font-size: 8pt; 
             font-weight: 700; 
@@ -222,10 +222,10 @@
         <div class="header-meta-grid">
             <div class="meta-row">
                 <div><span class="meta-label">Invoice No:</span> {{ invoice.invoice_number }}</div>
-                <div><span class="meta-label">SCU ID:</span> KRASRN000574156</div> 
+                <div><span class="meta-label">Status:</span> {{ invoice.status.value | title if invoice.status else '—' }}</div> 
             </div>
             <div class="meta-row">
-                <div><span class="meta-label">Receipt Signature:</span> EBFG000078</div> 
+                <div><span class="meta-label">Due Date:</span> {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date else '—' }}</div> 
             </div>
         </div>
 
@@ -234,22 +234,42 @@
             <div class="address-box">
                 <span class="address-label">Sale From:</span>
                 <div class="address-name">{{ tenant.name if tenant else 'Rental Agency' }}</div>
-                <div class="address-detail">PIN: {{ tenant_profile.tax_pin if tenant_profile and tenant_profile.tax_pin else 'A009158579K' }}</div>
-                <div class="address-detail">{{ tenant_profile.email if tenant_profile and tenant_profile.email else '—' }}</div>
-                <div class="address-detail">{{ tenant_profile.phone if tenant_profile and tenant_profile.phone else '—' }}, {{ tenant_profile.address if tenant_profile else '—' }}</div>
+                <!-- Only show PIN if it exists -->
+                {% if tenant_profile and tenant_profile.tax_pin %}
+                <div class="address-detail">PIN: {{ tenant_profile.tax_pin }}</div>
+                {% endif %}
+                {% if tenant_profile and tenant_profile.email %}
+                <div class="address-detail">{{ tenant_profile.email }}</div>
+                {% endif %}
+                {% if tenant_profile and tenant_profile.phone %}
+                <div class="address-detail">{{ tenant_profile.phone }}</div>
+                {% endif %}
+                {% if tenant_profile and tenant_profile.address %}
+                <div class="address-detail">{{ tenant_profile.address }}</div>
+                {% endif %}
             </div>
 
             <div class="address-box">
                 <span class="address-label">Sale To:</span>
                 <div class="address-name">{{ client.full_name if client else 'Client Name' }}</div>
-                <div class="address-detail">PIN: {{ client.tax_pin if client and client.tax_pin else 'P051098709H' }}</div>
-                <div class="address-detail">{{ client.email if client and client.email else '—' }}</div>
-                <div class="address-detail">{{ client.phone if client else '—' }}</div>
+                <!-- Only show PIN if it exists -->
+                {% if client and client.tax_pin %}
+                <div class="address-detail">PIN: {{ client.tax_pin }}</div>
+                {% endif %}
+                {% if client and client.email %}
+                <div class="address-detail">{{ client.email }}</div>
+                {% endif %}
+                {% if client and client.phone %}
+                <div class="address-detail">{{ client.phone }}</div>
+                {% endif %}
             </div>
 
             <div class="address-box">
-                <span class="address-label">CU Invoice Number:</span>
-                <div class="address-name">{{ invoice.invoice_number }}/7</div>
+                <span class="address-label">Invoice Reference:</span>
+                <div class="address-name">{{ invoice.invoice_number }}</div>
+                {% if booking and booking.booking_number %}
+                <div class="address-detail">Booking: {{ booking.booking_number }}</div>
+                {% endif %}
             </div>
         </div>
 
@@ -281,8 +301,8 @@
                     <td class="text-right">{{ '%.2f'|format(daily_rate) }}</td>
                     <td class="text-right">NON VAT</td>
                     <td class="text-right">0.00</td>
-                    <td class="text-right">3,600.00</td>
-                    <td class="text-right font-bold">{{ '%.2f'|format(amount_due) }}</td>
+                    <td class="text-right">{{ '%.2f'|format(invoice.discount_amount) if invoice.discount_amount else '0.00' }}</td>
+                    <td class="text-right font-bold">{{ '%.2f'|format(invoice.amount_due) }}</td>
                 </tr>
             </tbody>
         </table>
@@ -297,18 +317,20 @@
             <div class="payment-info">
                 <div>
                     <div class="info-block-title">Payment Method:</div>
-                    <div class="info-block-text">mpesa</div>
+                    <div class="info-block-text">M-Pesa / Bank Transfer</div>
                 </div>
                 <div>
                     <div class="info-block-title">Terms & Conditions:</div>
-                    <div class="info-block-text">—</div>
+                    <div class="info-block-text">Payment due by {{ invoice.due_date.strftime('%d %b %Y') if invoice.due_date else 'the due date' }}.</div>
                 </div>
+                {% if invoice.notes %}
                 <div>
                     <div class="info-block-title">Note:</div>
-                    <div class="info-block-text">{{ invoice.notes if invoice.notes else '—' }}</div>
+                    <div class="info-block-text">{{ invoice.notes }}</div>
                 </div>
+                {% endif %}
                 
-                <!-- ✅ UPDATED: RentalGarage Branding -->
+                <!-- RentalGarage Branding -->
                 <div style="margin-top: 30pt; font-size: 18pt; font-weight: 900; color: #1C1917; letter-spacing: -0.03em;">
                     Rental<span style="color: #7C3AED;">Garage</span>
                 </div>
@@ -327,7 +349,7 @@
                     <tbody>
                         <tr>
                             <td>NON VAT</td>
-                            <td class="text-right">{{ '%.2f'|format(amount_due) }}</td>
+                            <td class="text-right">{{ '%.2f'|format(invoice.amount_due) }}</td>
                             <td class="text-right">0.00</td>
                         </tr>
                     </tbody>
@@ -337,7 +359,7 @@
                     <tbody>
                         <tr>
                             <td class="grand-total-label">Subtotal</td>
-                            <td class="text-right" style="font-weight: 700; color: #1C1917;">{{ '%.2f'|format(amount_due) }}</td>
+                            <td class="text-right" style="font-weight: 700; color: #1C1917;">{{ '%.2f'|format(invoice.amount_due) }}</td>
                         </tr>
                         <tr>
                             <td class="grand-total-label">Total VAT</td>
@@ -345,11 +367,11 @@
                         </tr>
                         <tr>
                             <td class="grand-total-label">Total Discount</td>
-                            <td class="text-right" style="font-weight: 700; color: #1C1917;">3,600.00</td>
+                            <td class="text-right" style="font-weight: 700; color: #1C1917;">{{ '%.2f'|format(invoice.discount_amount) if invoice.discount_amount else '0.00' }}</td>
                         </tr>
                         <tr>
                             <td class="grand-total-label">Total Amount</td>
-                            <td class="text-right grand-total-value">{{ '%.2f'|format(balance) }}</td>
+                            <td class="text-right grand-total-value">{{ '%.2f'|format(invoice.amount_due) }}</td>
                         </tr>
                     </tbody>
                 </table>
@@ -358,7 +380,8 @@
 
         <!-- FOOTER -->
         <footer class="footer">
-            <div>THIS IS A VALID COMPUTER-GENERATED DOCUMENT ISSUED UNDER ECITIZEN AND THE KENYA REVENUE AUTHORITY.</div>
+            <div>THIS IS A COMPUTER-GENERATED INVOICE. NO SIGNATURE IS REQUIRED.</div>
+            <div style="margin-top: 4pt;">GENERATED SECURELY BY RENTAL GARAGE</div>
         </footer>
 
     </div>
