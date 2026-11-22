@@ -8,6 +8,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.models.contracts import Contract
@@ -33,11 +34,10 @@ template_env.filters['markdown_to_html'] = markdown_to_html
 
 async def resolve_signature_data_uri(obj: Any, attr_name: str = "signature_image_path") -> Optional[str]:
     """
-    ✅ BULLETPROOF SIGNATURE RESOLVER (backend-aware)
-    Resolves a signature image column (signature_image_path, handover_signature_image_path, company_signature_path, etc.)
-    into an embedded data: URI that survives PDF generation across storage backends.
+    ✅ OPTIMIZED SIGNATURE RESOLVER
+    Reduced timeout from 15s to 3s to prevent hanging on slow storage responses.
     """
-    ref = getattr(obj, attr_name, None)
+    ref = getattr(obj, attr_name, None) if not isinstance(obj, str) else obj
     if not ref:
         return None
 
@@ -45,7 +45,8 @@ async def resolve_signature_data_uri(obj: Any, attr_name: str = "signature_image
 
     def _fetch(url: str) -> Optional[bytes]:
         try:
-            with urllib.request.urlopen(url, timeout=15) as resp:
+            # ✅ OPTIMIZATION: 3-second timeout prevents event loop blocking
+            with urllib.request.urlopen(url, timeout=3) as resp:
                 return resp.read()
         except Exception as e:
             print(f"❌ Failed to fetch signature bytes ({attr_name}): {e}")
@@ -54,13 +55,11 @@ async def resolve_signature_data_uri(obj: Any, attr_name: str = "signature_image
     def _to_data_uri(data: bytes) -> str:
         return "data:image/png;base64," + base64.b64encode(data).decode("utf-8")
 
-    # 1. ✅ Authenticated API URL produced by upload_file()
     api_base = get_settings().public_url_base.rstrip("/")
     files_prefix = f"{api_base}/api/v1/files/"
+    
     if ref.startswith(files_prefix):
         relative_path = ref[len(files_prefix):].lstrip("/")
-
-        # a) Cloudinary backend → short-lived signed URL → fetch bytes
         backend = get_backend()
         signed = backend.signed_url(relative_path, ttl_seconds=300)
         if signed:
@@ -68,93 +67,77 @@ async def resolve_signature_data_uri(obj: Any, attr_name: str = "signature_image
             if data:
                 return _to_data_uri(data)
 
-        # b) Local backend (or signed_url failure) → read from disk
         upload_dir = Path(get_settings().uploads_dir).resolve()
         local_path = (upload_dir / relative_path).resolve()
         try:
-            local_path.relative_to(upload_dir)  # safety: no path traversal
+            local_path.relative_to(upload_dir)
             if local_path.exists() and local_path.is_file():
                 with open(local_path, "rb") as f:
                     return _to_data_uri(f.read())
         except ValueError:
             pass
-
-        print(f"⚠️ Could not resolve signature via storage backend ({attr_name}): {ref}")
         return None
 
-    # 2. Direct Cloudinary / public http(s) URL
     if ref.startswith("http://") or ref.startswith("https://"):
         data = await loop.run_in_executor(None, _fetch, ref)
         if data:
             return _to_data_uri(data)
         return None
 
-    # 3. Data URI stored directly in the column
     if ref.startswith("data:"):
         return ref
 
-    # 4. Legacy local file path (ephemeral — does not survive Render deploys)
     if os.path.exists(ref):
         try:
             with open(ref, "rb") as img_file:
                 return _to_data_uri(img_file.read())
-        except Exception as e:
-            print(f"❌ Error encoding local signature ({attr_name}): {e}")
+        except Exception:
             return None
 
-    print(f"⚠️ Signature reference unusable ({attr_name}): {ref}")
     return None
 
 
 async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
-    # 1. ASYNC DATA FETCHING
-    booking_stmt = select(Booking).where(Booking.id == contract.booking_id)
-    booking = (await db.execute(booking_stmt)).scalars().first()
+    # 1. ✅ OPTIMIZED SINGLE QUERY with eager loading (Replaces 6 separate queries)
+    stmt = (
+        select(Contract)
+        .options(
+            selectinload(Contract.booking).selectinload(Booking.client),
+            selectinload(Contract.booking).selectinload(Booking.vehicle),
+            selectinload(Contract.booking).selectinload(Booking.driver),
+            selectinload(Contract.booking).selectinload(Booking.tenant).selectinload(Tenant.profile),
+        )
+        .where(Contract.id == contract.id)
+    )
+    result = await db.execute(stmt)
+    loaded_contract = result.scalars().unique().first()
+    
+    if not loaded_contract or not loaded_contract.booking:
+        raise ValueError("Contract or associated booking not found")
+        
+    booking = loaded_contract.booking
+    client = booking.client
+    vehicle = booking.vehicle
+    driver = booking.driver
+    tenant = booking.tenant
+    tenant_profile = tenant.profile if tenant else None
 
-    client = None
-    vehicle = None
-    driver = None
-    if booking:
-        if booking.client_id:
-            client_stmt = select(Client).where(Client.id == booking.client_id)
-            client = (await db.execute(client_stmt)).scalars().first()
-
-        if booking.vehicle_id:
-            vehicle_stmt = select(Vehicle).where(Vehicle.id == booking.vehicle_id)
-            vehicle = (await db.execute(vehicle_stmt)).scalars().first()
-
-        # ✅ MILESTONE 2: Load driver if assigned (tenant-scoped via booking)
-        if booking.driver_id:
-            driver_stmt = select(Driver).where(Driver.id == booking.driver_id)
-            driver = (await db.execute(driver_stmt)).scalars().first()
-
-    tenant_stmt = select(Tenant).where(Tenant.id == contract.tenant_id)
-    tenant = (await db.execute(tenant_stmt)).scalars().first()
-
-    # ✅ FETCH TENANT PROFILE FOR RICH DETAILS
-    tenant_profile = None
-    if tenant:
-        profile_stmt = select(TenantProfile).where(TenantProfile.tenant_id == tenant.id)
-        tenant_profile = (await db.execute(profile_stmt)).scalars().first()
-
-    # 2. ✅ SIGNATURES: resolve terms, handover, and company signatures
+    # 2. ✅ SIGNATURES: resolve via storage service
     signature_data_uri = None
-    if contract.signed_by_client:
-        signature_data_uri = await resolve_signature_data_uri(contract, "signature_image_path")
+    if loaded_contract.signed_by_client:
+        signature_data_uri = await resolve_signature_data_uri(loaded_contract, "signature_image_path")
 
     handover_signature_data_uri = None
-    if contract.handover_signed_at:
-        handover_signature_data_uri = await resolve_signature_data_uri(contract, "handover_signature_image_path")
+    if loaded_contract.handover_signed_at:
+        handover_signature_data_uri = await resolve_signature_data_uri(loaded_contract, "handover_signature_image_path")
 
-    # ✅ NEW: Company/Agency default signature
     company_signature_data_uri = None
     if tenant_profile and getattr(tenant_profile, "company_signature_path", None):
         company_signature_data_uri = await resolve_signature_data_uri(tenant_profile, "company_signature_path")
 
-    # ✅ POLICY DOCUMENT: 3-category merged doc (defaults + overrides + custom clauses)
-    policy_doc = await get_effective_policy_document(db, contract.tenant_id)
+    policy_doc = await get_effective_policy_document(db, loaded_contract.tenant_id)
 
-    # ✅ PHASE 1: Booking snapshot is the source of truth.
+    # 3. PREPARE CONTEXT FOR JINJA2 TEMPLATE
     daily_rate = Decimal("0.00")
     rental_days = 1
 
@@ -173,14 +156,10 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         elif booking.total_amount:
             daily_rate = Decimal(str(booking.total_amount)) / Decimal(rental_days)
 
-    # ✅ PHASE 1: Driver fees from snapshot, no config lookup.
     driver_total = Decimal("0.00")
     if booking and booking.total_amount and daily_rate:
         vehicle_subtotal = daily_rate * Decimal(rental_days)
-        driver_total = max(
-            Decimal("0.00"),
-            Decimal(str(booking.total_amount)) - vehicle_subtotal,
-        )
+        driver_total = max(Decimal("0.00"), Decimal(str(booking.total_amount)) - vehicle_subtotal)
 
     driver_fees_breakdown = {
         "driver_daily": driver_total,
@@ -189,9 +168,8 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "driver_total": driver_total,
     }
 
-    # 3. PREPARE CONTEXT FOR JINJA2 TEMPLATE
     context = {
-        "contract": contract,
+        "contract": loaded_contract,
         "booking": booking,
         "client": client,
         "vehicle": vehicle,
@@ -200,7 +178,7 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
         "tenant_profile": tenant_profile,
         "signature_data_uri": signature_data_uri,
         "handover_signature_data_uri": handover_signature_data_uri,
-        "company_signature_data_uri": company_signature_data_uri,  # ✅ NEW: passed to template
+        "company_signature_data_uri": company_signature_data_uri,
         "policy_doc": policy_doc,
         "daily_rate": daily_rate,
         "driver_fees": driver_fees_breakdown,
@@ -210,22 +188,19 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
     template = template_env.get_template("contract_premium.html")
     html_content = template.render(**context)
 
-    # 5. OPTIMIZED PDF GENERATION WITH BROWSER POOL & AUTO-RETRY
+    # 5. ✅ OPTIMIZED PDF GENERATION (No unnecessary sleep, preferCSSPageSize)
     try:
         browser = await browser_pool.get_browser()
         page = await browser.newPage()
-        await page.setContent(html_content)
-        await asyncio.sleep(0.3)
+        
+        # ✅ OPTIMIZATION: preferCSSPageSize lets the @page rule handle sizing instantly
+        await page.setContent(html_content, {"waitUntil": "networkidle0", "timeout": 5000})
 
         pdf_bytes = await page.pdf(
             format='A4',
             printBackground=True,
-            margin={
-                'top': '0mm',
-                'right': '0mm',
-                'bottom': '0mm',
-                'left': '0mm'
-            }
+            preferCSSPageSize=True, # ✅ Faster rendering
+            margin={'top': '0mm', 'right': '0mm', 'bottom': '0mm', 'left': '0mm'}
         )
 
         await page.close()
@@ -233,18 +208,17 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
 
     except Exception as e:
         error_msg = str(e)
-        # ✅ AUTO-RETRY: If the browser died mid-request, force a restart and try once more.
         if "Connection is closed" in error_msg or "Connection closed" in error_msg:
             print("⚠️ Browser died mid-render. Forcing restart and retrying...")
             try:
                 browser = await browser_pool.get_browser(force_restart=True)
                 page = await browser.newPage()
-                await page.setContent(html_content)
-                await asyncio.sleep(0.3)
+                await page.setContent(html_content, {"waitUntil": "networkidle0", "timeout": 5000})
 
                 pdf_bytes = await page.pdf(
                     format='A4',
                     printBackground=True,
+                    preferCSSPageSize=True,
                     margin={'top': '0mm', 'right': '0mm', 'bottom': '0mm', 'left': '0mm'}
                 )
                 await page.close()
@@ -255,7 +229,6 @@ async def generate_contract_pdf(contract: Contract, db: AsyncSession) -> bytes:
                 traceback.print_exc()
                 raise retry_err
         
-        # If it's not a connection error, log and raise normally
         print(f"❌ PUPPETEER ERROR: {e}")
         import traceback
         traceback.print_exc()
