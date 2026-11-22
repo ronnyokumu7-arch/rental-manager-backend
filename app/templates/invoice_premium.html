@@ -281,10 +281,10 @@
             </div>
 
             <div class="address-box">
-                <span class="address-label">Invoice Reference</span>
+                <span class="address-label">Invoice Ref</span>
                 <div class="address-name">{{ invoice.invoice_number }}</div>
                 {% if booking and booking.booking_number %}
-                <div class="address-detail">Booking: {{ booking.booking_number }}</div>
+                <div class="address-detail">Booking Ref: {{ booking.booking_number }}</div>
                 {% endif %}
                 <div class="address-detail">Status: {{ invoice.status.value | title if invoice.status else '—' }}</div>
             </div>
@@ -297,7 +297,7 @@
             <thead>
                 <tr>
                     <th style="width: 45%;">Rental Details</th>
-                    <th class="text-right">Rental Duration</th>
+                    <th class="text-right">Duration</th>
                     <th class="text-right">Daily Rate</th>
                     <th class="text-right">Tax</th>
                     <th class="text-right">Total</th>
@@ -312,7 +312,7 @@
                             {% if vehicle and vehicle.plate_number %}({{ vehicle.plate_number }}){% endif %}
                         </span><br>
                         <span style="font-size: 8pt; color: #57534E;">
-                            - From {{ tenant_profile.address if tenant_profile else 'Nairobi' }}<br>
+                            From {{ tenant_profile.address if tenant_profile else 'Nairobi' }}<br>
                             to {{ booking.destination if booking else 'Destination' }} & Back
                         </span>
                     </td>
