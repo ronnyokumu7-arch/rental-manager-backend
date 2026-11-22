@@ -69,7 +69,7 @@
         .header-top { 
             display: flex; 
             justify-content: space-between; 
-            align-items: flex-start; /* Safe alignment */
+            align-items: flex-start; 
             gap: 16pt; 
         }
         
@@ -94,10 +94,17 @@
             font-size: 8pt; 
         }
         
-        /* Right: Logo */
+        /* ✅ Right: Logo (Increased Size for Premium Weight) */
+        .header-right {
+            display: flex;
+            justify-content: flex-end;
+            align-items: flex-start;
+            width: 200pt; 
+        }
+
         .logo-box {
-            width: 120pt;
-            /* No fixed height - prevents PDF engine crashes */
+            max-width: 180pt; 
+            max-height: 70pt; 
             background: transparent;
             display: flex;
             align-items: flex-start; 
@@ -107,7 +114,7 @@
         }
         .logo-box img { 
             max-width: 100%; 
-            max-height: 45pt; /* Constrain via image, not container */
+            max-height: 100%; 
             object-fit: contain; 
         }
         .logo-fallback {
@@ -116,7 +123,7 @@
             justify-content: center;
             color: #0f172a;
             font-weight: 800;
-            font-size: 11pt;
+            font-size: 14pt;
             letter-spacing: 0.05em;
             text-transform: uppercase;
         }
@@ -358,12 +365,14 @@
                 </div>
                 
                 <!-- Right: Logo -->
-                <div class="logo-box">
-                    {% if tenant_profile and tenant_profile.logo_url %}
-                        <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
-                    {% else %}
-                        <div class="logo-fallback">{{ (tenant.name[:12] if tenant else 'AGENCY') | upper }}</div>
-                    {% endif %}
+                <div class="header-right">
+                    <div class="logo-box">
+                        {% if tenant_profile and tenant_profile.logo_url %}
+                            <img src="{{ tenant_profile.logo_url }}" alt="Logo" />
+                        {% else %}
+                            <div class="logo-fallback">{{ (tenant.name[:12] if tenant else 'AGENCY') | upper }}</div>
+                        {% endif %}
+                    </div>
                 </div>
             </div>
         </header>
