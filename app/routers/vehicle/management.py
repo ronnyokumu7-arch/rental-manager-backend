@@ -51,27 +51,23 @@ ACTIVE_BLOCKING_STATUSES = [
 # ---------------------------------------------------------------------------
 def _assert_future_insurance(expiry) -> None:
     """Insurance expiry must be in the future (create + update parity)."""
-    if expiry is not None and expiry <= datetime.now(timezone.utc):
-        raise BadRequestError(
-            title="Invalid Insurance Expiry",
-            message="Choose a future date for the insurance expiry.",
-            field_errors={"insurance_expiry": "Must be a future date"},
-        )
-
-
-async def _assert_no_live_bookings(db: AsyncSession, vehicle_id: int, action: str) -> None:
-    """✅ FIXED: was BookingStatus.ongoing (AttributeError → 500 on every call)."""
-    live_booking = (await db.execute(
-        select(Booking).where(
-            Booking.vehicle_id == vehicle_id,
-            Booking.status.in_(ACTIVE_BLOCKING_STATUSES),
-        )
-    )).scalars().first()
-    if live_booking:
-        raise BadRequestError(
-            title="Vehicle Has Active Bookings",
-            message=f"This vehicle has active bookings. Complete or cancel them before {action} it.",
-        )
+    if expiry is not None:
+        from datetime import date, datetime
+        
+        # Normalize expiry to a date object to avoid timezone comparison errors
+        if isinstance(expiry, datetime):
+            expiry_date = expiry.date()
+        elif isinstance(expiry, str):
+            expiry_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+        else:
+            expiry_date = expiry  # assume it's already a date object
+            
+        if expiry_date <= date.today():
+            raise BadRequestError(
+                title="Invalid Insurance Expiry",
+                message="Choose a future date for the insurance expiry.",
+                field_errors={"insurance_expiry": "Must be a future date"},
+            )
 
 
 # ---------------------------------------------------------------------------
